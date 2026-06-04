@@ -8,13 +8,14 @@ import (
 
 // NodeConfig holds configuration for an ARFL node daemon.
 type NodeConfig struct {
-	Role       string `json:"role"`        // "entry", "exit", or "both"
-	ListenPort int    `json:"listen_port"` // WireGuard UDP port
-	PrivateKey string `json:"private_key"` // Base64 WireGuard private key
-	TunnelIP   string `json:"tunnel_ip"`   // e.g. "10.100.0.1/24" or "10.200.0.1/24"
-	Interface  string `json:"interface"`   // WireGuard interface name
-	AdminAddr  string `json:"admin_addr"`  // Admin API listen address, e.g. "127.0.0.1:9090"
-	MTU        int    `json:"mtu"`         // Tunnel MTU (default 1280)
+	Role         string `json:"role"`          // "entry", "exit", or "both"
+	ListenPort   int    `json:"listen_port"`   // WireGuard UDP port
+	PrivateKey   string `json:"private_key"`   // Base64 WireGuard private key
+	TunnelIP     string `json:"tunnel_ip"`     // e.g. "10.100.0.1/24" or "10.200.0.1/24"
+	Interface    string `json:"interface"`     // WireGuard interface name
+	OutInterface string `json:"out_interface"` // Internet-facing interface, e.g. "eth0"
+	AdminAddr    string `json:"admin_addr"`    // Admin API listen address, e.g. "127.0.0.1:9090"
+	MTU          int    `json:"mtu"`           // Tunnel MTU (default 1280)
 }
 
 // SessionFile is the static session config read by the client in Phase 1.

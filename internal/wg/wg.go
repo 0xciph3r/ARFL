@@ -38,20 +38,20 @@ type InterfaceConfig struct {
 // PeerConfig defines parameters for adding a WireGuard peer.
 type PeerConfig struct {
 	PublicKey  string   // Base64-encoded Curve25519 public key
-	Endpoint  string   // IP:port (empty for clients that connect to us)
+	Endpoint   string   // IP:port (empty for clients that connect to us)
 	AllowedIPs []string // CIDR ranges, e.g. ["10.200.0.2/32"] or ["0.0.0.0/0"]
 	Keepalive  int      // Persistent keepalive interval in seconds (0 = off)
 }
 
 // PeerStats holds byte counter data for a WireGuard peer.
 type PeerStats struct {
-	PublicKey      string
-	Endpoint       net.UDPAddr
-	ReceiveBytes   int64
-	TransmitBytes  int64
-	TotalBytes     int64
-	LastHandshake  time.Time
-	AllowedIPs     []net.IPNet
+	PublicKey     string
+	Endpoint      net.UDPAddr
+	ReceiveBytes  int64
+	TransmitBytes int64
+	TotalBytes    int64
+	LastHandshake time.Time
+	AllowedIPs    []net.IPNet
 }
 
 // KeyPair holds a WireGuard Curve25519 key pair.

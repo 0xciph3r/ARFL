@@ -77,7 +77,7 @@ func (m *WgctrlManager) AddPeer(iface string, peer PeerConfig) error {
 	}
 
 	peerCfg := wgtypes.PeerConfig{
-		PublicKey:  pubKey,
+		PublicKey:         pubKey,
 		ReplaceAllowedIPs: true,
 	}
 
@@ -116,7 +116,7 @@ func (m *WgctrlManager) RemovePeer(iface string, pubkey string) error {
 	return m.client.ConfigureDevice(iface, wgtypes.Config{
 		Peers: []wgtypes.PeerConfig{{
 			PublicKey: key,
-			Remove:   true,
+			Remove:    true,
 		}},
 	})
 }

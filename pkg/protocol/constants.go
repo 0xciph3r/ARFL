@@ -45,9 +45,9 @@ const (
 
 // Revenue split percentages — applied to the floor price.
 const (
-	EntryNodeSplitPct  = 40
-	ExitNodeSplitPct   = 40
-	HubSplitPct        = 20
+	EntryNodeSplitPct = 40
+	ExitNodeSplitPct  = 40
+	HubSplitPct       = 20
 )
 
 // Nostr event kinds used by the ARFL protocol.

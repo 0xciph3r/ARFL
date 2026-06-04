@@ -27,11 +27,11 @@ const (
 // The private key is encrypted. The public key is stored in cleartext because
 // it's your network identity — shared openly, like a Bitcoin address.
 type encryptedKeyFile struct {
-	PublicKey      string `json:"public_key"`
-	EncryptedKey   []byte `json:"encrypted_key"`   // AES-256-GCM ciphertext + tag
-	Nonce          []byte `json:"nonce"`            // 12-byte GCM nonce
-	Salt           []byte `json:"salt"`             // 16-byte Argon2 salt
-	Version        int    `json:"version"`          // format version for future changes
+	PublicKey    string `json:"public_key"`
+	EncryptedKey []byte `json:"encrypted_key"` // AES-256-GCM ciphertext + tag
+	Nonce        []byte `json:"nonce"`         // 12-byte GCM nonce
+	Salt         []byte `json:"salt"`          // 16-byte Argon2 salt
+	Version      int    `json:"version"`       // format version for future changes
 }
 
 // SaveKeyPairEncrypted encrypts the private key with a passphrase and saves to disk.

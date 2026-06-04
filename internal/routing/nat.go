@@ -15,7 +15,8 @@ import (
 // (or to the next hop). Without this, every packet would be silently dropped.
 //
 // This is the equivalent of:
-//   sysctl -w net.ipv4.ip_forward=1
+//
+//	sysctl -w net.ipv4.ip_forward=1
 func EnableForwarding() error {
 	return os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644)
 }

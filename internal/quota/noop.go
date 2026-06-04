@@ -1,11 +1,9 @@
-//go:build !linux
-
 package quota
 
 import "log"
 
-// NoopEnforcer is a no-op quota enforcer for non-Linux platforms (dev/testing).
-// On macOS and other platforms, quota enforcement is skipped.
+// NoopEnforcer is a no-op quota enforcer for testing and non-Linux platforms.
+// It logs what it would do without touching the kernel.
 type NoopEnforcer struct{}
 
 func NewNoopEnforcer() *NoopEnforcer {

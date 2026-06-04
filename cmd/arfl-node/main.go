@@ -8,12 +8,14 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/config"
 	"github.com/Radi-Labs/ARFL/internal/control"
 	"github.com/Radi-Labs/ARFL/internal/quota"
+	"github.com/Radi-Labs/ARFL/internal/routing"
 	"github.com/Radi-Labs/ARFL/internal/wg"
 	"github.com/Radi-Labs/ARFL/pkg/protocol"
 )
@@ -67,6 +69,24 @@ func main() {
 	}
 	log.Printf("[node] WireGuard interface %s created", cfg.Interface)
 
+	// Set up IP forwarding and NAT.
+	// IP forwarding: tells the kernel "it's OK to route packets between interfaces."
+	// NAT: rewrites source IPs from private tunnel addresses to the node's public IP.
+	// Without these, packets arrive at the WireGuard interface and die.
+	outIface := cfg.OutInterface
+	if outIface == "" {
+		outIface = "eth0"
+	}
+	if runtime.GOOS == "linux" {
+		if err := routing.EnableForwarding(); err != nil {
+			log.Printf("[node] warning: enable forwarding: %v", err)
+		}
+		if err := routing.SetupNAT(cfg.Interface, outIface); err != nil {
+			log.Printf("[node] warning: setup NAT: %v", err)
+		}
+		log.Printf("[node] IP forwarding enabled, NAT configured (%s → %s)", cfg.Interface, outIface)
+	}
+
 	// Create quota enforcer.
 	// On Linux: real nftables enforcement at the kernel level.
 	// On macOS: no-op (logs only) since nftables doesn't exist.
@@ -99,7 +119,12 @@ func main() {
 	log.Println("[node] shutting down...")
 	cancel()
 
-	// Cleanup WireGuard interface
+	// Cleanup WireGuard interface and NAT rules
+	if runtime.GOOS == "linux" {
+		if err := routing.CleanupNAT(cfg.Interface, outIface); err != nil {
+			log.Printf("[node] warning: cleanup NAT: %v", err)
+		}
+	}
 	if err := wgMgr.DeleteInterface(cfg.Interface); err != nil {
 		log.Printf("[node] warning: delete interface: %v", err)
 	}

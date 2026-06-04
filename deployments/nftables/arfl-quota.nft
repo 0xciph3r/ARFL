@@ -1,0 +1,30 @@
+table inet arfl {
+    # Dynamic quota set — one element per client tunnel IP.
+    # Each element carries a named quota that drops traffic once exceeded.
+    # Elements auto-expire after 30 minutes if not refreshed.
+    set quotas {
+        type ipv4_addr
+        flags dynamic,timeout
+        timeout 30m
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy accept;
+
+        # Enforce bandwidth quota on traffic from clients through the exit tunnel.
+        # Packets from client tunnel IPs that exceed their quota are dropped.
+        iifname "wg-exit" ip saddr @quotas counter drop comment "arfl: over quota"
+    }
+}
+
+# ─── Usage ───────────────────────────────────────────────────────────
+#
+# Add quota for a new session (256 MB slab = 268435456 bytes):
+#   nft add element inet arfl quotas { 10.200.0.2 : quota over 268435456 bytes }
+#
+# Refresh quota slab (delete + re-add):
+#   nft delete element inet arfl quotas { 10.200.0.2 }
+#   nft add element inet arfl quotas { 10.200.0.2 : quota over 268435456 bytes }
+#
+# Peer removal is done via wgctrl when balance is exhausted,
+# NOT via nftables. The nftables quota is a kernel-level safety net.

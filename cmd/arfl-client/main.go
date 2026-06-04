@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -15,6 +14,7 @@ import (
 	"github.com/Radi-Labs/ARFL/internal/config"
 	"github.com/Radi-Labs/ARFL/internal/wg"
 	"github.com/Radi-Labs/ARFL/pkg/protocol"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -28,18 +28,28 @@ func main() {
 		if err != nil {
 			log.Fatalf("generate keypair: %v", err)
 		}
-		if err := os.WriteFile(*keyFile, mustMarshal(kp), 0600); err != nil {
-			log.Fatalf("write key file: %v", err)
+
+		// Prompt for passphrase to encrypt the private key
+		passphrase := promptPassphrase("Set a passphrase to protect your key: ")
+		confirm := promptPassphrase("Confirm passphrase: ")
+		if passphrase != confirm {
+			log.Fatalf("passphrases do not match")
 		}
-		fmt.Printf("Keypair written to %s\n", *keyFile)
+
+		if err := wg.SaveKeyPairEncrypted(*keyFile, kp, passphrase); err != nil {
+			log.Fatalf("save key file: %v", err)
+		}
+		fmt.Printf("Encrypted keypair written to %s\n", *keyFile)
 		fmt.Printf("Public key: %s\n", kp.PublicKey)
+		fmt.Println("⚠ If you lose this passphrase, your bandwidth balance is irrecoverable.")
 		return
 	}
 
-	// Load client key
-	kp, err := loadKeyPair(*keyFile)
+	// Load client key — requires passphrase to decrypt
+	passphrase := promptPassphrase("Passphrase: ")
+	kp, err := wg.LoadKeyPairEncrypted(*keyFile, passphrase)
 	if err != nil {
-		log.Fatalf("load key: %v (run with --genkey first)", err)
+		log.Fatalf("load key: %v", err)
 	}
 	log.Printf("[client] public key: %s", kp.PublicKey)
 
@@ -154,18 +164,22 @@ func cleanup(wgMgr *wg.WgctrlManager, entryIP, exitIP, defaultGW, defaultIface s
 
 // --- Key management ---
 
-func loadKeyPair(path string) (*wg.KeyPair, error) {
-	data, err := os.ReadFile(path)
+// promptPassphrase reads a passphrase from the terminal without echoing it.
+// This prevents the passphrase from appearing in screen recordings, shoulder
+// surfing, or terminal scrollback history.
+func promptPassphrase(prompt string) string {
+	fmt.Print(prompt)
+	// term.ReadPassword reads from stdin with echo disabled — characters
+	// are NOT shown as you type, just like sudo or ssh-keygen.
+	pass, err := term.ReadPassword(int(syscall.Stdin))
+	fmt.Println() // newline after hidden input
 	if err != nil {
-		return nil, err
+		log.Fatalf("read passphrase: %v", err)
 	}
-	var kp wg.KeyPair
-	return &kp, json.Unmarshal(data, &kp)
-}
-
-func mustMarshal(v any) []byte {
-	data, _ := json.MarshalIndent(v, "", "  ")
-	return data
+	if len(pass) == 0 {
+		log.Fatalf("passphrase cannot be empty")
+	}
+	return string(pass)
 }
 
 // --- Routing helpers (platform-specific) ---

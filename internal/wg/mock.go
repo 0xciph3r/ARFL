@@ -23,8 +23,8 @@ type mockInterface struct {
 }
 
 type mockPeer struct {
-	config       PeerConfig
-	receiveBytes int64
+	config        PeerConfig
+	receiveBytes  int64
 	transmitBytes int64
 }
 

@@ -21,10 +21,10 @@ type NodeConfig struct {
 // SessionFile is the static session config read by the client in Phase 1.
 // In later phases this is generated dynamically by the hub.
 type SessionFile struct {
-	EntryEndpoint string `json:"entry_endpoint"` // Entry node public IP:port
+	EntryEndpoint string `json:"entry_endpoint"`  // Entry node public IP:port
 	EntryWGPubkey string `json:"entry_wg_pubkey"` // Entry node WG public key
-	ExitEndpoint  string `json:"exit_endpoint"`  // Exit node public IP:port
-	ExitWGPubkey  string `json:"exit_wg_pubkey"` // Exit node WG public key
+	ExitEndpoint  string `json:"exit_endpoint"`   // Exit node public IP:port
+	ExitWGPubkey  string `json:"exit_wg_pubkey"`  // Exit node WG public key
 	OuterTunnelIP string `json:"outer_tunnel_ip"` // Client's outer tunnel IP, e.g. "10.100.0.2/24"
 	InnerTunnelIP string `json:"inner_tunnel_ip"` // Client's inner tunnel IP, e.g. "10.200.0.2/24"
 }

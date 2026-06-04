@@ -47,7 +47,7 @@ func (s *Server) ListenAndServe(addr string) error {
 
 type AddPeerRequest struct {
 	PublicKey  string   `json:"public_key"`
-	Endpoint  string   `json:"endpoint,omitempty"`
+	Endpoint   string   `json:"endpoint,omitempty"`
 	AllowedIPs []string `json:"allowed_ips"`
 	Keepalive  int      `json:"keepalive,omitempty"`
 	TunnelIP   string   `json:"tunnel_ip,omitempty"`

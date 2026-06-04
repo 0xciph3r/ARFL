@@ -98,7 +98,7 @@ func main() {
 	// 2. Set up routing so exit node's IP goes through outer tunnel
 	log.Println("[client] configuring routes...")
 	addRoute(entryIP+"/32", defaultGW, defaultIface) // entry reachable via real gateway
-	addRoute(exitIP+"/32", "", "wg-outer")            // exit goes through outer tunnel
+	addRoute(exitIP+"/32", "", "wg-outer")           // exit goes through outer tunnel
 
 	// 3. Create inner tunnel (client <-> exit node, carried inside outer)
 	log.Println("[client] creating inner tunnel to exit node...")

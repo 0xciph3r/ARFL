@@ -52,10 +52,10 @@ const (
 
 // Nostr event kinds used by the ARFL protocol.
 const (
-	NostrKindNodeAnnouncement    = 30078
-	NostrKindHubAnnouncement     = 30079
-	NostrKindHubSubscription     = 30080
-	NostrKindFedDepositReceipt   = 30081 // Phase 5: Fedimint federation deposit receipt
+	NostrKindNodeAnnouncement  = 30078
+	NostrKindHubAnnouncement   = 30079
+	NostrKindHubSubscription   = 30080
+	NostrKindFedDepositReceipt = 30081 // Phase 5: Fedimint federation deposit receipt
 )
 
 // MinNodeDepositSats is the minimum deposit required for node attestation (Phase 5).

@@ -79,7 +79,10 @@ func TestDiscoveryAPI_FilterByRole(t *testing.T) {
 	defer server.Close()
 
 	// Filter for entry only.
-	resp, _ := http.Get(server.URL + "/nodes?role=entry")
+	resp, err := http.Get(server.URL + "/nodes?role=entry")
+	if err != nil {
+		t.Fatalf("GET /nodes?role=entry: %v", err)
+	}
 	defer resp.Body.Close()
 	var result DiscoveryResponse
 	json.NewDecoder(resp.Body).Decode(&result)
@@ -124,7 +127,10 @@ func TestDiscoveryAPI_Health(t *testing.T) {
 	server := httptest.NewServer(api.Handler())
 	defer server.Close()
 
-	resp, _ := http.Get(server.URL + "/health")
+	resp, err := http.Get(server.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
 	defer resp.Body.Close()
 
 	var health map[string]interface{}

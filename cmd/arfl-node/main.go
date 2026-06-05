@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -9,15 +10,19 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/config"
 	"github.com/Radi-Labs/ARFL/internal/control"
+	"github.com/Radi-Labs/ARFL/internal/discovery"
+	"github.com/Radi-Labs/ARFL/internal/nostr"
 	"github.com/Radi-Labs/ARFL/internal/quota"
 	"github.com/Radi-Labs/ARFL/internal/routing"
 	"github.com/Radi-Labs/ARFL/internal/wg"
 	"github.com/Radi-Labs/ARFL/pkg/protocol"
+	"github.com/Radi-Labs/ARFL/pkg/types"
 )
 
 func main() {
@@ -49,6 +54,14 @@ func main() {
 
 	log.Printf("[node] starting ARFL node (role=%s, port=%d, iface=%s)",
 		cfg.Role, cfg.ListenPort, cfg.Interface)
+
+	// Parse WireGuard private key to derive public key for announcements.
+	wgPrivKey, err := wg.ParseKey(cfg.PrivateKey)
+	if err != nil {
+		log.Fatalf("parse WireGuard key: %v", err)
+	}
+	wgPubKey := wgPrivKey.PublicKey()
+	wgPubKeyB64 := base64.StdEncoding.EncodeToString(wgPubKey[:])
 
 	// Create WireGuard manager
 	wgMgr, err := wg.NewManager()
@@ -99,7 +112,8 @@ func main() {
 	// Start byte counter polling
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go pollByteCounters(ctx, wgMgr, cfg.Interface)
+	var currentLoad int32 // Atomic counter: how many peers have active traffic.
+	go pollByteCounters(ctx, wgMgr, cfg.Interface, &currentLoad)
 
 	// Start admin API
 	adminServer := control.NewServer(wgMgr, quotaMgr, cfg.Interface)
@@ -110,6 +124,51 @@ func main() {
 	}()
 
 	log.Printf("[node] ready. admin API on %s", cfg.AdminAddr)
+
+	// Start Nostr announcer (Phase 2).
+	// The announcer publishes "I'm alive" events to Nostr relays every 60s.
+	// The hub subscribes to these events and builds a live node index.
+	if cfg.NostrPrivkey != "" && len(cfg.Relays) > 0 {
+		nodeKP, err := nostr.KeyPairFromPrivHex(cfg.NostrPrivkey)
+		if err != nil {
+			log.Fatalf("parse nostr private key: %v", err)
+		}
+		log.Printf("[node] Nostr pubkey: %s", nodeKP.PubkeyHex())
+
+		// Parse the hub attestation.
+		att, err := nostr.DecodeAttestation(cfg.AttestationJSON)
+		if err != nil {
+			log.Fatalf("parse attestation: %v", err)
+		}
+
+		// Connect to Nostr relays.
+		pool := nostr.NewRelayPool(cfg.Relays)
+		if err := pool.Connect(ctx); err != nil {
+			log.Printf("[node] warning: could not connect to relays: %v", err)
+		} else {
+			// nodeInfoFn is called every 60s to get fresh load/capacity data.
+			nodeInfoFn := func() types.NodeInfo {
+				return types.NodeInfo{
+					NostrPubkey:  nodeKP.PubkeyHex(),
+					WGPubkey:     wgPubKeyB64,
+					Endpoint:     cfg.Endpoint,
+					UploadMbps:   cfg.UploadMbps,
+					DownloadMbps: cfg.DownloadMbps,
+					Load:         int(atomic.LoadInt32(&currentLoad)),
+					Capacity:     cfg.Capacity,
+					Role:         types.NodeRole(cfg.Role),
+					Version:      "0.1.0",
+				}
+			}
+
+			announcer := discovery.NewAnnouncer(nodeKP, nodeInfoFn, att, pool)
+			go announcer.Run(ctx)
+			defer pool.Close()
+			log.Printf("[node] announcing to %d relay(s)", len(cfg.Relays))
+		}
+	} else {
+		log.Println("[node] Nostr discovery disabled (no nostr_privkey or relays configured)")
+	}
 
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
@@ -132,8 +191,8 @@ func main() {
 }
 
 // pollByteCounters polls WireGuard byte counters for all peers every 5 seconds
-// and logs them. In Phase 2+ this reports to the hub for billing.
-func pollByteCounters(ctx context.Context, mgr *wg.WgctrlManager, iface string) {
+// and logs them. It also updates the atomic load counter for the announcer.
+func pollByteCounters(ctx context.Context, mgr *wg.WgctrlManager, iface string, load *int32) {
 	ticker := time.NewTicker(time.Duration(protocol.ByteCounterPollSeconds) * time.Second)
 	defer ticker.Stop()
 
@@ -147,12 +206,15 @@ func pollByteCounters(ctx context.Context, mgr *wg.WgctrlManager, iface string) 
 				log.Printf("[poll] error: %v", err)
 				continue
 			}
+			var activePeers int32
 			for _, s := range stats {
 				if s.TotalBytes > 0 {
+					activePeers++
 					log.Printf("[poll] peer=%s rx=%d tx=%d total=%d",
 						s.PublicKey[:16]+"...", s.ReceiveBytes, s.TransmitBytes, s.TotalBytes)
 				}
 			}
+			atomic.StoreInt32(load, activePeers)
 		}
 	}
 }

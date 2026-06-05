@@ -218,6 +218,12 @@ func (r *Relay) send(ctx context.Context, msg []byte) error {
 // Nostr relays send: ["EVENT", sub_id, event], ["EOSE", sub_id],
 // ["OK", event_id, success, message], ["NOTICE", message].
 func (r *Relay) readLoop() {
+	// Capture conn under the lock — close() may nil r.conn concurrently.
+	r.mu.Lock()
+	conn := r.conn
+	ctx := r.ctx
+	r.mu.Unlock()
+
 	defer func() {
 		r.mu.Lock()
 		r.connected = false
@@ -225,9 +231,9 @@ func (r *Relay) readLoop() {
 	}()
 
 	for {
-		_, data, err := r.conn.Read(r.ctx)
+		_, data, err := conn.Read(ctx)
 		if err != nil {
-			if r.ctx.Err() != nil {
+			if ctx.Err() != nil {
 				return // Context cancelled, clean shutdown.
 			}
 			log.Printf("[relay] read from %s failed: %v", r.URL, err)

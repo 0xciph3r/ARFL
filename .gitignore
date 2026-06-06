@@ -21,5 +21,4 @@ target
 #.idea/
 .DS_Store
 
-# Local dev notes (not tracked)
-.notes/
+# Local dev notes (tracked, protected by CODEOWNERS)

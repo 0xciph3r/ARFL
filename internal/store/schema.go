@@ -22,10 +22,11 @@ CREATE TABLE IF NOT EXISTS invoices (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     payment_hash    TEXT    NOT NULL UNIQUE,
     payment_request TEXT    NOT NULL,
-    amount_sats     INTEGER NOT NULL,
+    amount_sats     INTEGER NOT NULL CHECK (amount_sats > 0),
     tier            TEXT    NOT NULL,
-    bytes_allowed   INTEGER NOT NULL,
-    status          TEXT    NOT NULL DEFAULT 'open',
+    bytes_allowed   INTEGER NOT NULL CHECK (bytes_allowed > 0),
+    status          TEXT    NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open', 'settled', 'expired')),
     created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     settled_at      TEXT,
     expires_at      TEXT    NOT NULL,
@@ -42,6 +43,18 @@ BEGIN
     SELECT RAISE(FAIL, 'invoices is append-only: deletions are prohibited');
 END;
 
+-- Invoices: only status and settled_at may change, and only via forward transitions.
+CREATE TRIGGER IF NOT EXISTS invoices_immutable_fields
+BEFORE UPDATE ON invoices
+WHEN OLD.payment_hash != NEW.payment_hash
+  OR OLD.amount_sats != NEW.amount_sats
+  OR OLD.tier != NEW.tier
+  OR OLD.bytes_allowed != NEW.bytes_allowed
+  OR OLD.payment_request != NEW.payment_request
+BEGIN
+    SELECT RAISE(FAIL, 'invoice financial fields are immutable');
+END;
+
 -- ============================================================
 -- TICKETS: Bandwidth credentials issued after payment
 -- Each ticket is atomic (fully consumed or not) and single-use.
@@ -49,9 +62,10 @@ END;
 CREATE TABLE IF NOT EXISTS tickets (
     id              TEXT    PRIMARY KEY,
     payment_hash    TEXT    NOT NULL REFERENCES invoices(payment_hash),
-    bytes_value     INTEGER NOT NULL,
+    bytes_value     INTEGER NOT NULL CHECK (bytes_value > 0),
     hmac            TEXT    NOT NULL,
-    status          TEXT    NOT NULL DEFAULT 'active',
+    status          TEXT    NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'redeemed')),
     issued_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     redeemed_at     TEXT,
     redeemed_by     TEXT
@@ -74,6 +88,16 @@ BEFORE UPDATE ON tickets
 WHEN OLD.status = 'redeemed'
 BEGIN
     SELECT RAISE(FAIL, 'redeemed tickets cannot be modified');
+END;
+
+-- Tickets: financial fields are immutable even while active.
+CREATE TRIGGER IF NOT EXISTS tickets_immutable_fields
+BEFORE UPDATE ON tickets
+WHEN OLD.bytes_value != NEW.bytes_value
+  OR OLD.hmac != NEW.hmac
+  OR OLD.payment_hash != NEW.payment_hash
+BEGIN
+    SELECT RAISE(FAIL, 'ticket financial fields are immutable');
 END;
 
 -- ============================================================

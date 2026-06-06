@@ -194,7 +194,10 @@ func (r *Relay) connect(ctx context.Context) error {
 	r.connected = true
 
 	// Start the read loop in a goroutine.
-	go r.readLoop()
+	// Pass conn and ctx as parameters — capturing from local scope while lock
+	// is held eliminates the race where close() nils r.conn before readLoop
+	// can acquire the lock to capture it.
+	go r.readLoop(conn, r.ctx)
 
 	return nil
 }
@@ -217,16 +220,22 @@ func (r *Relay) send(ctx context.Context, msg []byte) error {
 // readLoop processes incoming messages from the relay.
 // Nostr relays send: ["EVENT", sub_id, event], ["EOSE", sub_id],
 // ["OK", event_id, success, message], ["NOTICE", message].
-func (r *Relay) readLoop() {
-	// Capture conn under the lock — close() may nil r.conn concurrently.
-	r.mu.Lock()
-	conn := r.conn
-	ctx := r.ctx
-	r.mu.Unlock()
-
+//
+// conn and ctx are passed as parameters (not captured from r.conn) to prevent
+// a race condition: close() can nil r.conn between connect()'s Unlock and
+// readLoop's Lock, causing a nil pointer panic. By accepting them as args
+// from connect()'s local scope (while the lock is still held), we guarantee
+// they are never nil.
+func (r *Relay) readLoop(conn *websocket.Conn, ctx context.Context) {
 	defer func() {
 		r.mu.Lock()
-		r.connected = false
+		// Only update state if this goroutine still owns the active connection.
+		// Without this check, a stale readLoop from a previous connection could
+		// mark a freshly-reconnected relay as disconnected.
+		if r.conn == conn {
+			r.connected = false
+			r.conn = nil
+		}
 		r.mu.Unlock()
 	}()
 
@@ -301,7 +310,7 @@ func (r *Relay) handleMessage(data []byte) {
 			if !success {
 				var reason string
 				json.Unmarshal(msg[3], &reason)
-				log.Printf("[relay] event %s rejected by %s: %s", eventID[:8], r.URL, reason)
+				log.Printf("[relay] event %s rejected by %s: %s", truncateID(eventID), r.URL, reason)
 			}
 		}
 
@@ -312,6 +321,15 @@ func (r *Relay) handleMessage(data []byte) {
 			log.Printf("[relay] NOTICE from %s: %s", r.URL, notice)
 		}
 	}
+}
+
+// truncateID safely shortens an event ID for logging.
+// Prevents panics from malicious relays sending short IDs.
+func truncateID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 func (r *Relay) close() {

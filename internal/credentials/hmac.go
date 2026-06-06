@@ -20,6 +20,7 @@ const DefaultTicketTTL = 24 * time.Hour
 
 // HMACIssuer creates tickets stamped with HMAC-SHA256.
 // This is the Phase 3 implementation — replaced by blind signatures in Phase 4.
+// Immutable after construction — TTL is set via functional option at creation time.
 type HMACIssuer struct {
 	keyID     string
 	secret    []byte
@@ -28,17 +29,28 @@ type HMACIssuer struct {
 
 // NewHMACIssuer creates an issuer with the given key ID and secret.
 // The keyID is embedded in every ticket for rotation support.
-func NewHMACIssuer(keyID string, secret []byte) *HMACIssuer {
-	return &HMACIssuer{
+// The secret is defensively copied — callers cannot mutate it after construction.
+func NewHMACIssuer(keyID string, secret []byte, opts ...IssuerOption) *HMACIssuer {
+	h := &HMACIssuer{
 		keyID:     keyID,
-		secret:    secret,
+		secret:    append([]byte(nil), secret...), // defensive copy
 		ticketTTL: DefaultTicketTTL,
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
-// SetTicketTTL overrides the default ticket lifetime.
-func (h *HMACIssuer) SetTicketTTL(ttl time.Duration) {
-	h.ticketTTL = ttl
+// IssuerOption configures an HMACIssuer at construction time.
+type IssuerOption func(*HMACIssuer)
+
+// WithTicketTTL sets the ticket lifetime. Must be set at construction —
+// the issuer is immutable after creation (no race conditions).
+func WithTicketTTL(ttl time.Duration) IssuerOption {
+	return func(h *HMACIssuer) {
+		h.ticketTTL = ttl
+	}
 }
 
 // Issue creates `count` tickets, each worth `bytesPerTicket` bytes.
@@ -46,6 +58,9 @@ func (h *HMACIssuer) SetTicketTTL(ttl time.Duration) {
 func (h *HMACIssuer) Issue(paymentHash string, bytesPerTicket int64, count int) ([]*Ticket, error) {
 	if count <= 0 {
 		return nil, fmt.Errorf("count must be positive, got %d", count)
+	}
+	if count > MaxTicketsPerIssuance {
+		return nil, fmt.Errorf("count %d exceeds maximum %d", count, MaxTicketsPerIssuance)
 	}
 	if bytesPerTicket <= 0 {
 		return nil, fmt.Errorf("bytesPerTicket must be positive, got %d", bytesPerTicket)
@@ -92,25 +107,32 @@ type HMACVerifier struct {
 }
 
 // NewHMACVerifier creates a verifier with one or more keys.
+// All secrets are defensively copied.
 func NewHMACVerifier(keys map[string][]byte) *HMACVerifier {
 	copied := make(map[string][]byte, len(keys))
 	for k, v := range keys {
-		copied[k] = v
+		copied[k] = append([]byte(nil), v...) // defensive copy
 	}
 	return &HMACVerifier{keys: copied}
 }
 
 // AddKey registers a new key for verification (rotation support).
+// The secret is defensively copied.
 func (v *HMACVerifier) AddKey(keyID string, secret []byte) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	v.keys[keyID] = secret
+	v.keys[keyID] = append([]byte(nil), secret...) // defensive copy
 }
 
-// Verify checks that the ticket's MAC is valid and the ticket hasn't expired.
+// Verify checks structural validity, expiry, and MAC authenticity.
 func (v *HMACVerifier) Verify(ticket *Ticket) error {
-	// Check expiry first — no point verifying MAC on expired tickets.
-	if time.Now().Unix() > ticket.ExpiresAt {
+	// Structural validation first — catch garbage before any crypto.
+	if err := ticket.ValidateStructure(); err != nil {
+		return err
+	}
+
+	// Check expiry — >= means "at the exact second it expires, it's expired."
+	if time.Now().Unix() >= ticket.ExpiresAt {
 		return ErrExpiredTicket
 	}
 

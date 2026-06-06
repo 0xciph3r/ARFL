@@ -1,8 +1,10 @@
 package store
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -327,5 +329,186 @@ func TestOpenCreatesDirectory(t *testing.T) {
 
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		t.Fatal("database file should exist")
+	}
+}
+
+// --- Adversarial / schema enforcement tests ---
+
+func TestSchema_RejectsNegativeInvoiceAmount(t *testing.T) {
+	s := testStore(t)
+	err := s.InsertInvoice("hash1", "lnbc...", -500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	if err == nil {
+		t.Fatal("should reject negative invoice amount")
+	}
+}
+
+func TestSchema_RejectsZeroInvoiceAmount(t *testing.T) {
+	s := testStore(t)
+	err := s.InsertInvoice("hash1", "lnbc...", 0, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	if err == nil {
+		t.Fatal("should reject zero invoice amount")
+	}
+}
+
+func TestSchema_RejectsNegativeBytesAllowed(t *testing.T) {
+	s := testStore(t)
+	err := s.InsertInvoice("hash1", "lnbc...", 500, "1gb", -1,
+		time.Now().Add(time.Hour), "")
+	if err == nil {
+		t.Fatal("should reject negative bytes_allowed")
+	}
+}
+
+func TestSchema_RejectsNegativeTicketBytes(t *testing.T) {
+	s := testStore(t)
+	s.InsertInvoice("hash1", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	_, err := s.db.Exec(`INSERT INTO tickets (id, payment_hash, bytes_value, hmac) VALUES ('t1', 'hash1', -100, 'hmac')`)
+	if err == nil {
+		t.Fatal("should reject negative ticket bytes_value")
+	}
+}
+
+func TestSchema_RejectsInvalidInvoiceStatus(t *testing.T) {
+	s := testStore(t)
+	_, err := s.db.Exec(`INSERT INTO invoices (payment_hash, payment_request, amount_sats, tier, bytes_allowed, status, expires_at)
+		VALUES ('h1', 'lnbc', 500, '1gb', 1000000000, 'hacked', '2026-01-01T00:00:00Z')`)
+	if err == nil {
+		t.Fatal("should reject invalid invoice status")
+	}
+}
+
+func TestSchema_RejectsInvalidTicketStatus(t *testing.T) {
+	s := testStore(t)
+	s.InsertInvoice("hash1", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	_, err := s.db.Exec(`INSERT INTO tickets (id, payment_hash, bytes_value, hmac, status) VALUES ('t1', 'hash1', 100, 'h', 'forged')`)
+	if err == nil {
+		t.Fatal("should reject invalid ticket status")
+	}
+}
+
+func TestTrigger_InvoiceAmountImmutable(t *testing.T) {
+	s := testStore(t)
+	s.InsertInvoice("hash1", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+
+	_, err := s.db.Exec(`UPDATE invoices SET amount_sats = 9999 WHERE payment_hash = 'hash1'`)
+	if err == nil {
+		t.Fatal("should not allow changing invoice amount_sats")
+	}
+}
+
+func TestTrigger_InvoiceTierImmutable(t *testing.T) {
+	s := testStore(t)
+	s.InsertInvoice("hash1", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+
+	_, err := s.db.Exec(`UPDATE invoices SET tier = '50gb' WHERE payment_hash = 'hash1'`)
+	if err == nil {
+		t.Fatal("should not allow changing invoice tier")
+	}
+}
+
+func TestTrigger_TicketBytesImmutable(t *testing.T) {
+	s := testStore(t)
+	s.InsertInvoice("hash1", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	s.InsertTicket("t1", "hash1", 100_000_000, "hmac1")
+
+	_, err := s.db.Exec(`UPDATE tickets SET bytes_value = 999999999 WHERE id = 't1'`)
+	if err == nil {
+		t.Fatal("should not allow changing ticket bytes_value")
+	}
+}
+
+func TestTrigger_TicketHMACImmutable(t *testing.T) {
+	s := testStore(t)
+	s.InsertInvoice("hash1", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	s.InsertTicket("t1", "hash1", 100_000_000, "hmac1")
+
+	_, err := s.db.Exec(`UPDATE tickets SET hmac = 'forged' WHERE id = 't1'`)
+	if err == nil {
+		t.Fatal("should not allow changing ticket hmac")
+	}
+}
+
+func TestPayout_PaidCannotBeMarkedFailed(t *testing.T) {
+	// Once paid, a payout is final — cannot be reverted.
+	s := testStore(t)
+	s.InsertSettlementEntry("2026-06-06T00", "node1", 1_000_000_000, 2000, 1_000_000_000, 1_000_000_000, 10)
+
+	var entryID int64
+	s.db.QueryRow(`SELECT id FROM settlement_entries WHERE node_pubkey = 'node1'`).Scan(&entryID)
+	payoutID, _ := s.InsertPayout(entryID, "node1", 2000)
+	s.MarkPayoutPaid(payoutID, "hash_paid")
+
+	// Attempting to mark as failed should have no effect.
+	err := s.MarkPayoutFailed(payoutID, "too late")
+	// Even if no error, the status should remain 'paid'.
+	var status string
+	s.db.QueryRow(`SELECT status FROM payouts WHERE id = ?`, payoutID).Scan(&status)
+	if status != "paid" {
+		t.Fatalf("paid payout should not be changeable, got status: %s (err: %v)", status, err)
+	}
+}
+
+func TestConcurrent_TicketRedemption(t *testing.T) {
+	// Invariant 4: A ticket can only be redeemed once.
+	// Under concurrency, exactly one goroutine should succeed.
+	s := testStore(t)
+	s.InsertInvoice("hash1", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	s.InsertTicket("t1", "hash1", 100_000_000, "hmac1")
+
+	var wg sync.WaitGroup
+	var successCount int64
+	var mu sync.Mutex
+
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(nodeID string) {
+			defer wg.Done()
+			err := s.RedeemTicket("t1", nodeID)
+			if err == nil {
+				mu.Lock()
+				successCount++
+				mu.Unlock()
+			}
+		}(fmt.Sprintf("node-%d", i))
+	}
+	wg.Wait()
+
+	if successCount != 1 {
+		t.Fatalf("exactly 1 goroutine should redeem, got %d", successCount)
+	}
+}
+
+func TestSchema_RejectsZeroPayout(t *testing.T) {
+	s := testStore(t)
+	s.InsertSettlementEntry("2026-06-06T00", "node1", 1_000_000_000, 2000, 1_000_000_000, 1_000_000_000, 10)
+
+	var entryID int64
+	s.db.QueryRow(`SELECT id FROM settlement_entries WHERE node_pubkey = 'node1'`).Scan(&entryID)
+
+	_, err := s.InsertPayout(entryID, "node1", 0)
+	if err == nil {
+		t.Fatal("should reject zero-amount payout")
+	}
+}
+
+func TestSchema_RejectsNegativePayout(t *testing.T) {
+	s := testStore(t)
+	s.InsertSettlementEntry("2026-06-06T00", "node1", 1_000_000_000, 2000, 1_000_000_000, 1_000_000_000, 10)
+
+	var entryID int64
+	s.db.QueryRow(`SELECT id FROM settlement_entries WHERE node_pubkey = 'node1'`).Scan(&entryID)
+
+	_, err := s.InsertPayout(entryID, "node1", -100)
+	if err == nil {
+		t.Fatal("should reject negative-amount payout")
 	}
 }

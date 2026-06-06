@@ -9,18 +9,22 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 
 	"github.com/Radi-Labs/ARFL/internal/config"
+	"github.com/Radi-Labs/ARFL/internal/discovery"
 	"github.com/Radi-Labs/ARFL/internal/wg"
 	"github.com/Radi-Labs/ARFL/pkg/protocol"
 	"golang.org/x/term"
 )
 
 func main() {
-	sessionPath := flag.String("session", "session.json", "path to session config file")
+	sessionPath := flag.String("session", "", "path to session config file (Phase 1 static mode)")
 	keyFile := flag.String("key", "client.key", "path to client WireGuard key file")
 	genKey := flag.Bool("genkey", false, "generate a new WireGuard keypair and exit")
+	discoverFlag := flag.String("discover", "", "hub URL for dynamic node discovery (Phase 2)")
+	hubPubkeys := flag.String("hub-pubkeys", "", "comma-separated trusted hub pubkeys for verification")
 	flag.Parse()
 
 	if *genKey {
@@ -53,10 +57,45 @@ func main() {
 	}
 	log.Printf("[client] public key: %s", kp.PublicKey)
 
-	// Load session config
-	session, err := config.LoadSessionFile(*sessionPath)
-	if err != nil {
-		log.Fatalf("load session: %v", err)
+	// Resolve session: either static file (Phase 1) or dynamic discovery (Phase 2).
+	var session *config.SessionFile
+
+	if *discoverFlag != "" {
+		// Phase 2: Dynamic discovery via hub API.
+		if *hubPubkeys == "" {
+			log.Fatalf("--hub-pubkeys required when using --discover")
+		}
+		trustedPubkeys := strings.Split(*hubPubkeys, ",")
+		log.Printf("[client] discovering nodes from %s...", *discoverFlag)
+
+		selector := discovery.NewNodeSelector(*discoverFlag, trustedPubkeys)
+		pair, err := selector.SelectPair()
+		if err != nil {
+			log.Fatalf("node discovery failed: %v", err)
+		}
+
+		log.Printf("[client] selected entry: %s (operator=%s)",
+			pair.Entry.Info.Endpoint, pair.Entry.Attestation.OperatorID)
+		log.Printf("[client] selected exit:  %s (operator=%s)",
+			pair.Exit.Info.Endpoint, pair.Exit.Attestation.OperatorID)
+
+		// Convert discovered nodes to a SessionFile for the existing tunnel setup code.
+		session = &config.SessionFile{
+			EntryEndpoint: pair.Entry.Info.Endpoint,
+			EntryWGPubkey: pair.Entry.Info.WGPubkey,
+			ExitEndpoint:  pair.Exit.Info.Endpoint,
+			ExitWGPubkey:  pair.Exit.Info.WGPubkey,
+			OuterTunnelIP: "10.100.0.2/24",
+			InnerTunnelIP: "10.200.0.2/24",
+		}
+	} else if *sessionPath != "" {
+		// Phase 1: Static session file.
+		session, err = config.LoadSessionFile(*sessionPath)
+		if err != nil {
+			log.Fatalf("load session: %v", err)
+		}
+	} else {
+		log.Fatalf("provide either --session <file> or --discover <hub-url>")
 	}
 
 	// Create WireGuard manager

@@ -1079,3 +1079,72 @@ identical. If Phase 4 requires changes downstream, the abstraction failed.
 **Defend it as:** "We drew the line at issuance and verification. Everything
 downstream — redemption, settlement, payouts — is phase-agnostic. The
 blind signature migration is a surgical swap, not a rewrite."
+
+## Decision 37: Length-prefixed payload for usage report signatures
+
+**Date:** 2026-06-06
+**Phase:** Phase 3
+
+**Challenge:** Simple delimiter-joined payloads (e.g. `a|b|c`) are ambiguous
+when field values contain the delimiter. An attacker could craft two different
+report structs that produce identical payloads.
+
+**Decision:** Use length-prefixed fields: `"7:sess-01"` — each field's byte
+length is prepended, making the encoding unambiguous regardless of content.
+
+**Defend it as:** "Length-prefixed encoding is injection-proof by construction.
+No field content can ever collide with another field's encoding, even if it
+contains pipe characters, nulls, or any other byte."
+
+## Decision 38: Domain-separated usage report signatures
+
+**Date:** 2026-06-06
+**Phase:** Phase 3
+
+**Challenge:** The same BIP-340 Schnorr key signs Nostr events, usage reports,
+and potentially other messages. Without domain separation, a valid signature
+on one message type could be replayed as another (cross-protocol attack).
+
+**Decision:** Prefix the usage report payload with `ARFL_USAGE_REPORT_V1`.
+Full signed payload: `ARFL_USAGE_REPORT_V1|7:sess-01|...`
+
+**STRIDE mapping:** Spoofing — prevents cross-protocol signature replay.
+
+**Defend it as:** "A Nostr event signature can never be mistaken for a usage
+report signature, and vice versa. The domain prefix makes them cryptographically
+incompatible. The version suffix (V1) allows future format upgrades."
+
+## Decision 39: Broadcast subscriber model for Lightning mock
+
+**Date:** 2026-06-06
+**Phase:** Phase 3
+
+**Challenge:** Using a single shared channel for all subscribers means they
+compete for events instead of each receiving every settlement. This hides
+bugs in settlement flows that depend on multiple consumers.
+
+**Decision:** Track subscribers in a `map[chan *Invoice]struct{}`. Settlement
+broadcasts a copy to every registered channel. Channels are cleaned up on
+context cancellation.
+
+**Defend it as:** "Real LND broadcasts to all gRPC subscribers. Our mock
+mirrors that behavior — every subscriber independently receives every
+settlement notification. This catches bugs where multiple settlement
+consumers accidentally interfere with each other."
+
+## Decision 40: SignRaw/VerifyRaw for non-Nostr BIP-340 signatures
+
+**Date:** 2026-06-06
+**Phase:** Phase 3
+
+**Challenge:** Nostr events have a specific signing flow (compute ID → sign ID).
+Usage reports and other protocol messages need BIP-340 signatures on arbitrary
+payloads, not Nostr event IDs.
+
+**Decision:** Added `SignRaw(kp, message)` and `VerifyRaw(pubkeyHex, message,
+sig)` to the nostr package. These hash the message with SHA-256 before signing
+(BIP-340 requires 32-byte input). Reuses the same btcec/v2 Schnorr primitives.
+
+**Defend it as:** "Same key, same algorithm, different signing contexts. Nostr
+events sign their computed ID. Usage reports sign their length-prefixed payload.
+Domain separation ensures they can't cross-contaminate."

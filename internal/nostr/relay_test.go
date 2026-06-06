@@ -364,3 +364,73 @@ func TestRelayPool_PublishToDisconnectedRelay(t *testing.T) {
 		t.Errorf("expected 1 accepting relay, got %d", accepted)
 	}
 }
+
+func TestRelayPool_ImmediateCloseNoPanic(t *testing.T) {
+	// Regression: close() racing with readLoop startup must not panic.
+	// Reproduces the CI nil-pointer crash by connecting and immediately closing
+	// many times under the race detector.
+	for i := 0; i < 50; i++ {
+		mr := newMockRelay()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		pool := NewRelayPool([]string{mr.wsURL()})
+
+		if err := pool.Connect(ctx); err != nil {
+			cancel()
+			mr.close()
+			t.Fatalf("iteration %d: Connect: %v", i, err)
+		}
+
+		// Immediately close — exercises the race window.
+		pool.Close()
+		cancel()
+		mr.close()
+	}
+}
+
+func TestRelayPool_ShortOKEventID(t *testing.T) {
+	// STRIDE: Tampering — relay sends an OK with a short event ID.
+	// Must not panic on eventID[:8].
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+		ctx := r.Context()
+
+		// Wait for an EVENT, then send OK with a short ID.
+		_, _, err = conn.Read(ctx)
+		if err != nil {
+			return
+		}
+		conn.Write(ctx, websocket.MessageText, []byte(`["OK","bad",false,"rejected"]`))
+
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	pool := NewRelayPool([]string{wsURL})
+	if err := pool.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer pool.Close()
+
+	kp, _ := GenerateKeyPair()
+	event := &Event{
+		CreatedAt: time.Now().Unix(),
+		Kind:      1,
+		Tags:      Tags{},
+		Content:   "test",
+	}
+	event.Sign(kp)
+
+	pool.Publish(ctx, event)
+
+	// Give time for the short-ID OK to be processed without panicking.
+	time.Sleep(300 * time.Millisecond)
+}

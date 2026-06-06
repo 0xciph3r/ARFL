@@ -229,7 +229,13 @@ func (r *Relay) send(ctx context.Context, msg []byte) error {
 func (r *Relay) readLoop(conn *websocket.Conn, ctx context.Context) {
 	defer func() {
 		r.mu.Lock()
-		r.connected = false
+		// Only update state if this goroutine still owns the active connection.
+		// Without this check, a stale readLoop from a previous connection could
+		// mark a freshly-reconnected relay as disconnected.
+		if r.conn == conn {
+			r.connected = false
+			r.conn = nil
+		}
 		r.mu.Unlock()
 	}()
 
@@ -304,7 +310,7 @@ func (r *Relay) handleMessage(data []byte) {
 			if !success {
 				var reason string
 				json.Unmarshal(msg[3], &reason)
-				log.Printf("[relay] event %s rejected by %s: %s", eventID[:8], r.URL, reason)
+				log.Printf("[relay] event %s rejected by %s: %s", truncateID(eventID), r.URL, reason)
 			}
 		}
 
@@ -315,6 +321,15 @@ func (r *Relay) handleMessage(data []byte) {
 			log.Printf("[relay] NOTICE from %s: %s", r.URL, notice)
 		}
 	}
+}
+
+// truncateID safely shortens an event ID for logging.
+// Prevents panics from malicious relays sending short IDs.
+func truncateID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 func (r *Relay) close() {

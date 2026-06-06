@@ -16,6 +16,29 @@ type NodeConfig struct {
 	OutInterface string `json:"out_interface"` // Internet-facing interface, e.g. "eth0"
 	AdminAddr    string `json:"admin_addr"`    // Admin API listen address, e.g. "127.0.0.1:9090"
 	MTU          int    `json:"mtu"`           // Tunnel MTU (default 1280)
+
+	// Phase 2: Nostr discovery
+	NostrPrivkey    string   `json:"nostr_privkey"` // Hex-encoded Nostr private key
+	HubPubkey       string   `json:"hub_pubkey"`    // Hub's Nostr pubkey (who we register with)
+	AttestationJSON string   `json:"attestation"`   // JSON-encoded hub attestation
+	Relays          []string `json:"relays"`        // Nostr relay URLs to publish to
+	Endpoint        string   `json:"endpoint"`      // Public endpoint for node discovery (ip:port)
+	UploadMbps      int      `json:"upload_mbps"`   // Advertised upload speed
+	DownloadMbps    int      `json:"download_mbps"` // Advertised download speed
+	Capacity        int      `json:"capacity"`      // Max concurrent peers
+}
+
+// HubConfig holds configuration for an ARFL hub daemon.
+type HubConfig struct {
+	NostrPrivkey string   `json:"nostr_privkey"` // Hub's Nostr private key (hex)
+	ListenAddr   string   `json:"listen_addr"`   // Discovery API listen address
+	Relays       []string `json:"relays"`        // Nostr relay URLs to subscribe to
+}
+
+// ClientConfig holds configuration for the ARFL client.
+type ClientConfig struct {
+	HubURL     string   `json:"hub_url"`     // Hub discovery API URL
+	HubPubkeys []string `json:"hub_pubkeys"` // Trusted hub pubkeys for verification
 }
 
 // SessionFile is the static session config read by the client in Phase 1.
@@ -31,6 +54,14 @@ type SessionFile struct {
 
 func LoadNodeConfig(path string) (*NodeConfig, error) {
 	return loadJSON[NodeConfig](path)
+}
+
+func LoadHubConfig(path string) (*HubConfig, error) {
+	return loadJSON[HubConfig](path)
+}
+
+func LoadClientConfig(path string) (*ClientConfig, error) {
+	return loadJSON[ClientConfig](path)
 }
 
 func LoadSessionFile(path string) (*SessionFile, error) {

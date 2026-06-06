@@ -53,7 +53,44 @@ type Verifier interface {
 
 // Common errors returned by Verifier implementations.
 var (
-	ErrInvalidMAC   = fmt.Errorf("ticket MAC is invalid")
+	ErrInvalidMAC    = fmt.Errorf("ticket MAC is invalid")
 	ErrExpiredTicket = fmt.Errorf("ticket has expired")
-	ErrUnknownKeyID = fmt.Errorf("ticket key_id is not recognized")
+	ErrUnknownKeyID  = fmt.Errorf("ticket key_id is not recognized")
+	ErrInvalidTicket = fmt.Errorf("ticket is structurally invalid")
 )
+
+// MaxTicketsPerIssuance is the upper bound on tickets created in one call.
+// Prevents memory exhaustion from malformed tier configs or API abuse.
+const MaxTicketsPerIssuance = 1000
+
+// ValidateStructure checks a ticket's fields for structural validity
+// before any cryptographic verification. This catches garbage tickets early
+// and ensures that even if a key is compromised, structurally invalid
+// tickets are still rejected.
+func (t *Ticket) ValidateStructure() error {
+	if t == nil {
+		return ErrInvalidTicket
+	}
+	if t.ID == "" {
+		return fmt.Errorf("%w: empty ID", ErrInvalidTicket)
+	}
+	if t.KeyID == "" {
+		return fmt.Errorf("%w: empty KeyID", ErrInvalidTicket)
+	}
+	if t.Bytes <= 0 {
+		return fmt.Errorf("%w: non-positive Bytes %d", ErrInvalidTicket, t.Bytes)
+	}
+	if t.IssuedAt <= 0 {
+		return fmt.Errorf("%w: non-positive IssuedAt", ErrInvalidTicket)
+	}
+	if t.ExpiresAt <= t.IssuedAt {
+		return fmt.Errorf("%w: ExpiresAt must be after IssuedAt", ErrInvalidTicket)
+	}
+	if t.MAC == "" {
+		return fmt.Errorf("%w: empty MAC", ErrInvalidTicket)
+	}
+	if len(t.MAC) != 64 {
+		return fmt.Errorf("%w: MAC must be 64 hex chars, got %d", ErrInvalidTicket, len(t.MAC))
+	}
+	return nil
+}

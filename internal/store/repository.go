@@ -142,6 +142,29 @@ func (s *Store) CountTicketsByPaymentHash(paymentHash string) (int, error) {
 	return count, err
 }
 
+// GetTicketsByPaymentHash returns all tickets issued for a given invoice.
+func (s *Store) GetTicketsByPaymentHash(paymentHash string) ([]TicketRecord, error) {
+	rows, err := s.db.Query(`
+		SELECT id, payment_hash, bytes_value, hmac, status, issued_at, redeemed_at, redeemed_by
+		FROM tickets WHERE payment_hash = ?
+		ORDER BY issued_at`, paymentHash)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tickets []TicketRecord
+	for rows.Next() {
+		var t TicketRecord
+		if err := rows.Scan(&t.ID, &t.PaymentHash, &t.BytesValue, &t.HMAC,
+			&t.Status, &t.IssuedAt, &t.RedeemedAt, &t.RedeemedBy); err != nil {
+			return nil, err
+		}
+		tickets = append(tickets, t)
+	}
+	return tickets, rows.Err()
+}
+
 // --- Usage report operations (insert-only) ---
 
 // InsertUsageReport appends a signed usage report from a node.

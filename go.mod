@@ -4,6 +4,7 @@ go 1.26.3
 
 require (
 	github.com/btcsuite/btcd/btcec/v2 v2.5.0
+	github.com/mattn/go-sqlite3 v1.14.45
 	golang.org/x/crypto v0.52.0
 	golang.org/x/term v0.43.0
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10

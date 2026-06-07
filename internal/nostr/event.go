@@ -211,3 +211,42 @@ func (e *Event) GetTagValues(key string) []string {
 	}
 	return values
 }
+
+// SignRaw signs an arbitrary message with a keypair using BIP-340 Schnorr.
+// The message is SHA-256 hashed before signing (BIP-340 expects 32-byte input).
+// Used for signing non-Nostr data like usage reports.
+func SignRaw(kp *KeyPair, message []byte) ([]byte, error) {
+	hash := sha256.Sum256(message)
+	sig, err := schnorr.Sign(kp.PrivateKey, hash[:])
+	if err != nil {
+		return nil, fmt.Errorf("schnorr sign: %w", err)
+	}
+	return sig.Serialize(), nil
+}
+
+// VerifyRaw verifies a BIP-340 Schnorr signature on an arbitrary message.
+// pubkeyHex is the 64-char hex x-only public key.
+func VerifyRaw(pubkeyHex string, message []byte, sigBytes []byte) error {
+	pubBytes, err := hex.DecodeString(pubkeyHex)
+	if err != nil {
+		return fmt.Errorf("decode pubkey: %w", err)
+	}
+	if len(pubBytes) != 32 {
+		return fmt.Errorf("pubkey must be 32 bytes, got %d", len(pubBytes))
+	}
+	pubKey, err := schnorr.ParsePubKey(pubBytes)
+	if err != nil {
+		return fmt.Errorf("parse pubkey: %w", err)
+	}
+
+	sig, err := schnorr.ParseSignature(sigBytes)
+	if err != nil {
+		return fmt.Errorf("parse signature: %w", err)
+	}
+
+	hash := sha256.Sum256(message)
+	if !sig.Verify(hash[:], pubKey) {
+		return fmt.Errorf("invalid signature")
+	}
+	return nil
+}

@@ -154,6 +154,7 @@ func (api *PurchaseAPI) handlePurchase(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req PurchaseRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1024) // 1KB limit — tier_id only.
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
@@ -253,6 +254,7 @@ func (api *PurchaseAPI) handleReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req ReportRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 4096) // 4KB limit — signed report payload.
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return

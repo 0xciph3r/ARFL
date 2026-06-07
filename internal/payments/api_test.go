@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -63,16 +64,33 @@ func setupTestEnv(t *testing.T) *testEnv {
 	}
 }
 
+// httpPost is a test helper that fatals on network error.
+func httpPost(t *testing.T, url, contentType string, body io.Reader) *http.Response {
+	t.Helper()
+	resp, err := http.Post(url, contentType, body)
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	return resp
+}
+
+// httpGet is a test helper that fatals on network error.
+func httpGet(t *testing.T, url string) *http.Response {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	return resp
+}
+
 // --- POST /purchase ---
 
 func TestPurchase_Success(t *testing.T) {
 	env := setupTestEnv(t)
 
 	body := `{"tier_id": "1gb"}`
-	resp, err := http.Post(env.server.URL+"/purchase", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST /purchase: %v", err)
-	}
+	resp := httpPost(t, env.server.URL+"/purchase", "application/json", strings.NewReader(body))
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
@@ -110,7 +128,7 @@ func TestPurchase_AllTiers(t *testing.T) {
 
 	for _, tier := range tiers {
 		body := fmt.Sprintf(`{"tier_id": "%s"}`, tier.id)
-		resp, _ := http.Post(env.server.URL+"/purchase", "application/json", strings.NewReader(body))
+		resp := httpPost(t, env.server.URL+"/purchase", "application/json", strings.NewReader(body))
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusCreated {
@@ -130,7 +148,7 @@ func TestPurchase_UnknownTier(t *testing.T) {
 	env := setupTestEnv(t)
 
 	body := `{"tier_id": "999tb"}`
-	resp, _ := http.Post(env.server.URL+"/purchase", "application/json", strings.NewReader(body))
+	resp := httpPost(t, env.server.URL+"/purchase", "application/json", strings.NewReader(body))
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {
@@ -141,7 +159,7 @@ func TestPurchase_UnknownTier(t *testing.T) {
 func TestPurchase_InvalidJSON(t *testing.T) {
 	env := setupTestEnv(t)
 
-	resp, _ := http.Post(env.server.URL+"/purchase", "application/json", strings.NewReader("{bad"))
+	resp := httpPost(t, env.server.URL+"/purchase", "application/json", strings.NewReader("{bad"))
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {
@@ -152,7 +170,7 @@ func TestPurchase_InvalidJSON(t *testing.T) {
 func TestPurchase_WrongMethod(t *testing.T) {
 	env := setupTestEnv(t)
 
-	resp, _ := http.Get(env.server.URL + "/purchase")
+	resp := httpGet(t, env.server.URL+"/purchase")
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusMethodNotAllowed {
@@ -165,7 +183,7 @@ func TestPurchase_LNDDown(t *testing.T) {
 	env.mock.CreateInvoiceErr = fmt.Errorf("lnd: connection refused")
 
 	body := `{"tier_id": "1gb"}`
-	resp, _ := http.Post(env.server.URL+"/purchase", "application/json", strings.NewReader(body))
+	resp := httpPost(t, env.server.URL+"/purchase", "application/json", strings.NewReader(body))
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusInternalServerError {
@@ -180,13 +198,13 @@ func TestPurchaseStatus_Open(t *testing.T) {
 
 	// Create a purchase.
 	body := `{"tier_id": "1gb"}`
-	resp, _ := http.Post(env.server.URL+"/purchase", "application/json", strings.NewReader(body))
+	resp := httpPost(t, env.server.URL+"/purchase", "application/json", strings.NewReader(body))
 	var purchase PurchaseResponse
 	json.NewDecoder(resp.Body).Decode(&purchase)
 	resp.Body.Close()
 
 	// Poll status — should be open.
-	resp, _ = http.Get(env.server.URL + "/purchase/" + purchase.PaymentHash)
+	resp = httpGet(t, env.server.URL+"/purchase/"+purchase.PaymentHash)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -209,7 +227,7 @@ func TestPurchaseStatus_Settled_DeliversTickets(t *testing.T) {
 
 	// Create and pay.
 	body := `{"tier_id": "1gb"}`
-	resp, _ := http.Post(env.server.URL+"/purchase", "application/json", strings.NewReader(body))
+	resp := httpPost(t, env.server.URL+"/purchase", "application/json", strings.NewReader(body))
 	var purchase PurchaseResponse
 	json.NewDecoder(resp.Body).Decode(&purchase)
 	resp.Body.Close()
@@ -220,7 +238,7 @@ func TestPurchaseStatus_Settled_DeliversTickets(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Poll status — should be settled with tickets.
-	resp, _ = http.Get(env.server.URL + "/purchase/" + purchase.PaymentHash)
+	resp = httpGet(t, env.server.URL+"/purchase/"+purchase.PaymentHash)
 	defer resp.Body.Close()
 
 	var status PurchaseStatusResponse
@@ -248,7 +266,7 @@ func TestPurchaseStatus_Settled_DeliversTickets(t *testing.T) {
 func TestPurchaseStatus_NotFound(t *testing.T) {
 	env := setupTestEnv(t)
 
-	resp, _ := http.Get(env.server.URL + "/purchase/nonexistent")
+	resp := httpGet(t, env.server.URL+"/purchase/nonexistent")
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNotFound {
@@ -259,7 +277,7 @@ func TestPurchaseStatus_NotFound(t *testing.T) {
 func TestPurchaseStatus_MissingHash(t *testing.T) {
 	env := setupTestEnv(t)
 
-	resp, _ := http.Get(env.server.URL + "/purchase/")
+	resp := httpGet(t, env.server.URL+"/purchase/")
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {
@@ -270,7 +288,7 @@ func TestPurchaseStatus_MissingHash(t *testing.T) {
 func TestPurchaseStatus_WrongMethod(t *testing.T) {
 	env := setupTestEnv(t)
 
-	resp, _ := http.Post(env.server.URL+"/purchase/abc", "application/json", nil)
+	resp := httpPost(t, env.server.URL+"/purchase/abc", "application/json", nil)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusMethodNotAllowed {
@@ -284,7 +302,7 @@ func TestSettlement_Idempotent_NoDoubleTickets(t *testing.T) {
 	env := setupTestEnv(t)
 
 	body := `{"tier_id": "1gb"}`
-	resp, _ := http.Post(env.server.URL+"/purchase", "application/json", strings.NewReader(body))
+	resp := httpPost(t, env.server.URL+"/purchase", "application/json", strings.NewReader(body))
 	var purchase PurchaseResponse
 	json.NewDecoder(resp.Body).Decode(&purchase)
 	resp.Body.Close()
@@ -321,7 +339,7 @@ func TestReport_ValidSignature(t *testing.T) {
 
 	// Create a purchase and settle it so we have a real ticket_id.
 	body := `{"tier_id": "1gb"}`
-	resp, _ := http.Post(env.server.URL+"/purchase", "application/json", strings.NewReader(body))
+	resp := httpPost(t, env.server.URL+"/purchase", "application/json", strings.NewReader(body))
 	var purchase PurchaseResponse
 	json.NewDecoder(resp.Body).Decode(&purchase)
 	resp.Body.Close()
@@ -330,7 +348,7 @@ func TestReport_ValidSignature(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Get the actual ticket IDs.
-	resp, _ = http.Get(env.server.URL + "/purchase/" + purchase.PaymentHash)
+	resp = httpGet(t, env.server.URL+"/purchase/"+purchase.PaymentHash)
 	var status PurchaseStatusResponse
 	json.NewDecoder(resp.Body).Decode(&status)
 	resp.Body.Close()
@@ -361,7 +379,7 @@ func TestReport_ValidSignature(t *testing.T) {
 	}
 
 	b, _ := json.Marshal(reqBody)
-	resp, _ = http.Post(env.server.URL+"/report", "application/json", bytes.NewReader(b))
+	resp = httpPost(t, env.server.URL+"/report", "application/json", bytes.NewReader(b))
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusAccepted {
@@ -379,12 +397,12 @@ func TestReport_InvalidSignature(t *testing.T) {
 		NodeRole:      "entry",
 		BytesReported: 50_000_000,
 		ReportedAt:    time.Now().UTC().Format(time.RFC3339),
-		Signature:     "0000000000000000000000000000000000000000000000000000000000000000" +
+		Signature: "0000000000000000000000000000000000000000000000000000000000000000" +
 			"0000000000000000000000000000000000000000000000000000000000000000",
 	}
 
 	b, _ := json.Marshal(reqBody)
-	resp, _ := http.Post(env.server.URL+"/report", "application/json", bytes.NewReader(b))
+	resp := httpPost(t, env.server.URL+"/report", "application/json", bytes.NewReader(b))
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {
@@ -406,7 +424,7 @@ func TestReport_MissingFields(t *testing.T) {
 	}
 
 	b, _ := json.Marshal(reqBody)
-	resp, _ := http.Post(env.server.URL+"/report", "application/json", bytes.NewReader(b))
+	resp := httpPost(t, env.server.URL+"/report", "application/json", bytes.NewReader(b))
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {
@@ -417,7 +435,7 @@ func TestReport_MissingFields(t *testing.T) {
 func TestReport_InvalidJSON(t *testing.T) {
 	env := setupTestEnv(t)
 
-	resp, _ := http.Post(env.server.URL+"/report", "application/json", strings.NewReader("{bad"))
+	resp := httpPost(t, env.server.URL+"/report", "application/json", strings.NewReader("{bad"))
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {
@@ -428,7 +446,7 @@ func TestReport_InvalidJSON(t *testing.T) {
 func TestReport_WrongMethod(t *testing.T) {
 	env := setupTestEnv(t)
 
-	resp, _ := http.Get(env.server.URL + "/report")
+	resp := httpGet(t, env.server.URL+"/report")
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusMethodNotAllowed {
@@ -444,7 +462,7 @@ func TestPurchase_RateLimit(t *testing.T) {
 	body := `{"tier_id": "1gb"}`
 	// Exhaust the 10-per-minute rate limit.
 	for i := 0; i < 10; i++ {
-		resp, _ := http.Post(env.server.URL+"/purchase", "application/json", strings.NewReader(body))
+		resp := httpPost(t, env.server.URL+"/purchase", "application/json", strings.NewReader(body))
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("request %d: expected 201, got %d", i+1, resp.StatusCode)
@@ -452,7 +470,7 @@ func TestPurchase_RateLimit(t *testing.T) {
 	}
 
 	// 11th request should be rate-limited.
-	resp, _ := http.Post(env.server.URL+"/purchase", "application/json", strings.NewReader(body))
+	resp := httpPost(t, env.server.URL+"/purchase", "application/json", strings.NewReader(body))
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusTooManyRequests {
@@ -467,7 +485,7 @@ func TestFullLifecycle_PurchasePayPollGetTickets(t *testing.T) {
 
 	// Step 1: Purchase.
 	body := `{"tier_id": "10gb"}`
-	resp, _ := http.Post(env.server.URL+"/purchase", "application/json", strings.NewReader(body))
+	resp := httpPost(t, env.server.URL+"/purchase", "application/json", strings.NewReader(body))
 	var purchase PurchaseResponse
 	json.NewDecoder(resp.Body).Decode(&purchase)
 	resp.Body.Close()
@@ -477,7 +495,7 @@ func TestFullLifecycle_PurchasePayPollGetTickets(t *testing.T) {
 	}
 
 	// Step 2: Check open.
-	resp, _ = http.Get(env.server.URL + "/purchase/" + purchase.PaymentHash)
+	resp = httpGet(t, env.server.URL+"/purchase/"+purchase.PaymentHash)
 	var status PurchaseStatusResponse
 	json.NewDecoder(resp.Body).Decode(&status)
 	resp.Body.Close()
@@ -490,7 +508,7 @@ func TestFullLifecycle_PurchasePayPollGetTickets(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Step 4: Check settled + tickets.
-	resp, _ = http.Get(env.server.URL + "/purchase/" + purchase.PaymentHash)
+	resp = httpGet(t, env.server.URL+"/purchase/"+purchase.PaymentHash)
 	json.NewDecoder(resp.Body).Decode(&status)
 	resp.Body.Close()
 

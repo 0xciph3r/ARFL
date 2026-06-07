@@ -168,7 +168,7 @@ END;
 
 -- ============================================================
 -- PAYOUTS: Lightning payments made to nodes
--- State machine: pending → paid | failed → retrying → paid | failed
+-- State machine: pending → in_flight → paid | failed → retrying → in_flight → paid | failed
 -- ============================================================
 CREATE TABLE IF NOT EXISTS payouts (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,7 +176,7 @@ CREATE TABLE IF NOT EXISTS payouts (
     node_pubkey         TEXT    NOT NULL,
     amount_sats         INTEGER NOT NULL CHECK (amount_sats > 0),
     status              TEXT    NOT NULL DEFAULT 'pending'
-                        CHECK (status IN ('pending', 'paid', 'failed', 'retrying')),
+                        CHECK (status IN ('pending', 'in_flight', 'paid', 'failed', 'retrying')),
     payment_hash        TEXT,
     attempt_count       INTEGER NOT NULL DEFAULT 0,
     last_error          TEXT,

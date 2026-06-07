@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Radi-Labs/ARFL/internal/credentials"
 	"github.com/Radi-Labs/ARFL/internal/lightning"
 	"github.com/Radi-Labs/ARFL/internal/nostr"
 	"github.com/Radi-Labs/ARFL/internal/store"
@@ -393,5 +394,165 @@ func TestSettlement_EmptyPeriod(t *testing.T) {
 	}
 	if result.PayoutsSent != 0 {
 		t.Errorf("expected 0, got %d", result.PayoutsSent)
+	}
+}
+
+// --- STRIDE: Settlement engine threat tests ---
+
+func TestSTRIDE_PaymentInFlight_LeavesPayoutInFlight(t *testing.T) {
+	// STRIDE/Tampering: if Keysend returns PaymentInFlight (still routing),
+	// the payout must remain in in_flight state. Marking it as failed would
+	// allow a retry that double-pays the node.
+	env := setupSettlementEnv(t)
+	env.mock.KeysendResult = &lightning.PaymentResult{
+		Status: lightning.PaymentInFlight,
+	}
+	start, end := periodBounds()
+
+	env.seedSession(t, "sess-1", "ticket-1", 50_000_000, 50_000_000)
+
+	result, _ := env.engine.RunSettlement(context.Background(), start, end)
+
+	// Payouts should be "sent" but none succeeded or failed in the
+	// traditional sense — they're stuck in in_flight.
+	if result.PayoutsSent != 2 {
+		t.Errorf("expected 2 payouts sent, got %d", result.PayoutsSent)
+	}
+	if result.PayoutsSucceeded != 0 {
+		t.Errorf("expected 0 succeeded (in-flight), got %d", result.PayoutsSucceeded)
+	}
+
+	// Verify the payouts are still in in_flight state (not failed).
+	var inFlightCount int
+	env.store.DB().QueryRow(`SELECT COUNT(*) FROM payouts WHERE status = 'in_flight'`).Scan(&inFlightCount)
+	if inFlightCount != 2 {
+		t.Fatalf("expected 2 payouts in in_flight state, got %d", inFlightCount)
+	}
+
+	// Verify they are NOT retryable (in_flight ≠ failed).
+	retryable, _ := env.store.GetRetryablePayouts()
+	if len(retryable) != 0 {
+		t.Fatalf("in-flight payouts should not be retryable, got %d", len(retryable))
+	}
+}
+
+func TestSTRIDE_CrashAfterSettle_TicketsStillIssued(t *testing.T) {
+	// STRIDE/DoS: simulate crash between SettleInvoice and ticket issuance.
+	// On restart, onInvoiceSettled must issue the missing tickets.
+	env := setupSettlementEnv(t)
+
+	// Create invoice and settle it directly in the DB (simulating crash
+	// after settle but before ticket issuance).
+	env.store.InsertInvoice("hash-crash", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	env.store.SettleInvoice("hash-crash")
+
+	// No tickets exist yet (crash happened before issuance).
+	count, _ := env.store.CountTicketsByPaymentHash("hash-crash")
+	if count != 0 {
+		t.Fatalf("expected 0 tickets before recovery, got %d", count)
+	}
+
+	// Now simulate the settlement event firing again on restart.
+	// Need a PurchaseAPI with an issuer to call onInvoiceSettled.
+	secret := []byte("test-secret-key-for-hmac-32bytes!")
+	issuer := credentials.NewHMACIssuer("key-1", secret)
+	api := NewPurchaseAPI(env.store, env.mock, issuer)
+
+	inv := &lightning.Invoice{
+		PaymentHash: "hash-crash",
+		Status:      lightning.InvoiceSettled,
+	}
+	err := api.onInvoiceSettled(inv)
+	if err != nil {
+		t.Fatalf("crash-recovery settlement should succeed: %v", err)
+	}
+
+	// Tickets should now exist.
+	count, _ = env.store.CountTicketsByPaymentHash("hash-crash")
+	if count != 10 {
+		t.Fatalf("expected 10 tickets after recovery, got %d", count)
+	}
+}
+
+func TestSTRIDE_DoubleSettlement_NoDoubleTickets(t *testing.T) {
+	// STRIDE/Tampering: LND delivers the same settlement event twice.
+	// Tickets must be issued exactly once.
+	env := setupSettlementEnv(t)
+
+	secret := []byte("test-secret-key-for-hmac-32bytes!")
+	issuer := credentials.NewHMACIssuer("key-1", secret)
+	api := NewPurchaseAPI(env.store, env.mock, issuer)
+
+	env.store.InsertInvoice("hash-dup", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+
+	inv := &lightning.Invoice{
+		PaymentHash: "hash-dup",
+		Status:      lightning.InvoiceSettled,
+	}
+
+	// First call issues tickets.
+	if err := api.onInvoiceSettled(inv); err != nil {
+		t.Fatalf("first settlement: %v", err)
+	}
+	count1, _ := env.store.CountTicketsByPaymentHash("hash-dup")
+
+	// Second call is idempotent — no error, no extra tickets.
+	if err := api.onInvoiceSettled(inv); err != nil {
+		t.Fatalf("idempotent settlement should not error: %v", err)
+	}
+	count2, _ := env.store.CountTicketsByPaymentHash("hash-dup")
+
+	if count1 != count2 || count1 != 10 {
+		t.Fatalf("expected exactly 10 tickets, got %d then %d", count1, count2)
+	}
+}
+
+func TestSTRIDE_RetryDoesNotDoublePayInFlight(t *testing.T) {
+	// STRIDE/Tampering: if a payout is in in_flight state (payment may be
+	// routing), RetryFailedPayouts must NOT pick it up. Only 'failed' payouts
+	// with attempt_count < 3 are retryable.
+	env := setupSettlementEnv(t)
+	start, end := periodBounds()
+
+	env.seedSession(t, "sess-1", "ticket-1", 50_000_000, 50_000_000)
+
+	// First settlement succeeds.
+	env.engine.RunSettlement(context.Background(), start, end)
+
+	// Manually put a payout back to in_flight (simulating a payment that
+	// was sent but result is unknown — e.g., Hub crashed mid-Keysend).
+	env.store.DB().Exec(`UPDATE payouts SET status = 'in_flight' WHERE id = (SELECT id FROM payouts WHERE status = 'paid' LIMIT 1)`)
+
+	// RetryFailedPayouts should NOT touch in_flight payouts.
+	retryable, _ := env.store.GetRetryablePayouts()
+	if len(retryable) != 0 {
+		t.Fatalf("in_flight payouts should not be retryable, got %d", len(retryable))
+	}
+}
+
+func TestSTRIDE_MarkPayoutFailed_DBError_Surfaced(t *testing.T) {
+	// STRIDE/Repudiation: if MarkPayoutFailed's DB write fails, the
+	// payout is stuck in in_flight with no error recorded. The settlement
+	// engine must surface this as a CRITICAL log.
+	env := setupSettlementEnv(t)
+	start, end := periodBounds()
+
+	env.seedSession(t, "sess-1", "ticket-1", 50_000_000, 50_000_000)
+	env.mock.KeysendErr = fmt.Errorf("keysend failed")
+
+	result, _ := env.engine.RunSettlement(context.Background(), start, end)
+
+	// Payouts should be marked as failed (MarkPayoutFailed succeeds).
+	if result.PayoutsFailed != 2 {
+		t.Errorf("expected 2 failed payouts, got %d", result.PayoutsFailed)
+	}
+
+	// Verify they're actually in 'failed' state.
+	var failedCount int
+	env.store.DB().QueryRow(`SELECT COUNT(*) FROM payouts WHERE status = 'failed'`).Scan(&failedCount)
+	if failedCount != 2 {
+		t.Fatalf("expected 2 failed payouts in DB, got %d", failedCount)
 	}
 }

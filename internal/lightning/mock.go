@@ -30,6 +30,7 @@ type MockClient struct {
 	CreateInvoiceErr error         // if set, CreateInvoice always fails
 	SendPaymentErr   error         // if set, SendPayment always fails
 	KeysendErr       error         // if set, Keysend always fails
+	KeysendResult    *PaymentResult // if set, Keysend returns this instead of default success
 	PaymentDelay     time.Duration // artificial delay on SendPayment/Keysend
 }
 
@@ -156,6 +157,12 @@ func (m *MockClient) Keysend(ctx context.Context, destPubkey string, amountSats 
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+
+	// Allow tests to inject custom results (e.g., PaymentInFlight).
+	if m.KeysendResult != nil {
+		copy := *m.KeysendResult
+		return &copy, nil
 	}
 
 	hash, _ := randomHash()

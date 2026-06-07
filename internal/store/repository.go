@@ -19,7 +19,10 @@ func (s *Store) InsertInvoice(paymentHash, paymentRequest string, amountSats int
 	return err
 }
 
-// SettleInvoice marks an invoice as settled. Only transitions open → settled.
+// SettleInvoice marks an invoice as settled. Idempotent: settling an
+// already-settled invoice returns nil (crash-safe for retry scenarios).
+// Returns an error only if the invoice doesn't exist or is in a
+// non-settleable state (e.g., expired).
 func (s *Store) SettleInvoice(paymentHash string) error {
 	res, err := s.db.Exec(`
 		UPDATE invoices SET status = 'settled', settled_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
@@ -31,7 +34,16 @@ func (s *Store) SettleInvoice(paymentHash string) error {
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("invoice %s not found or already settled", paymentHash)
+		// Distinguish "already settled" (idempotent) from "not found" or "expired".
+		var status string
+		err := s.db.QueryRow(`SELECT status FROM invoices WHERE payment_hash = ?`, paymentHash).Scan(&status)
+		if err != nil {
+			return fmt.Errorf("invoice %s not found", paymentHash)
+		}
+		if status == "settled" {
+			return nil // idempotent — already settled
+		}
+		return fmt.Errorf("invoice %s cannot be settled (status: %s)", paymentHash, status)
 	}
 	return nil
 }
@@ -298,37 +310,61 @@ func (s *Store) InsertPayout(settlementEntryID int64, nodePubkey string, amountS
 // MarkPayoutInFlight transitions a payout to in_flight before sending payment.
 // This is the crash-safety boundary: if we crash after this, we know a payment
 // was attempted and must be reconciled before retrying.
+// Returns an error if the payout is not in an eligible state (pending or retrying).
 func (s *Store) MarkPayoutInFlight(payoutID int64) error {
-	_, err := s.db.Exec(`
+	res, err := s.db.Exec(`
 		UPDATE payouts SET status = 'in_flight',
 		       updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		WHERE id = ? AND status IN ('pending', 'retrying')`,
 		payoutID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("payout %d: cannot transition to in_flight (not in pending or retrying state)", payoutID)
+	}
+	return nil
 }
 
 // MarkPayoutPaid transitions a payout to paid status.
+// Returns an error if the payout is not in in_flight state.
 func (s *Store) MarkPayoutPaid(payoutID int64, paymentHash string) error {
-	_, err := s.db.Exec(`
+	res, err := s.db.Exec(`
 		UPDATE payouts SET status = 'paid', payment_hash = ?,
 		       updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		WHERE id = ? AND status = 'in_flight'`,
 		paymentHash, payoutID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("payout %d: cannot transition to paid (not in in_flight state)", payoutID)
+	}
+	return nil
 }
 
 // MarkPayoutFailed transitions a payout to failed status.
+// Returns an error if the payout is not in in_flight state.
 func (s *Store) MarkPayoutFailed(payoutID int64, lastError string) error {
-	_, err := s.db.Exec(`
+	res, err := s.db.Exec(`
 		UPDATE payouts SET status = 'failed', last_error = ?,
 		       attempt_count = attempt_count + 1,
 		       updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		WHERE id = ? AND status = 'in_flight'`,
 		lastError, payoutID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("payout %d: cannot transition to failed (not in in_flight state)", payoutID)
+	}
+	return nil
 }
 
 // MarkPayoutRetrying transitions a failed payout back to retrying.
@@ -474,13 +510,13 @@ func (s *Store) GetSessionUsageSummaries(from, to string) ([]SessionUsageSummary
 			SELECT session_id, ticket_id, node_pubkey, MAX(bytes_reported) AS max_bytes
 			FROM usage_reports
 			WHERE node_role = 'entry' AND received_at >= ? AND received_at < ?
-			GROUP BY session_id
+			GROUP BY session_id, ticket_id, node_pubkey
 		) e
 		INNER JOIN (
 			SELECT session_id, node_pubkey, MAX(bytes_reported) AS max_bytes
 			FROM usage_reports
 			WHERE node_role = 'exit' AND received_at >= ? AND received_at < ?
-			GROUP BY session_id
+			GROUP BY session_id, node_pubkey
 		) x ON e.session_id = x.session_id`,
 		from, to, from, to,
 	)

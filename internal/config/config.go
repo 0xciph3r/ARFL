@@ -33,6 +33,12 @@ type HubConfig struct {
 	NostrPrivkey string   `json:"nostr_privkey"` // Hub's Nostr private key (hex)
 	ListenAddr   string   `json:"listen_addr"`   // Discovery API listen address
 	Relays       []string `json:"relays"`        // Nostr relay URLs to subscribe to
+
+	// Phase 3: Payment
+	DBPath          string `json:"db_path"`           // SQLite database path (default: platform-specific)
+	CredentialKey   string `json:"credential_key"`    // Hex-encoded HMAC secret for ticket issuance
+	SettlementHours int    `json:"settlement_hours"`  // Settlement interval in hours (default: 6)
+	MinPayoutSats   int64  `json:"min_payout_sats"`   // Minimum payout threshold (default: 1000)
 }
 
 // ClientConfig holds configuration for the ARFL client.

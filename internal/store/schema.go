@@ -194,7 +194,10 @@ CREATE TABLE IF NOT EXISTS payouts (
 
 CREATE INDEX IF NOT EXISTS idx_payouts_status ON payouts(status);
 CREATE INDEX IF NOT EXISTS idx_payouts_node ON payouts(node_pubkey);
-CREATE INDEX IF NOT EXISTS idx_payouts_settlement ON payouts(settlement_entry_id);
+
+-- One payout per settlement entry — prevents duplicate payout creation.
+DROP INDEX IF EXISTS idx_payouts_settlement;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payouts_settlement_unique ON payouts(settlement_entry_id);
 
 -- Payouts are never deleted.
 CREATE TRIGGER IF NOT EXISTS payouts_no_delete

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/Radi-Labs/ARFL/internal/credentials"
 	"github.com/Radi-Labs/ARFL/internal/lightning"
 	"github.com/Radi-Labs/ARFL/internal/store"
 )
@@ -75,6 +74,7 @@ func (e *SettlementEngine) RunSettlement(ctx context.Context, periodStart, perio
 		entryBytesTotal int64
 		exitBytesTotal  int64
 		billableBytes   int64
+		billableSats    int64 // tier-aware sats using invoice rate
 		ticketsRedeemed int
 	}
 	nodeAggs := make(map[string]*nodeAgg)
@@ -98,12 +98,24 @@ func (e *SettlementEngine) RunSettlement(ctx context.Context, periodStart, perio
 			result.SessionsSkipped++
 			continue
 		}
+		if info.BytesAllowed == 0 {
+			log.Printf("[settlement] skip session %s: invoice bytes_allowed is zero", s.SessionID)
+			result.SessionsSkipped++
+			continue
+		}
 
 		// Billable bytes = min(entry, exit). Cap at ticket's purchased bytes.
 		billable := min64(s.EntryBytes, s.ExitBytes)
 		if billable > info.TicketBytes {
 			billable = info.TicketBytes
 		}
+
+		// Compute sats per node share using the invoice's rate (immune to tier config changes).
+		// Each node gets half the billable bytes.
+		entryShare := billable / 2
+		exitShare := billable / 2
+		entrySats := computePayoutSats(entryShare, info.AmountSats, info.BytesAllowed)
+		exitSats := computePayoutSats(exitShare, info.AmountSats, info.BytesAllowed)
 
 		// Aggregate for entry node.
 		agg := nodeAggs[s.EntryNode]
@@ -113,7 +125,8 @@ func (e *SettlementEngine) RunSettlement(ctx context.Context, periodStart, perio
 		}
 		agg.entryBytesTotal += s.EntryBytes
 		agg.exitBytesTotal += s.ExitBytes
-		agg.billableBytes += billable / 2 // entry gets half
+		agg.billableBytes += entryShare
+		agg.billableSats += entrySats
 		agg.ticketsRedeemed++
 
 		// Aggregate for exit node.
@@ -124,7 +137,8 @@ func (e *SettlementEngine) RunSettlement(ctx context.Context, periodStart, perio
 		}
 		agg2.entryBytesTotal += s.EntryBytes
 		agg2.exitBytesTotal += s.ExitBytes
-		agg2.billableBytes += billable / 2 // exit gets half
+		agg2.billableBytes += exitShare
+		agg2.billableSats += exitSats
 		agg2.ticketsRedeemed++
 
 		result.SessionsSettled++
@@ -132,13 +146,8 @@ func (e *SettlementEngine) RunSettlement(ctx context.Context, periodStart, perio
 
 	// Step 3: Create settlement entries per node (idempotent via INSERT OR IGNORE).
 	for nodePubkey, agg := range nodeAggs {
-		// Compute sats earned using the tier rate.
-		// We use the raw billable bytes × a fixed rate.
-		// In Phase 3, all tiers are the same rate: ticket_price / ticket_bytes.
-		amountSats := computePayoutSats(agg.billableBytes)
-
 		inserted, err := e.store.InsertSettlementEntry(
-			period, nodePubkey, agg.billableBytes, amountSats,
+			period, nodePubkey, agg.billableBytes, agg.billableSats,
 			agg.entryBytesTotal, agg.exitBytesTotal, agg.ticketsRedeemed,
 		)
 		if err != nil {
@@ -239,6 +248,11 @@ func (e *SettlementEngine) executePayouts(ctx context.Context, result *Settlemen
 // in_flight state for manual reconciliation. Marking an in-flight payment
 // as failed would allow a retry that double-pays the node.
 func (e *SettlementEngine) sendPayout(ctx context.Context, payoutID int64, nodePubkey string, amountSats int64) error {
+	// Pre-flight: if context is already canceled, don't start — no payment was attempted.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context canceled before payout: %w", err)
+	}
+
 	// Mark in_flight BEFORE the network call — crash safety boundary.
 	if err := e.store.MarkPayoutInFlight(payoutID); err != nil {
 		return fmt.Errorf("mark in_flight: %w", err)
@@ -247,6 +261,13 @@ func (e *SettlementEngine) sendPayout(ctx context.Context, payoutID int64, nodeP
 	// Keysend to the node.
 	result, err := e.lnc.Keysend(ctx, nodePubkey, amountSats)
 	if err != nil {
+		// Context cancellation/deadline after marking in_flight: payment outcome is unknown.
+		// The node may have received the payment but the RPC response was lost.
+		// Leave payout in in_flight state for manual reconciliation — do NOT mark failed.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("[settlement] payout %d: context error after in_flight (%v), leaving in_flight for reconciliation", payoutID, err)
+			return ErrPaymentInFlight
+		}
 		if markErr := e.store.MarkPayoutFailed(payoutID, err.Error()); markErr != nil {
 			log.Printf("[settlement] CRITICAL: payout %d keysend error (%v) AND mark-failed error (%v)",
 				payoutID, err, markErr)
@@ -275,17 +296,15 @@ func (e *SettlementEngine) sendPayout(ctx context.Context, payoutID int64, nodeP
 	}
 }
 
-// computePayoutSats converts billable bytes to sats using a weighted average rate.
-// All tiers currently use the same per-byte rate: 500 sats / 1GB = 0.0000005 sats/byte.
-// We use integer math to avoid floating-point rounding: (bytes * rateSats) / rateBytes.
-func computePayoutSats(billableBytes int64) int64 {
-	// Use the 1GB tier as the canonical rate: 500 sats per 1,000,000,000 bytes.
-	tier, _ := credentials.LookupTier("1gb")
-	if tier.Bytes == 0 {
+// computePayoutSats converts billable bytes to sats using the invoice's rate.
+// Uses the originating invoice's amount_sats / bytes_allowed to ensure volume
+// discounts are correctly reflected and the rate is immune to config changes.
+func computePayoutSats(billableBytes, invoiceAmountSats, invoiceBytesAllowed int64) int64 {
+	if invoiceBytesAllowed == 0 {
 		return 0
 	}
 	// Integer division: round down (nodes paid slightly less on fractions).
-	return (billableBytes * tier.PriceSats) / tier.Bytes
+	return (billableBytes * invoiceAmountSats) / invoiceBytesAllowed
 }
 
 func min64(a, b int64) int64 {

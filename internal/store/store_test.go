@@ -194,13 +194,13 @@ func TestSettlement_Idempotent(t *testing.T) {
 	// Invariant 10: Running settlement twice produces the same result.
 	s := testStore(t)
 
-	err := s.InsertSettlementEntry("2026-06-06T00", "node1", 1_000_000_000, 500, 1_000_000_000, 1_000_000_000, 10)
+	_, err := s.InsertSettlementEntry("2026-06-06T00", "node1", 1_000_000_000, 500, 1_000_000_000, 1_000_000_000, 10)
 	if err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
 
 	// Second insert for same (period, node) is a no-op, not an error.
-	err = s.InsertSettlementEntry("2026-06-06T00", "node1", 2_000_000_000, 1000, 2_000_000_000, 2_000_000_000, 20)
+	_, err = s.InsertSettlementEntry("2026-06-06T00", "node1", 2_000_000_000, 1000, 2_000_000_000, 2_000_000_000, 20)
 	if err != nil {
 		t.Fatalf("idempotent insert should not error: %v", err)
 	}
@@ -223,6 +223,11 @@ func TestPayout_StateMachine(t *testing.T) {
 		t.Fatalf("insert payout: %v", err)
 	}
 
+	// Mark in-flight (about to send).
+	if err := s.MarkPayoutInFlight(payoutID); err != nil {
+		t.Fatalf("mark in_flight: %v", err)
+	}
+
 	// Fail it.
 	if err := s.MarkPayoutFailed(payoutID, "no route"); err != nil {
 		t.Fatalf("mark failed: %v", err)
@@ -231,6 +236,11 @@ func TestPayout_StateMachine(t *testing.T) {
 	// Retry it.
 	if err := s.MarkPayoutRetrying(payoutID); err != nil {
 		t.Fatalf("mark retrying: %v", err)
+	}
+
+	// Mark in-flight again.
+	if err := s.MarkPayoutInFlight(payoutID); err != nil {
+		t.Fatalf("mark in_flight (retry): %v", err)
 	}
 
 	// Pay it.
@@ -251,6 +261,7 @@ func TestPayout_MaxRetriesEnforced(t *testing.T) {
 
 	// Fail 3 times (incrementing attempt_count each time).
 	for i := 0; i < 3; i++ {
+		s.MarkPayoutInFlight(payoutID)
 		s.MarkPayoutFailed(payoutID, "fail")
 		if i < 2 {
 			s.MarkPayoutRetrying(payoutID)
@@ -279,6 +290,7 @@ func TestAudit_TotalPayoutsCannotExceedPurchases(t *testing.T) {
 	var entryID int64
 	s.db.QueryRow(`SELECT id FROM settlement_entries WHERE node_pubkey = 'node1'`).Scan(&entryID)
 	payoutID, _ := s.InsertPayout(entryID, "node1", 500)
+	s.MarkPayoutInFlight(payoutID)
 	s.MarkPayoutPaid(payoutID, "hash_paid")
 
 	purchased, _ := s.TotalPurchasedSats()
@@ -444,6 +456,7 @@ func TestPayout_PaidCannotBeMarkedFailed(t *testing.T) {
 	var entryID int64
 	s.db.QueryRow(`SELECT id FROM settlement_entries WHERE node_pubkey = 'node1'`).Scan(&entryID)
 	payoutID, _ := s.InsertPayout(entryID, "node1", 2000)
+	s.MarkPayoutInFlight(payoutID)
 	s.MarkPayoutPaid(payoutID, "hash_paid")
 
 	// Attempting to mark as failed should have no effect.

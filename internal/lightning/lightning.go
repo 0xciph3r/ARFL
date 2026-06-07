@@ -99,11 +99,16 @@ type Client interface {
 	// the implementation should reconnect and resume.
 	SubscribeInvoices(ctx context.Context) (<-chan *Invoice, error)
 
-	// SendPayment pays a Lightning invoice (keysend or BOLT11).
+	// SendPayment pays a Lightning invoice (BOLT11).
 	// Used by the settlement engine to pay nodes for bandwidth served.
 	// Must be idempotent — if called twice for the same invoice, the
 	// second call should detect the existing payment.
 	SendPayment(ctx context.Context, paymentRequest string, amountSats int64) (*PaymentResult, error)
+
+	// Keysend sends a spontaneous payment to a node by public key.
+	// No invoice required — the receiver is identified by their Lightning pubkey.
+	// Used for node payouts where we don't have an invoice from the node.
+	Keysend(ctx context.Context, destPubkey string, amountSats int64) (*PaymentResult, error)
 }
 
 // Common errors.

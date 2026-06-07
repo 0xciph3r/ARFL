@@ -220,8 +220,9 @@ func (s *Store) GetUsageReportsByPeriod(from, to string) ([]UsageReportRecord, e
 
 // InsertSettlementEntry records a settlement calculation. Idempotent by (period, node).
 // Uses INSERT OR IGNORE — running settlement twice for the same period is a no-op.
-func (s *Store) InsertSettlementEntry(period, nodePubkey string, billableBytes, amountSats, entryBytesTotal, exitBytesTotal int64, ticketsRedeemed int) error {
-	_, err := s.db.Exec(`
+// Returns true if a new row was inserted, false if it already existed.
+func (s *Store) InsertSettlementEntry(period, nodePubkey string, billableBytes, amountSats, entryBytesTotal, exitBytesTotal int64, ticketsRedeemed int) (bool, error) {
+	res, err := s.db.Exec(`
 		INSERT OR IGNORE INTO settlement_entries
 		(settlement_period, node_pubkey, billable_bytes, amount_sats,
 		 entry_bytes_total, exit_bytes_total, tickets_redeemed)
@@ -229,7 +230,11 @@ func (s *Store) InsertSettlementEntry(period, nodePubkey string, billableBytes, 
 		period, nodePubkey, billableBytes, amountSats,
 		entryBytesTotal, exitBytesTotal, ticketsRedeemed,
 	)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // SettlementEntryRecord is the read model for a settlement entry.
@@ -245,14 +250,16 @@ type SettlementEntryRecord struct {
 	CreatedAt        string
 }
 
-// GetUnsettledEntries returns settlement entries that don't have a corresponding payout yet.
+// GetUnsettledEntries returns settlement entries that don't have any payout yet.
+// Excludes entries that already have a payout in any state (including failed).
+// Failed payouts are retried via GetRetryablePayouts, not by creating new ones.
 func (s *Store) GetUnsettledEntries(minAmountSats int64) ([]SettlementEntryRecord, error) {
 	rows, err := s.db.Query(`
 		SELECT se.id, se.settlement_period, se.node_pubkey, se.billable_bytes,
 		       se.amount_sats, se.entry_bytes_total, se.exit_bytes_total,
 		       se.tickets_redeemed, se.created_at
 		FROM settlement_entries se
-		LEFT JOIN payouts p ON p.settlement_entry_id = se.id AND p.status IN ('paid', 'pending', 'retrying')
+		LEFT JOIN payouts p ON p.settlement_entry_id = se.id
 		WHERE p.id IS NULL AND se.amount_sats >= ?
 		ORDER BY se.created_at`, minAmountSats)
 	if err != nil {
@@ -288,12 +295,25 @@ func (s *Store) InsertPayout(settlementEntryID int64, nodePubkey string, amountS
 	return res.LastInsertId()
 }
 
+// MarkPayoutInFlight transitions a payout to in_flight before sending payment.
+// This is the crash-safety boundary: if we crash after this, we know a payment
+// was attempted and must be reconciled before retrying.
+func (s *Store) MarkPayoutInFlight(payoutID int64) error {
+	_, err := s.db.Exec(`
+		UPDATE payouts SET status = 'in_flight',
+		       updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE id = ? AND status IN ('pending', 'retrying')`,
+		payoutID,
+	)
+	return err
+}
+
 // MarkPayoutPaid transitions a payout to paid status.
 func (s *Store) MarkPayoutPaid(payoutID int64, paymentHash string) error {
 	_, err := s.db.Exec(`
 		UPDATE payouts SET status = 'paid', payment_hash = ?,
 		       updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-		WHERE id = ? AND status IN ('pending', 'retrying')`,
+		WHERE id = ? AND status = 'in_flight'`,
 		paymentHash, payoutID,
 	)
 	return err
@@ -305,7 +325,7 @@ func (s *Store) MarkPayoutFailed(payoutID int64, lastError string) error {
 		UPDATE payouts SET status = 'failed', last_error = ?,
 		       attempt_count = attempt_count + 1,
 		       updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-		WHERE id = ? AND status IN ('pending', 'retrying')`,
+		WHERE id = ? AND status = 'in_flight'`,
 		lastError, payoutID,
 	)
 	return err
@@ -410,4 +430,101 @@ func (s *Store) TotalCompensationSats() (int64, error) {
 		return 0, err
 	}
 	return total.Int64, nil
+}
+
+// TotalCommittedPayoutSats returns the sum of all non-failed payouts
+// (paid + pending + in_flight + retrying). Used for pre-flight budget checks.
+func (s *Store) TotalCommittedPayoutSats() (int64, error) {
+	var total sql.NullInt64
+	err := s.db.QueryRow(`
+		SELECT SUM(amount_sats) FROM payouts
+		WHERE status IN ('paid', 'pending', 'in_flight', 'retrying')
+	`).Scan(&total)
+	if err != nil {
+		return 0, err
+	}
+	return total.Int64, nil
+}
+
+// --- Settlement-specific queries ---
+
+// SessionUsageSummary is the aggregated usage for one session.
+type SessionUsageSummary struct {
+	SessionID  string
+	TicketID   string
+	EntryNode  string
+	ExitNode   string
+	EntryBytes int64
+	ExitBytes  int64
+}
+
+// GetSessionUsageSummaries returns aggregated usage reports grouped by session,
+// using MAX(bytes_reported) per role per session (cumulative reporting model).
+// Only returns sessions that have BOTH entry and exit reports.
+func (s *Store) GetSessionUsageSummaries(from, to string) ([]SessionUsageSummary, error) {
+	rows, err := s.db.Query(`
+		SELECT
+			e.session_id,
+			e.ticket_id,
+			e.node_pubkey AS entry_node,
+			x.node_pubkey AS exit_node,
+			e.max_bytes   AS entry_bytes,
+			x.max_bytes   AS exit_bytes
+		FROM (
+			SELECT session_id, ticket_id, node_pubkey, MAX(bytes_reported) AS max_bytes
+			FROM usage_reports
+			WHERE node_role = 'entry' AND received_at >= ? AND received_at < ?
+			GROUP BY session_id
+		) e
+		INNER JOIN (
+			SELECT session_id, node_pubkey, MAX(bytes_reported) AS max_bytes
+			FROM usage_reports
+			WHERE node_role = 'exit' AND received_at >= ? AND received_at < ?
+			GROUP BY session_id
+		) x ON e.session_id = x.session_id`,
+		from, to, from, to,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var summaries []SessionUsageSummary
+	for rows.Next() {
+		var s SessionUsageSummary
+		if err := rows.Scan(&s.SessionID, &s.TicketID, &s.EntryNode,
+			&s.ExitNode, &s.EntryBytes, &s.ExitBytes); err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, s)
+	}
+	return summaries, rows.Err()
+}
+
+// TicketSettlementInfo is the validated chain: ticket → invoice → tier.
+type TicketSettlementInfo struct {
+	TicketID      string
+	TicketStatus  string
+	TicketBytes   int64
+	InvoiceStatus string
+	AmountSats    int64
+	Tier          string
+}
+
+// GetTicketSettlementInfo validates the full chain from ticket to invoice.
+// Returns error if the ticket doesn't exist.
+func (s *Store) GetTicketSettlementInfo(ticketID string) (*TicketSettlementInfo, error) {
+	row := s.db.QueryRow(`
+		SELECT t.id, t.status, t.bytes_value, i.status, i.amount_sats, i.tier
+		FROM tickets t
+		JOIN invoices i ON t.payment_hash = i.payment_hash
+		WHERE t.id = ?`, ticketID)
+
+	var info TicketSettlementInfo
+	err := row.Scan(&info.TicketID, &info.TicketStatus, &info.TicketBytes,
+		&info.InvoiceStatus, &info.AmountSats, &info.Tier)
+	if err != nil {
+		return nil, err
+	}
+	return &info, nil
 }

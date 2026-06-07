@@ -25,10 +25,10 @@ import (
 // The flow is asynchronous: the client creates a purchase, pays the invoice
 // externally, and polls until the Hub detects settlement and issues tickets.
 type PurchaseAPI struct {
-	store   *store.Store
-	lnc     lightning.Client
-	issuer  credentials.Issuer
-	mux     *http.ServeMux
+	store  *store.Store
+	lnc    lightning.Client
+	issuer credentials.Issuer
+	mux    *http.ServeMux
 
 	// Rate limiting: map[IP][]timestamp.
 	rateLimit   map[string][]time.Time
@@ -48,7 +48,7 @@ func NewPurchaseAPI(s *store.Store, lnc lightning.Client, issuer credentials.Iss
 		issuer:      issuer,
 		mux:         http.NewServeMux(),
 		rateLimit:   make(map[string][]time.Time),
-		maxRequests: 10,              // 10 purchases per minute per IP.
+		maxRequests: 10, // 10 purchases per minute per IP.
 		rateWindow:  1 * time.Minute,
 	}
 
@@ -115,10 +115,10 @@ type PurchaseResponse struct {
 
 // PurchaseStatusResponse is the JSON response for GET /purchase/:id.
 type PurchaseStatusResponse struct {
-	PaymentHash string             `json:"payment_hash"`
-	Status      string             `json:"status"` // "open", "settled", "expired"
-	AmountSats  int64              `json:"amount_sats"`
-	Tier        string             `json:"tier"`
+	PaymentHash string                `json:"payment_hash"`
+	Status      string                `json:"status"` // "open", "settled", "expired"
+	AmountSats  int64                 `json:"amount_sats"`
+	Tier        string                `json:"tier"`
 	Tickets     []*credentials.Ticket `json:"tickets,omitempty"` // only when settled
 }
 

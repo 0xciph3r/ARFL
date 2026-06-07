@@ -1148,3 +1148,94 @@ sig)` to the nostr package. These hash the message with SHA-256 before signing
 **Defend it as:** "Same key, same algorithm, different signing contexts. Nostr
 events sign their computed ID. Usage reports sign their length-prefixed payload.
 Domain separation ensures they can't cross-contaminate."
+
+## Decision 41: Keysend for node payouts (not BOLT11)
+
+**Date:** 2026-06-07
+**Phase:** Phase 3
+
+**Challenge:** Nodes are passive bandwidth providers. They don't generate
+invoices. How does the Hub pay them?
+
+**Decision:** Use Lightning Keysend (spontaneous payment by public key).
+No invoice required — the Hub pushes sats directly to the node's pubkey.
+Added `Keysend(ctx, destPubkey, amountSats)` to the Client interface.
+
+**STRIDE mapping:** Spoofing — Phase 3 assumes Lightning pubkey = Nostr
+pubkey. Phase 4 should add pubkey mapping with verification.
+
+**Defend it as:** "Keysend is the only option for paying someone who hasn't
+given you an invoice. The node just runs — it doesn't need to actively request
+payment. The Hub pushes earnings to them."
+
+## Decision 42: in_flight payout status for crash safety
+
+**Date:** 2026-06-07
+**Phase:** Phase 3
+
+**Challenge:** If the Hub crashes after sending a Lightning payment but before
+recording success, the payout is stuck forever in 'pending'. Retrying might
+double-pay.
+
+**Decision:** Added `in_flight` status to the payout state machine:
+`pending → in_flight → paid | failed → retrying → in_flight → paid | failed`
+
+Before every network call, mark as `in_flight`. If the Hub restarts and finds
+`in_flight` payouts, they require manual reconciliation against the Lightning
+node (check payment status). Never blindly retry an `in_flight` payment.
+
+**Defend it as:** "The in_flight state is the crash boundary. It says: 'we
+sent money, but we don't know the outcome yet.' That's fundamentally different
+from 'we never tried' (pending) or 'it failed' (failed)."
+
+## Decision 43: Aggregate settlement entries by (period, node)
+
+**Date:** 2026-06-07
+**Phase:** Phase 3
+
+**Challenge:** The database enforces UNIQUE(settlement_period, node_pubkey).
+If we tried to insert one entry per session per node, INSERT OR IGNORE would
+silently skip all but the first session — severe underpayment.
+
+**Decision:** Aggregate all sessions for a node within a period FIRST, then
+insert exactly one settlement entry per node. The entry sums: total billable
+bytes, total sats earned, entry/exit byte totals, tickets redeemed.
+
+**Defend it as:** "Aggregation happens in code, insertion is atomic and
+idempotent. Each node gets exactly one settlement entry per period — no
+duplicates, no underpayment."
+
+## Decision 44: Pre-flight budget check before payouts
+
+**Date:** 2026-06-07
+**Phase:** Phase 3
+
+**Challenge:** The economic invariant says `total payouts ≤ total purchases`.
+If we check AFTER sending payments, funds are already gone.
+
+**Decision:** Before creating/sending payouts, compute:
+`committed (paid + pending + in_flight + retrying) + proposed ≤ purchased`
+If the proposed payout would exceed the budget, halt settlement. This is a
+hard stop — no exceptions.
+
+**Defend it as:** "We enforce the economic invariant BEFORE spending money,
+not after. If the math doesn't work out, no payout is attempted. This
+guarantees we can never pay more than we received."
+
+## Decision 45: Cumulative reporting with MAX aggregation
+
+**Date:** 2026-06-07
+**Phase:** Phase 3
+
+**Challenge:** Nodes may submit multiple usage reports per session (periodic
+reporting, network retries, duplicate submissions). How to aggregate?
+
+**Decision:** bytes_reported is cumulative. Settlement uses MAX(bytes_reported)
+per role per session. This means:
+- Duplicates are harmless (same value = same MAX)
+- Partial reports are superseded by later ones
+- No risk of double-counting
+
+**Defend it as:** "MAX is the only aggregation function that's idempotent
+under duplicates. If a node reports 50MB, then 80MB, then 80MB again, the
+answer is 80MB — not 210MB."

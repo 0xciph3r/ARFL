@@ -121,9 +121,13 @@ func TestInvoice_Lifecycle(t *testing.T) {
 		t.Errorf("expected status 'settled', got %s", inv.Status)
 	}
 
-	// Double-settle should fail.
-	if err := s.SettleInvoice("hash1"); err == nil {
-		t.Fatal("double-settle should fail")
+	// Double-settle is idempotent (crash-safe — no error).
+	if err := s.SettleInvoice("hash1"); err != nil {
+		t.Fatalf("idempotent settle should not error: %v", err)
+	}
+	inv, _ = s.GetInvoice("hash1")
+	if inv.Status != "settled" {
+		t.Errorf("status should remain 'settled', got %s", inv.Status)
 	}
 }
 
@@ -449,7 +453,7 @@ func TestTrigger_TicketHMACImmutable(t *testing.T) {
 }
 
 func TestPayout_PaidCannotBeMarkedFailed(t *testing.T) {
-	// Once paid, a payout is final — cannot be reverted.
+	// STRIDE/Tampering: once paid, a payout is final — cannot be reverted.
 	s := testStore(t)
 	s.InsertSettlementEntry("2026-06-06T00", "node1", 1_000_000_000, 2000, 1_000_000_000, 1_000_000_000, 10)
 
@@ -459,13 +463,16 @@ func TestPayout_PaidCannotBeMarkedFailed(t *testing.T) {
 	s.MarkPayoutInFlight(payoutID)
 	s.MarkPayoutPaid(payoutID, "hash_paid")
 
-	// Attempting to mark as failed should have no effect.
+	// Attempting to mark as failed must error (not silently succeed).
 	err := s.MarkPayoutFailed(payoutID, "too late")
-	// Even if no error, the status should remain 'paid'.
+	if err == nil {
+		t.Fatal("MarkPayoutFailed on a paid payout should return an error")
+	}
+	// Status must remain 'paid'.
 	var status string
 	s.db.QueryRow(`SELECT status FROM payouts WHERE id = ?`, payoutID).Scan(&status)
 	if status != "paid" {
-		t.Fatalf("paid payout should not be changeable, got status: %s (err: %v)", status, err)
+		t.Fatalf("paid payout should not be changeable, got status: %s", status)
 	}
 }
 
@@ -523,5 +530,156 @@ func TestSchema_RejectsNegativePayout(t *testing.T) {
 	_, err := s.InsertPayout(entryID, "node1", -100)
 	if err == nil {
 		t.Fatal("should reject negative-amount payout")
+	}
+}
+
+// --- STRIDE: Settlement state machine attacks ---
+
+func TestSTRIDE_SettleExpiredInvoice(t *testing.T) {
+	// STRIDE/Elevation: attacker tries to settle an expired invoice
+	// to unlock tickets without paying.
+	s := testStore(t)
+	s.InsertInvoice("hash1", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	s.ExpireInvoice("hash1")
+
+	err := s.SettleInvoice("hash1")
+	if err == nil {
+		t.Fatal("settling an expired invoice should fail")
+	}
+}
+
+func TestSTRIDE_SettleNonexistentInvoice(t *testing.T) {
+	// STRIDE/Spoofing: attacker invents a payment hash to trigger settlement.
+	s := testStore(t)
+
+	err := s.SettleInvoice("invented-hash")
+	if err == nil {
+		t.Fatal("settling a nonexistent invoice should fail")
+	}
+}
+
+func TestSTRIDE_InFlightFromPaid_Blocked(t *testing.T) {
+	// STRIDE/Elevation: attempt to move a paid payout back to in_flight
+	// to trigger a double-payment.
+	s := testStore(t)
+	s.InsertSettlementEntry("2026-06-06T00", "node1", 1_000_000_000, 2000, 1_000_000_000, 1_000_000_000, 10)
+
+	var entryID int64
+	s.db.QueryRow(`SELECT id FROM settlement_entries WHERE node_pubkey = 'node1'`).Scan(&entryID)
+
+	payoutID, _ := s.InsertPayout(entryID, "node1", 2000)
+	s.MarkPayoutInFlight(payoutID)
+	s.MarkPayoutPaid(payoutID, "hash_paid")
+
+	err := s.MarkPayoutInFlight(payoutID)
+	if err == nil {
+		t.Fatal("should not allow transitioning paid payout to in_flight")
+	}
+}
+
+func TestSTRIDE_InFlightFromFailed_Blocked(t *testing.T) {
+	// STRIDE/Elevation: attempt to skip the retrying state by going
+	// directly from failed → in_flight.
+	s := testStore(t)
+	s.InsertSettlementEntry("2026-06-06T00", "node1", 1_000_000_000, 2000, 1_000_000_000, 1_000_000_000, 10)
+
+	var entryID int64
+	s.db.QueryRow(`SELECT id FROM settlement_entries WHERE node_pubkey = 'node1'`).Scan(&entryID)
+
+	payoutID, _ := s.InsertPayout(entryID, "node1", 2000)
+	s.MarkPayoutInFlight(payoutID)
+	s.MarkPayoutFailed(payoutID, "no route")
+
+	// Direct failed → in_flight is not allowed; must go through retrying.
+	err := s.MarkPayoutInFlight(payoutID)
+	if err == nil {
+		t.Fatal("should not allow transitioning failed payout directly to in_flight")
+	}
+}
+
+func TestSTRIDE_PaidFromPending_Blocked(t *testing.T) {
+	// STRIDE/Elevation: skip the in_flight state to mark paid without
+	// actually sending a Lightning payment.
+	s := testStore(t)
+	s.InsertSettlementEntry("2026-06-06T00", "node1", 1_000_000_000, 2000, 1_000_000_000, 1_000_000_000, 10)
+
+	var entryID int64
+	s.db.QueryRow(`SELECT id FROM settlement_entries WHERE node_pubkey = 'node1'`).Scan(&entryID)
+
+	payoutID, _ := s.InsertPayout(entryID, "node1", 2000)
+
+	// pending → paid should fail (must go through in_flight).
+	err := s.MarkPayoutPaid(payoutID, "fake_hash")
+	if err == nil {
+		t.Fatal("should not allow skipping in_flight to mark paid")
+	}
+}
+
+func TestSTRIDE_FailedFromPending_Blocked(t *testing.T) {
+	// STRIDE/Denial: marking a payout as failed without attempting payment
+	// denies the node their earned sats.
+	s := testStore(t)
+	s.InsertSettlementEntry("2026-06-06T00", "node1", 1_000_000_000, 2000, 1_000_000_000, 1_000_000_000, 10)
+
+	var entryID int64
+	s.db.QueryRow(`SELECT id FROM settlement_entries WHERE node_pubkey = 'node1'`).Scan(&entryID)
+
+	payoutID, _ := s.InsertPayout(entryID, "node1", 2000)
+
+	// pending → failed should fail (must go through in_flight).
+	err := s.MarkPayoutFailed(payoutID, "fake failure")
+	if err == nil {
+		t.Fatal("should not allow marking a pending payout as failed without attempting payment")
+	}
+}
+
+func TestSTRIDE_PayoutAmountImmutable(t *testing.T) {
+	// STRIDE/Tampering: attacker or bug modifies payout amount after creation.
+	s := testStore(t)
+	s.InsertSettlementEntry("2026-06-06T00", "node1", 1_000_000_000, 2000, 1_000_000_000, 1_000_000_000, 10)
+
+	var entryID int64
+	s.db.QueryRow(`SELECT id FROM settlement_entries WHERE node_pubkey = 'node1'`).Scan(&entryID)
+
+	payoutID, _ := s.InsertPayout(entryID, "node1", 2000)
+
+	_, err := s.db.Exec(`UPDATE payouts SET amount_sats = 9999 WHERE id = ?`, payoutID)
+	if err == nil {
+		t.Fatal("should not allow changing payout amount_sats")
+	}
+}
+
+func TestSTRIDE_PayoutNodeImmutable(t *testing.T) {
+	// STRIDE/Tampering: redirect a payout to a different node.
+	s := testStore(t)
+	s.InsertSettlementEntry("2026-06-06T00", "node1", 1_000_000_000, 2000, 1_000_000_000, 1_000_000_000, 10)
+
+	var entryID int64
+	s.db.QueryRow(`SELECT id FROM settlement_entries WHERE node_pubkey = 'node1'`).Scan(&entryID)
+
+	payoutID, _ := s.InsertPayout(entryID, "node1", 2000)
+
+	_, err := s.db.Exec(`UPDATE payouts SET node_pubkey = 'attacker' WHERE id = ?`, payoutID)
+	if err == nil {
+		t.Fatal("should not allow changing payout node_pubkey")
+	}
+}
+
+func TestSTRIDE_PayoutSettlementRefImmutable(t *testing.T) {
+	// STRIDE/Tampering: re-point a payout to a different settlement entry.
+	s := testStore(t)
+	s.InsertSettlementEntry("2026-06-06T00", "node1", 1_000_000_000, 2000, 1_000_000_000, 1_000_000_000, 10)
+	s.InsertSettlementEntry("2026-06-06T00", "node2", 1_000_000_000, 5000, 1_000_000_000, 1_000_000_000, 10)
+
+	var entryID1, entryID2 int64
+	s.db.QueryRow(`SELECT id FROM settlement_entries WHERE node_pubkey = 'node1'`).Scan(&entryID1)
+	s.db.QueryRow(`SELECT id FROM settlement_entries WHERE node_pubkey = 'node2'`).Scan(&entryID2)
+
+	payoutID, _ := s.InsertPayout(entryID1, "node1", 2000)
+
+	_, err := s.db.Exec(`UPDATE payouts SET settlement_entry_id = ? WHERE id = ?`, entryID2, payoutID)
+	if err == nil {
+		t.Fatal("should not allow changing payout settlement_entry_id")
 	}
 }

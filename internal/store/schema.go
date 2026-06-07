@@ -195,6 +195,17 @@ BEGIN
     SELECT RAISE(FAIL, 'payouts is append-only: deletions are prohibited');
 END;
 
+-- Payouts: financial fields are immutable once created.
+-- Only status, payment_hash, attempt_count, last_error, and updated_at may change.
+CREATE TRIGGER IF NOT EXISTS payouts_immutable_fields
+BEFORE UPDATE ON payouts
+WHEN OLD.amount_sats != NEW.amount_sats
+  OR OLD.node_pubkey != NEW.node_pubkey
+  OR OLD.settlement_entry_id != NEW.settlement_entry_id
+BEGIN
+    SELECT RAISE(FAIL, 'payout financial fields are immutable');
+END;
+
 -- ============================================================
 -- COMPENSATING ENTRIES: Corrections to the ledger
 -- When something is wrong, we don't edit — we post a correction.

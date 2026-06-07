@@ -48,8 +48,8 @@ func NewPurchaseAPI(s *store.Store, lnc lightning.Client, issuer credentials.Iss
 		issuer:      issuer,
 		mux:         http.NewServeMux(),
 		rateLimit:   make(map[string][]time.Time),
-		maxRequests: 10, // 10 purchases per minute per IP.
-		rateWindow:  1 * time.Minute,
+		maxRequests: 10, // 10 invoices per hour per IP (economic invariant 15).
+		rateWindow:  1 * time.Hour,
 	}
 
 	api.mux.HandleFunc("/purchase", api.handlePurchase)
@@ -288,19 +288,18 @@ func (api *PurchaseAPI) handleReport(w http.ResponseWriter, r *http.Request) {
 
 // onInvoiceSettled is called when a Lightning invoice is paid.
 // It issues tickets and stores them in the database.
+//
+// Crash-safe: if the Hub crashes after settling the invoice but before
+// issuing tickets, a subsequent call (or startup reconciliation) will
+// detect the missing tickets and issue them. The ticket-existence check
+// comes FIRST, before SettleInvoice, so an already-settled invoice with
+// no tickets will still get its tickets issued.
 func (api *PurchaseAPI) onInvoiceSettled(inv *lightning.Invoice) error {
-	// Mark invoice as settled in our DB.
-	if err := api.store.SettleInvoice(inv.PaymentHash); err != nil {
-		return fmt.Errorf("settle invoice %s: %w", inv.PaymentHash, err)
-	}
-
-	// Look up the invoice to get tier info.
-	record, err := api.store.GetInvoice(inv.PaymentHash)
-	if err != nil {
-		return fmt.Errorf("get invoice %s: %w", inv.PaymentHash, err)
-	}
-
-	// Check if tickets already exist (idempotency — settlement may fire twice).
+	// Step 1: Check if tickets already exist (idempotency guard).
+	// This MUST come before SettleInvoice so that crash-recovery works:
+	// if we crashed after settle but before ticket issuance, the invoice
+	// is already settled — but tickets are missing. Checking first lets
+	// us skip only when tickets are truly issued.
 	existing, err := api.store.CountTicketsByPaymentHash(inv.PaymentHash)
 	if err != nil {
 		return fmt.Errorf("count tickets for %s: %w", inv.PaymentHash, err)
@@ -310,18 +309,29 @@ func (api *PurchaseAPI) onInvoiceSettled(inv *lightning.Invoice) error {
 		return nil
 	}
 
+	// Step 2: Mark invoice as settled (idempotent — returns nil if already settled).
+	if err := api.store.SettleInvoice(inv.PaymentHash); err != nil {
+		return fmt.Errorf("settle invoice %s: %w", inv.PaymentHash, err)
+	}
+
+	// Step 3: Look up the invoice to get tier info.
+	record, err := api.store.GetInvoice(inv.PaymentHash)
+	if err != nil {
+		return fmt.Errorf("get invoice %s: %w", inv.PaymentHash, err)
+	}
+
 	tier, err := credentials.LookupTier(record.Tier)
 	if err != nil {
 		return fmt.Errorf("lookup tier %s: %w", record.Tier, err)
 	}
 
-	// Issue tickets.
+	// Step 4: Issue tickets.
 	tickets, err := api.issuer.Issue(inv.PaymentHash, tier.TicketBytes, tier.TicketCount)
 	if err != nil {
 		return fmt.Errorf("issue tickets for %s: %w", inv.PaymentHash, err)
 	}
 
-	// Persist each ticket.
+	// Step 5: Persist each ticket.
 	for _, t := range tickets {
 		if err := api.store.InsertTicket(t.ID, inv.PaymentHash, t.Bytes, t.MAC); err != nil {
 			return fmt.Errorf("insert ticket %s: %w", t.ID, err)

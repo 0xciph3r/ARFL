@@ -220,6 +220,10 @@ func (e *SettlementEngine) executePayouts(ctx context.Context, result *Settlemen
 }
 
 // sendPayout handles the in_flight → paid/failed transition.
+//
+// PaymentInFlight is NOT treated as a failure — the payout remains in
+// in_flight state for manual reconciliation. Marking an in-flight payment
+// as failed would allow a retry that double-pays the node.
 func (e *SettlementEngine) sendPayout(ctx context.Context, payoutID int64, nodePubkey string, amountSats int64) error {
 	// Mark in_flight BEFORE the network call — crash safety boundary.
 	if err := e.store.MarkPayoutInFlight(payoutID); err != nil {
@@ -229,20 +233,32 @@ func (e *SettlementEngine) sendPayout(ctx context.Context, payoutID int64, nodeP
 	// Keysend to the node.
 	result, err := e.lnc.Keysend(ctx, nodePubkey, amountSats)
 	if err != nil {
-		e.store.MarkPayoutFailed(payoutID, err.Error())
+		if markErr := e.store.MarkPayoutFailed(payoutID, err.Error()); markErr != nil {
+			log.Printf("[settlement] CRITICAL: payout %d keysend error (%v) AND mark-failed error (%v)",
+				payoutID, err, markErr)
+		}
 		return err
 	}
 
-	if result.Status == lightning.PaymentSucceeded {
+	switch result.Status {
+	case lightning.PaymentSucceeded:
 		return e.store.MarkPayoutPaid(payoutID, result.PaymentHash)
+	case lightning.PaymentInFlight:
+		// Payment still routing — leave in in_flight state.
+		// Do NOT mark as failed; retrying could cause double-payment.
+		log.Printf("[settlement] payout %d: payment in-flight, requires reconciliation", payoutID)
+		return fmt.Errorf("payment in-flight: requires manual reconciliation")
+	default:
+		errMsg := "payment did not succeed"
+		if result.Error != "" {
+			errMsg = result.Error
+		}
+		if markErr := e.store.MarkPayoutFailed(payoutID, errMsg); markErr != nil {
+			log.Printf("[settlement] CRITICAL: payout %d payment failed (%s) AND mark-failed error (%v)",
+				payoutID, errMsg, markErr)
+		}
+		return fmt.Errorf("payment failed: %s", errMsg)
 	}
-
-	errMsg := "payment did not succeed"
-	if result.Error != "" {
-		errMsg = result.Error
-	}
-	e.store.MarkPayoutFailed(payoutID, errMsg)
-	return fmt.Errorf("payment failed: %s", errMsg)
 }
 
 // computePayoutSats converts billable bytes to sats using a weighted average rate.

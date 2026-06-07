@@ -1239,3 +1239,149 @@ per role per session. This means:
 **Defend it as:** "MAX is the only aggregation function that's idempotent
 under duplicates. If a node reports 50MB, then 80MB, then 80MB again, the
 answer is 80MB — not 210MB."
+
+---
+
+## Decision 46: SettleInvoice is idempotent (STRIDE/DoS)
+
+**Date:** 2026-06-07
+**Context:** If Hub crashes after marking an invoice settled but before issuing
+tickets, subsequent settlement events would fail because SettleInvoice errored
+on already-settled invoices. Tickets would never be issued for a paid invoice.
+
+**Decision:** SettleInvoice now returns nil on already-settled invoices (idempotent).
+It only errors on not-found or invalid transitions (e.g., settling an expired invoice).
+onInvoiceSettled checks ticket existence FIRST, before calling SettleInvoice, so the
+crash-recovery path works: tickets missing + invoice already settled → still issues tickets.
+
+**STRIDE mapping:** Denial of Service — crash permanently loses paid tickets.
+
+**Defend it as:** "Any operation involving money must be crash-safe. If the Hub can crash
+between two steps, the second step must be retryable without the first step blocking it."
+
+---
+
+## Decision 47: Payout state transitions return errors on invalid state
+
+**Date:** 2026-06-07
+**Context:** MarkPayoutInFlight, MarkPayoutPaid, and MarkPayoutFailed silently
+returned nil when 0 rows were affected (payout not in expected state). Callers
+proceeded with network calls thinking the state transition succeeded.
+
+**Decision:** All three methods now check RowsAffected and return an error when
+the transition didn't actually happen. This prevents:
+- Double-sending payouts (MarkPayoutInFlight from wrong state)
+- False success records (MarkPayoutPaid from non-in_flight)
+- Stuck payouts with no error trace (MarkPayoutFailed silently failing)
+
+**STRIDE mapping:** Elevation of Privilege — silent no-ops let callers bypass the
+state machine and proceed as if a transition occurred.
+
+**Defend it as:** "In a payment system, a state machine that silently ignores invalid
+transitions is worse than one that errors. Silent failures create money in ambiguous
+states — the one thing our economic invariants forbid."
+
+---
+
+## Decision 48: PaymentInFlight leaves payout in in_flight state
+
+**Date:** 2026-06-07
+**Context:** sendPayout treated any non-Succeeded Lightning result as a failure,
+including PaymentInFlight. An in-flight payment may still settle later on the
+Lightning Network, so marking it failed and retrying risks double-payment.
+
+**Decision:** When Keysend returns PaymentInFlight, the payout stays in in_flight
+state. It is NOT marked failed, NOT retried automatically. Manual reconciliation
+is required. GetRetryablePayouts only returns 'failed' payouts, not 'in_flight'.
+
+**STRIDE mapping:** Tampering — double-payment violates invariant 2 (total payouts ≤ purchases).
+
+**Defend it as:** "The in_flight state IS the crash-safety boundary. Treating it as
+a failure by moving to a different state defeats the purpose. Unknown state → do nothing
+until a human confirms."
+
+---
+
+## Decision 49: MarkPayoutFailed errors are surfaced
+
+**Date:** 2026-06-07
+**Context:** sendPayout called MarkPayoutFailed but ignored its return value.
+If the DB write failed, the payout remained stuck in in_flight with no error
+recorded and no way for retry logic to find it.
+
+**Decision:** All MarkPayout* call sites now check the error. On failure, a CRITICAL
+log is emitted with both the original error and the DB error. This ensures stuck
+payouts are at least visible in logs for operational alerting.
+
+**STRIDE mapping:** Repudiation — payout stuck in untracked state without audit trail.
+
+**Defend it as:** "Ignoring the error on a financial state transition is the same as
+not having the state machine. Every write to the ledger must be confirmed."
+
+---
+
+## Decision 50: Credential key requires --dev flag (STRIDE/Spoofing)
+
+**Date:** 2026-06-07
+**Context:** parseCredentialKey fell back to a deterministic, hard-coded key
+when no credential_key was configured. Anyone who knows this string can forge
+valid tickets, completely breaking the payment system.
+
+**Decision:** Missing credential_key now fatals with an explicit error message.
+The --dev flag is required to opt into the insecure key, making the dangerous
+behavior impossible to trigger accidentally in production.
+
+**STRIDE mapping:** Spoofing — attacker forges tickets with known dev key.
+
+**Defend it as:** "Security defaults must be secure. Convenience features that
+weaken security must require an explicit opt-in that cannot happen accidentally."
+
+---
+
+## Decision 51: Payouts table has immutable field trigger
+
+**Date:** 2026-06-07
+**Context:** The payouts table blocked DELETE via trigger but allowed UPDATE on
+financial fields (amount_sats, node_pubkey, settlement_entry_id). A bug or manual
+SQL tampering could rewrite payout history.
+
+**Decision:** Added payouts_immutable_fields trigger blocking changes to amount_sats,
+node_pubkey, and settlement_entry_id. Only status, payment_hash, attempt_count,
+last_error, and updated_at may change (the state machine fields).
+
+**STRIDE mapping:** Tampering — rewriting payout history to redirect or inflate payments.
+
+**Defend it as:** "Every ledger table gets the same treatment: financial fields are
+immutable after creation. The trigger is the enforcement layer that doesn't depend
+on application code being correct."
+
+---
+
+## Decision 52: Rate limit aligned to economic invariant 15
+
+**Date:** 2026-06-07
+**Context:** Code enforced 10 requests per minute per IP. Economic invariant 15
+specified 10 per hour. The code was 60x stricter than documented.
+
+**Decision:** Changed rate window from 1 minute to 1 hour, matching the invariant.
+
+**Defend it as:** "Code and documentation must agree. When they diverge, the invariant
+document is the source of truth — it's what was designed and reviewed."
+
+---
+
+## Decision 53: GetSessionUsageSummaries uses correct GROUP BY
+
+**Date:** 2026-06-07
+**Context:** Subqueries grouped by session_id but selected non-aggregated ticket_id
+and node_pubkey. SQLite's behavior with non-aggregated columns returns an arbitrary
+row from the group, which can mismatch the MAX(bytes_reported) value.
+
+**Decision:** Added ticket_id and node_pubkey to GROUP BY. In the normal case
+(one entry node per session, one ticket per session) this changes nothing. In
+adversarial cases (multiple nodes claiming entry for the same session) they are
+treated as separate rows, which is correct.
+
+**Defend it as:** "Standard SQL requires all non-aggregated columns to be in GROUP BY.
+Relying on SQLite's arbitrary-row extension is a portability bug and a correctness
+bug when adversarial inputs are possible."

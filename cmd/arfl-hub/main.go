@@ -24,6 +24,7 @@ import (
 
 func main() {
 	cfgPath := flag.String("config", "hub.json", "path to hub config file")
+	devMode := flag.Bool("dev", false, "development mode (insecure credential key, NOT for production)")
 	flag.Parse()
 
 	cfg, err := config.LoadHubConfig(*cfgPath)
@@ -111,7 +112,7 @@ func main() {
 	log.Printf("[hub] database: %s", dbPath)
 
 	// Initialize credential issuer.
-	credKey, err := parseCredentialKey(cfg.CredentialKey)
+	credKey, err := parseCredentialKey(cfg.CredentialKey, *devMode)
 	if err != nil {
 		log.Fatalf("credential key: %v", err)
 	}
@@ -221,11 +222,16 @@ func runPeriodicSettlement(ctx context.Context, engine *payments.SettlementEngin
 	}
 }
 
-// parseCredentialKey decodes a hex credential key or generates one for development.
-func parseCredentialKey(hexKey string) ([]byte, error) {
+// parseCredentialKey decodes a hex credential key.
+// In development mode (--dev flag), falls back to a deterministic key.
+// Without --dev, a missing key is a fatal error — prevents accidental
+// deployment with a forgeable credential secret.
+func parseCredentialKey(hexKey string, devMode bool) ([]byte, error) {
 	if hexKey == "" {
-		// Development mode: use a deterministic key (NOT for production).
-		log.Printf("[hub] WARNING: no credential_key configured, using development key")
+		if !devMode {
+			return nil, fmt.Errorf("credential_key is required in config (use --dev for development mode)")
+		}
+		log.Printf("[hub] WARNING: --dev mode, using insecure credential key — NOT FOR PRODUCTION")
 		key := make([]byte, 32)
 		copy(key, []byte("arfl-dev-key-not-for-production!"))
 		return key, nil

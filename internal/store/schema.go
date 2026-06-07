@@ -55,6 +55,14 @@ BEGIN
     SELECT RAISE(FAIL, 'invoice financial fields are immutable');
 END;
 
+-- Invoices: enforce forward-only status transitions (open→settled, open→expired).
+CREATE TRIGGER IF NOT EXISTS invoices_forward_transition
+BEFORE UPDATE ON invoices
+WHEN OLD.status != 'open' AND OLD.status != NEW.status
+BEGIN
+    SELECT RAISE(FAIL, 'invoice status transitions are forward-only');
+END;
+
 -- ============================================================
 -- TICKETS: Bandwidth credentials issued after payment
 -- Each ticket is atomic (fully consumed or not) and single-use.

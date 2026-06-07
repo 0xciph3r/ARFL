@@ -1484,3 +1484,62 @@ can have their status changed. Once settled or expired, the status is immutable 
 the DB level (not just application level).
 
 **STRIDE mapping:** Tampering — reverting settlement status.
+
+---
+
+### Decision 60: Exit-side ticket_id enforcement in query
+
+**Context:** Exit subquery didn't validate ticket_id. Entry and exit could report
+different tickets for same session, allowing cross-pollination.
+
+**Decision:** Exit subquery selects ticket_id with HAVING COUNT(DISTINCT ticket_id)=1.
+JOIN uses both session_id AND ticket_id. Mismatched tickets = no settlement.
+
+**STRIDE mapping:** Spoofing — adversarial nodes mixing tickets across sessions.
+
+---
+
+### Decision 61: Tier-aware computePayoutSats using invoice data
+
+**Context:** computePayoutSats hardcoded 1gb rate. 10gb/50gb tiers have volume discounts
+(20%/40% cheaper per byte). Using 1gb rate overstates earnings for discount tiers.
+
+**Decision:** computePayoutSats takes (billableBytes, invoiceAmountSats, invoiceBytesAllowed).
+Uses the originating invoice's rate, making it immune to tier config changes.
+Sats are computed per node share (billable/2), accumulated per node.
+
+**STRIDE mapping:** Elevation — overstating node earnings breaks budget guard.
+
+---
+
+### Decision 62: Context cancellation leaves payout in_flight
+
+**Context:** Keysend returning context.Canceled/DeadlineExceeded means payment outcome
+is unknown — the node may have been paid but RPC response was lost.
+
+**Decision:** After MarkPayoutInFlight, context errors are treated like PaymentInFlight:
+payout stays in in_flight, logged for reconciliation. Pre-flight ctx.Err() check
+prevents entering in_flight when context is already canceled.
+
+**STRIDE mapping:** Tampering — marking unknown-outcome as "failed" enables double-pay on retry.
+
+---
+
+### Decision 63: UNIQUE constraint on payouts(settlement_entry_id)
+
+**Context:** Without uniqueness, concurrent settlement cycles or bugs could create
+duplicate payout rows for the same settlement entry, risking double payment.
+
+**Decision:** UNIQUE INDEX on settlement_entry_id. One payout per entry enforced at DB layer.
+RetryFailedPayouts reuses same row (MarkPayoutRetrying), so UNIQUE is compatible.
+
+**STRIDE mapping:** Tampering — duplicate payout creation.
+
+---
+
+### Decision 64: go-sqlite3 as direct dependency
+
+**Context:** go-sqlite3 is blank-imported in store.go (CGo driver registration).
+go.mod marked it indirect, which can confuse tooling and go mod tidy.
+
+**Decision:** Moved to direct require block. Matches actual usage pattern.

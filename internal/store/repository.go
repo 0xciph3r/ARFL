@@ -554,13 +554,14 @@ func (s *Store) GetSessionUsageSummaries(from, to string) ([]SessionUsageSummary
 		) e
 		INNER JOIN (
 			SELECT session_id,
+			       MAX(ticket_id) AS ticket_id,
 			       MAX(node_pubkey) AS node_pubkey,
 			       MAX(bytes_reported) AS max_bytes
 			FROM usage_reports
 			WHERE node_role = 'exit' AND received_at >= ? AND received_at < ?
 			GROUP BY session_id
-			HAVING COUNT(DISTINCT node_pubkey) = 1
-		) x ON e.session_id = x.session_id`,
+			HAVING COUNT(DISTINCT node_pubkey) = 1 AND COUNT(DISTINCT ticket_id) = 1
+		) x ON e.session_id = x.session_id AND e.ticket_id = x.ticket_id`,
 		from, to, from, to,
 	)
 	if err != nil {
@@ -587,6 +588,7 @@ type TicketSettlementInfo struct {
 	TicketBytes   int64
 	InvoiceStatus string
 	AmountSats    int64
+	BytesAllowed  int64
 	Tier          string
 }
 
@@ -594,14 +596,14 @@ type TicketSettlementInfo struct {
 // Returns error if the ticket doesn't exist.
 func (s *Store) GetTicketSettlementInfo(ticketID string) (*TicketSettlementInfo, error) {
 	row := s.db.QueryRow(`
-		SELECT t.id, t.status, t.bytes_value, i.status, i.amount_sats, i.tier
+		SELECT t.id, t.status, t.bytes_value, i.status, i.amount_sats, i.bytes_allowed, i.tier
 		FROM tickets t
 		JOIN invoices i ON t.payment_hash = i.payment_hash
 		WHERE t.id = ?`, ticketID)
 
 	var info TicketSettlementInfo
 	err := row.Scan(&info.TicketID, &info.TicketStatus, &info.TicketBytes,
-		&info.InvoiceStatus, &info.AmountSats, &info.Tier)
+		&info.InvoiceStatus, &info.AmountSats, &info.BytesAllowed, &info.Tier)
 	if err != nil {
 		return nil, err
 	}

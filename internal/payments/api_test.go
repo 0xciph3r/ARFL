@@ -460,7 +460,7 @@ func TestPurchase_RateLimit(t *testing.T) {
 	env := setupTestEnv(t)
 
 	body := `{"tier_id": "1gb"}`
-	// Exhaust the 10-per-minute rate limit.
+	// Exhaust the 10-per-hour rate limit.
 	for i := 0; i < 10; i++ {
 		resp := httpPost(t, env.server.URL+"/purchase", "application/json", strings.NewReader(body))
 		resp.Body.Close()

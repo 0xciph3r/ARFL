@@ -1459,3 +1459,28 @@ all payouts created in the current run, regardless of their outcome.
 
 **Defend it as:** "Sats are committed the moment we create the payout record, not
 when the Lightning payment succeeds. The budget guard must reflect this."
+
+---
+
+### Decision 58: MaxBytesReader on API endpoints
+
+**Context:** DoS via oversized JSON bodies flagged by code reviewer.
+
+**Decision:** `/purchase` uses `http.MaxBytesReader(w, r.Body, 1024)` (1KB),
+`/report` uses `http.MaxBytesReader(w, r.Body, 4096)` (4KB). Both are generous
+for their payloads but prevent memory exhaustion from multi-GB bodies.
+
+**STRIDE mapping:** Denial of Service — unbounded request bodies.
+
+---
+
+### Decision 59: Invoice forward-transition trigger
+
+**Context:** DB schema enforced immutable financial fields but not status direction.
+A bug could reopen a settled/expired invoice.
+
+**Decision:** `invoices_forward_transition` trigger: only invoices with `status='open'`
+can have their status changed. Once settled or expired, the status is immutable at
+the DB level (not just application level).
+
+**STRIDE mapping:** Tampering — reverting settlement status.

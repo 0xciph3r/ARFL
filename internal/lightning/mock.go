@@ -27,11 +27,11 @@ type MockClient struct {
 	subs map[chan *Invoice]struct{}
 
 	// Chaos injection — set these to simulate failures.
-	CreateInvoiceErr error         // if set, CreateInvoice always fails
-	SendPaymentErr   error         // if set, SendPayment always fails
-	KeysendErr       error         // if set, Keysend always fails
+	CreateInvoiceErr error          // if set, CreateInvoice always fails
+	SendPaymentErr   error          // if set, SendPayment always fails
+	KeysendErr       error          // if set, Keysend always fails
 	KeysendResult    *PaymentResult // if set, Keysend returns this instead of default success
-	PaymentDelay     time.Duration // artificial delay on SendPayment/Keysend
+	PaymentDelay     time.Duration  // artificial delay on SendPayment/Keysend
 }
 
 // NewMockClient creates a mock Lightning client.

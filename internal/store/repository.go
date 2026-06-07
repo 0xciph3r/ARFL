@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/Radi-Labs/ARFL/internal/credentials"
 )
 
 // --- Invoice operations (insert + status transition only) ---
@@ -49,13 +51,21 @@ func (s *Store) SettleInvoice(paymentHash string) error {
 }
 
 // ExpireInvoice marks an invoice as expired. Only transitions open → expired.
+// Returns an error if the invoice is not found or not in open state.
 func (s *Store) ExpireInvoice(paymentHash string) error {
-	_, err := s.db.Exec(`
+	res, err := s.db.Exec(`
 		UPDATE invoices SET status = 'expired'
 		WHERE payment_hash = ? AND status = 'open'`,
 		paymentHash,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("invoice %s not found or not in open state", paymentHash)
+	}
+	return nil
 }
 
 // InvoiceRecord is the read model for an invoice.
@@ -98,6 +108,29 @@ func (s *Store) InsertTicket(id, paymentHash string, bytesValue int64, hmac stri
 		id, paymentHash, bytesValue, hmac,
 	)
 	return err
+}
+
+// InsertTicketsBatch atomically inserts all tickets for an invoice.
+// Uses a transaction so that a crash mid-insert rolls back all inserts,
+// making the operation all-or-nothing for crash recovery.
+func (s *Store) InsertTicketsBatch(paymentHash string, tickets []*credentials.Ticket) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, t := range tickets {
+		if _, err := tx.Exec(`
+			INSERT INTO tickets (id, payment_hash, bytes_value, hmac)
+			VALUES (?, ?, ?, ?)`,
+			t.ID, paymentHash, t.Bytes, t.MAC,
+		); err != nil {
+			return fmt.Errorf("insert ticket %s: %w", t.ID, err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 // RedeemTicket marks a ticket as redeemed. Only transitions active → redeemed.
@@ -497,6 +530,9 @@ type SessionUsageSummary struct {
 // GetSessionUsageSummaries returns aggregated usage reports grouped by session,
 // using MAX(bytes_reported) per role per session (cumulative reporting model).
 // Only returns sessions that have BOTH entry and exit reports.
+//
+// Sessions with conflicting reports (multiple nodes or tickets per role)
+// are rejected via HAVING — they indicate adversarial or buggy input.
 func (s *Store) GetSessionUsageSummaries(from, to string) ([]SessionUsageSummary, error) {
 	rows, err := s.db.Query(`
 		SELECT
@@ -507,16 +543,23 @@ func (s *Store) GetSessionUsageSummaries(from, to string) ([]SessionUsageSummary
 			e.max_bytes   AS entry_bytes,
 			x.max_bytes   AS exit_bytes
 		FROM (
-			SELECT session_id, ticket_id, node_pubkey, MAX(bytes_reported) AS max_bytes
+			SELECT session_id,
+			       MAX(ticket_id) AS ticket_id,
+			       MAX(node_pubkey) AS node_pubkey,
+			       MAX(bytes_reported) AS max_bytes
 			FROM usage_reports
 			WHERE node_role = 'entry' AND received_at >= ? AND received_at < ?
-			GROUP BY session_id, ticket_id, node_pubkey
+			GROUP BY session_id
+			HAVING COUNT(DISTINCT node_pubkey) = 1 AND COUNT(DISTINCT ticket_id) = 1
 		) e
 		INNER JOIN (
-			SELECT session_id, node_pubkey, MAX(bytes_reported) AS max_bytes
+			SELECT session_id,
+			       MAX(node_pubkey) AS node_pubkey,
+			       MAX(bytes_reported) AS max_bytes
 			FROM usage_reports
 			WHERE node_role = 'exit' AND received_at >= ? AND received_at < ?
-			GROUP BY session_id, node_pubkey
+			GROUP BY session_id
+			HAVING COUNT(DISTINCT node_pubkey) = 1
 		) x ON e.session_id = x.session_id`,
 		from, to, from, to,
 	)

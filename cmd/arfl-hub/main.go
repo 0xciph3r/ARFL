@@ -207,10 +207,10 @@ func runPeriodicSettlement(ctx context.Context, engine *payments.SettlementEngin
 				log.Printf("[settlement] error: %v", err)
 				continue
 			}
-			log.Printf("[settlement] done: %d sessions, %d entries, %d payouts (%d ok, %d failed), %d sats paid",
+			log.Printf("[settlement] done: %d sessions, %d entries, %d payouts (%d ok, %d failed, %d in-flight), %d sats paid",
 				result.SessionsSettled, result.EntriesCreated,
 				result.PayoutsSent, result.PayoutsSucceeded, result.PayoutsFailed,
-				result.TotalPaidSats)
+				result.PayoutsInFlight, result.TotalPaidSats)
 
 			// Retry any failed payouts from previous periods.
 			if ok, fail, err := engine.RetryFailedPayouts(ctx); err != nil {

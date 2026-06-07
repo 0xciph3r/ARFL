@@ -60,6 +60,16 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// DefaultPath returns the platform-specific default database path.
+// Exported for use by the Hub daemon when no explicit path is configured.
+func DefaultPath() string {
+	p, err := defaultDBPath()
+	if err != nil {
+		return "hub.db"
+	}
+	return p
+}
+
 // DB exposes the underlying *sql.DB for transactions that span multiple
 // repository operations. Use sparingly — prefer the typed methods.
 func (s *Store) DB() *sql.DB {

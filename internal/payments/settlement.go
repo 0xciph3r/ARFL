@@ -2,6 +2,7 @@ package payments
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
@@ -9,6 +10,10 @@ import (
 	"github.com/Radi-Labs/ARFL/internal/lightning"
 	"github.com/Radi-Labs/ARFL/internal/store"
 )
+
+// ErrPaymentInFlight is returned when a Lightning payment is still routing.
+// The payout stays in in_flight state for manual reconciliation.
+var ErrPaymentInFlight = errors.New("payment in-flight")
 
 // SettlementEngine computes and executes node payouts.
 //
@@ -48,6 +53,7 @@ type SettlementResult struct {
 	PayoutsSent      int
 	PayoutsSucceeded int
 	PayoutsFailed    int
+	PayoutsInFlight  int // still routing — requires manual reconciliation
 	TotalPaidSats    int64
 }
 
@@ -206,13 +212,21 @@ func (e *SettlementEngine) executePayouts(ctx context.Context, result *Settlemen
 			continue
 		}
 
+		// Payout is now committed (pending state) — count it against the
+		// budget immediately, regardless of whether sendPayout succeeds.
+		// This prevents under-counting when payouts are in-flight or failed.
+		committed += entry.AmountSats
+
 		if err := e.sendPayout(ctx, payoutID, entry.NodePubkey, entry.AmountSats); err != nil {
-			result.PayoutsFailed++
-			log.Printf("[settlement] payout %d failed: %v", payoutID, err)
+			if errors.Is(err, ErrPaymentInFlight) {
+				result.PayoutsInFlight++
+			} else {
+				result.PayoutsFailed++
+			}
+			log.Printf("[settlement] payout %d: %v", payoutID, err)
 		} else {
 			result.PayoutsSucceeded++
 			result.TotalPaidSats += entry.AmountSats
-			committed += entry.AmountSats
 		}
 		result.PayoutsSent++
 	}
@@ -247,7 +261,7 @@ func (e *SettlementEngine) sendPayout(ctx context.Context, payoutID int64, nodeP
 		// Payment still routing — leave in in_flight state.
 		// Do NOT mark as failed; retrying could cause double-payment.
 		log.Printf("[settlement] payout %d: payment in-flight, requires reconciliation", payoutID)
-		return fmt.Errorf("payment in-flight: requires manual reconciliation")
+		return ErrPaymentInFlight
 	default:
 		errMsg := "payment did not succeed"
 		if result.Error != "" {

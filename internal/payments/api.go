@@ -36,6 +36,10 @@ type PurchaseAPI struct {
 	maxRequests int
 	rateWindow  time.Duration
 
+	// Serializes ticket issuance to prevent double-issuance from
+	// concurrent settlement events for the same invoice.
+	issueMu sync.Mutex
+
 	// Invoice settlement subscriber — started once.
 	cancelSub context.CancelFunc
 }
@@ -289,17 +293,18 @@ func (api *PurchaseAPI) handleReport(w http.ResponseWriter, r *http.Request) {
 // onInvoiceSettled is called when a Lightning invoice is paid.
 // It issues tickets and stores them in the database.
 //
-// Crash-safe: if the Hub crashes after settling the invoice but before
-// issuing tickets, a subsequent call (or startup reconciliation) will
-// detect the missing tickets and issue them. The ticket-existence check
-// comes FIRST, before SettleInvoice, so an already-settled invoice with
-// no tickets will still get its tickets issued.
+// Crash-safe: ticket insertion uses a transaction — crash mid-insert
+// rolls back, and the next call re-issues all tickets (count==0).
+//
+// Concurrent-safe: issueMu serializes ticket issuance per Hub instance,
+// preventing double-issuance from concurrent settlement events.
 func (api *PurchaseAPI) onInvoiceSettled(inv *lightning.Invoice) error {
+	// Serialize ticket issuance — prevents concurrent settlement events
+	// for the same invoice from both issuing tickets (2N tickets).
+	api.issueMu.Lock()
+	defer api.issueMu.Unlock()
+
 	// Step 1: Check if tickets already exist (idempotency guard).
-	// This MUST come before SettleInvoice so that crash-recovery works:
-	// if we crashed after settle but before ticket issuance, the invoice
-	// is already settled — but tickets are missing. Checking first lets
-	// us skip only when tickets are truly issued.
 	existing, err := api.store.CountTicketsByPaymentHash(inv.PaymentHash)
 	if err != nil {
 		return fmt.Errorf("count tickets for %s: %w", inv.PaymentHash, err)
@@ -325,17 +330,17 @@ func (api *PurchaseAPI) onInvoiceSettled(inv *lightning.Invoice) error {
 		return fmt.Errorf("lookup tier %s: %w", record.Tier, err)
 	}
 
-	// Step 4: Issue tickets.
+	// Step 4: Issue tickets in memory.
 	tickets, err := api.issuer.Issue(inv.PaymentHash, tier.TicketBytes, tier.TicketCount)
 	if err != nil {
 		return fmt.Errorf("issue tickets for %s: %w", inv.PaymentHash, err)
 	}
 
-	// Step 5: Persist each ticket.
-	for _, t := range tickets {
-		if err := api.store.InsertTicket(t.ID, inv.PaymentHash, t.Bytes, t.MAC); err != nil {
-			return fmt.Errorf("insert ticket %s: %w", t.ID, err)
-		}
+	// Step 5: Insert all tickets atomically (transaction).
+	// If Hub crashes mid-insert, the transaction rolls back and the
+	// next call will see count==0 and re-issue all tickets.
+	if err := api.store.InsertTicketsBatch(inv.PaymentHash, tickets); err != nil {
+		return fmt.Errorf("insert tickets for %s: %w", inv.PaymentHash, err)
 	}
 
 	log.Printf("[payment-api] issued %d tickets for invoice %s (tier %s)",

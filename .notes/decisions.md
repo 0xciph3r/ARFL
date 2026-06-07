@@ -1385,3 +1385,77 @@ treated as separate rows, which is correct.
 **Defend it as:** "Standard SQL requires all non-aggregated columns to be in GROUP BY.
 Relying on SQLite's arbitrary-row extension is a portability bug and a correctness
 bug when adversarial inputs are possible."
+
+---
+
+## Decision 54: Atomic ticket insertion via transaction
+
+**Date:** 2026-06-07
+**Context:** Ticket insertion looped over individual INSERT calls. A crash after
+inserting 3 of 10 tickets left a partial set. On restart, CountTickets returned
+3 > 0 and skipped — client got 3/10 tickets for a fully-paid invoice.
+
+**Decision:** InsertTicketsBatch wraps all ticket INSERTs in a single SQLite
+transaction. Crash mid-insert rolls back all inserts (count stays 0), so the
+next onInvoiceSettled call re-issues all 10 tickets.
+
+**STRIDE mapping:** Denial of Service — partial ticket set denies paid bandwidth.
+
+**Defend it as:** "Ticket issuance is an atomic operation. Either all tickets exist
+or none do. Transactions give us that guarantee for free."
+
+---
+
+## Decision 55: issueMu mutex serializes ticket issuance
+
+**Date:** 2026-06-07
+**Context:** Concurrent settlement events for the same invoice could both see
+CountTickets==0 and both issue tickets, creating 2N tickets for 1 payment.
+
+**Decision:** onInvoiceSettled acquires issueMu before checking/issuing. Combined
+with the transactional InsertTicketsBatch, this prevents both the concurrency
+race and the partial-insert crash.
+
+Single Hub instance: mutex sufficient. Multi-Hub: would need distributed lock
+(out of scope for Phase 3).
+
+**STRIDE mapping:** Tampering — double-issuance violates invariant 4 (ticket redeemed once).
+
+**Defend it as:** "The mutex serializes the check-then-insert. The transaction
+makes the insert atomic. Together they close both the race and the crash gap."
+
+---
+
+## Decision 56: HAVING filters reject adversarial multi-node sessions
+
+**Date:** 2026-06-07
+**Context:** A session with reports from two different entry nodes could create
+cross-products in the settlement query, overpaying or misattributing usage.
+
+**Decision:** GetSessionUsageSummaries uses HAVING COUNT(DISTINCT node_pubkey)=1
+AND COUNT(DISTINCT ticket_id)=1 per role. Sessions with conflicting reports are
+silently filtered out — they indicate adversarial or buggy input.
+
+**STRIDE mapping:** Elevation of Privilege — attacker injects fake entry reports
+to redirect payment to their node.
+
+**Defend it as:** "A session has exactly one entry node and one exit node. If the
+data says otherwise, the data is adversarial. Reject, don't guess."
+
+---
+
+## Decision 57: Budget tracks committed from InsertPayout, not sendPayout
+
+**Date:** 2026-06-07
+**Context:** The executePayouts loop only incremented the local `committed`
+counter on successful payouts. In-flight payouts (sats already left the node)
+were not counted, allowing the budget guard to under-count and overspend.
+
+**Decision:** `committed += entry.AmountSats` is applied immediately after
+InsertPayout, before sendPayout. This ensures the budget guard accounts for
+all payouts created in the current run, regardless of their outcome.
+
+**STRIDE mapping:** Tampering — budget under-count allows total payouts > purchases.
+
+**Defend it as:** "Sats are committed the moment we create the payout record, not
+when the Lightning payment succeeds. The budget guard must reflect this."

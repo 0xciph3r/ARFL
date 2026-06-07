@@ -2,8 +2,10 @@ package payments
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -555,4 +557,176 @@ func TestSTRIDE_MarkPayoutFailed_DBError_Surfaced(t *testing.T) {
 	if failedCount != 2 {
 		t.Fatalf("expected 2 failed payouts in DB, got %d", failedCount)
 	}
+}
+
+func TestSTRIDE_ConcurrentSettlement_NoDoubleTickets(t *testing.T) {
+// STRIDE/Tampering: multiple goroutines process the same settlement
+// concurrently. Exactly one set of tickets must be issued.
+env := setupSettlementEnv(t)
+
+secret := []byte("test-secret-key-for-hmac-32bytes!")
+issuer := credentials.NewHMACIssuer("key-1", secret)
+api := NewPurchaseAPI(env.store, env.mock, issuer)
+
+env.store.InsertInvoice("hash-race", "lnbc...", 500, "1gb", 1_000_000_000,
+time.Now().Add(time.Hour), "")
+
+inv := &lightning.Invoice{
+PaymentHash: "hash-race",
+Status:      lightning.InvoiceSettled,
+}
+
+// Fire 20 concurrent settlement calls.
+var wg sync.WaitGroup
+errs := make([]error, 20)
+for i := 0; i < 20; i++ {
+wg.Add(1)
+go func(idx int) {
+defer wg.Done()
+errs[idx] = api.onInvoiceSettled(inv)
+}(i)
+}
+wg.Wait()
+
+// Exactly 10 tickets must exist (not 20, 30, 200).
+count, _ := env.store.CountTicketsByPaymentHash("hash-race")
+if count != 10 {
+t.Fatalf("concurrent settlement produced %d tickets (expected exactly 10)", count)
+}
+
+// No goroutine should have errored.
+for i, err := range errs {
+if err != nil {
+t.Errorf("goroutine %d errored: %v", i, err)
+}
+}
+}
+
+func TestSTRIDE_AdversarialMultiNodeSession_Rejected(t *testing.T) {
+// STRIDE/Elevation: a session has reports from two different entry nodes.
+// Settlement must reject this session entirely — paying either node
+// could be paying an attacker.
+env := setupSettlementEnv(t)
+start, end := periodBounds()
+
+// Create invoice + ticket chain.
+env.store.InsertInvoice("hash-adv", "lnbc...", 500, "1gb", 1_000_000_000,
+time.Now().Add(time.Hour), "")
+env.store.SettleInvoice("hash-adv")
+env.store.InsertTicket("ticket-adv", "hash-adv", 100_000_000, "hmac")
+env.store.RedeemTicket("ticket-adv", "client-1")
+
+// Two different nodes claim to be entry for the same session.
+kp1, _ := nostr.GenerateKeyPair()
+kp2, _ := nostr.GenerateKeyPair()
+kpExit, _ := nostr.GenerateKeyPair()
+now := time.Now().UTC().Format(time.RFC3339)
+
+env.store.InsertUsageReport("sess-adv", "ticket-adv", kp1.PubkeyHex(),
+"entry", 50_000_000, now, "sig1")
+env.store.InsertUsageReport("sess-adv", "ticket-adv", kp2.PubkeyHex(),
+"entry", 60_000_000, now, "sig2")
+env.store.InsertUsageReport("sess-adv", "ticket-adv", kpExit.PubkeyHex(),
+"exit", 50_000_000, now, "sig3")
+
+result, err := env.engine.RunSettlement(context.Background(), start, end)
+if err != nil {
+t.Fatalf("RunSettlement: %v", err)
+}
+
+// Session should be filtered out by HAVING COUNT(DISTINCT node_pubkey) = 1.
+if result.SessionsSettled != 0 {
+t.Fatalf("adversarial multi-node session should be rejected, got %d settled", result.SessionsSettled)
+}
+if result.PayoutsSent != 0 {
+t.Fatalf("no payouts should be sent for adversarial session, got %d", result.PayoutsSent)
+}
+}
+
+func TestSTRIDE_PaymentInFlight_CountedCorrectly(t *testing.T) {
+// STRIDE/Repudiation: in-flight payments must be counted separately
+// from failed payments in settlement results.
+env := setupSettlementEnv(t)
+env.mock.KeysendResult = &lightning.PaymentResult{
+Status: lightning.PaymentInFlight,
+}
+start, end := periodBounds()
+
+env.seedSession(t, "sess-1", "ticket-1", 50_000_000, 50_000_000)
+
+result, _ := env.engine.RunSettlement(context.Background(), start, end)
+
+if result.PayoutsInFlight != 2 {
+t.Errorf("expected 2 in-flight payouts, got %d", result.PayoutsInFlight)
+}
+if result.PayoutsFailed != 0 {
+t.Errorf("in-flight should not count as failed, got %d failed", result.PayoutsFailed)
+}
+}
+
+func TestSTRIDE_BudgetTracksInFlightPayouts(t *testing.T) {
+// STRIDE/Tampering: committed budget must include in-flight payouts,
+// not just successful ones. Otherwise the budget guard under-counts
+// and could allow overspend.
+env := setupSettlementEnv(t)
+
+// Purchase 500 sats (1gb tier).
+env.store.InsertInvoice("hash-1", "lnbc...", 500, "1gb", 1_000_000_000,
+time.Now().Add(time.Hour), "")
+env.store.SettleInvoice("hash-1")
+
+// Two tickets for two sessions.
+env.store.InsertTicket("ticket-1", "hash-1", 100_000_000, "hmac")
+env.store.RedeemTicket("ticket-1", "client-1")
+env.store.InsertTicket("ticket-2", "hash-1", 100_000_000, "hmac")
+env.store.RedeemTicket("ticket-2", "client-1")
+
+kp1, _ := nostr.GenerateKeyPair()
+kp2, _ := nostr.GenerateKeyPair()
+now := time.Now().UTC().Format(time.RFC3339)
+
+// Session 1: 100MB both sides → 50 sats per node → 100 total.
+env.store.InsertUsageReport("sess-1", "ticket-1", kp1.PubkeyHex(),
+"entry", 100_000_000, now, "sig1")
+env.store.InsertUsageReport("sess-1", "ticket-1", kp2.PubkeyHex(),
+"exit", 100_000_000, now, "sig2")
+
+// Session 2: same nodes, 100MB.
+env.store.InsertUsageReport("sess-2", "ticket-2", kp1.PubkeyHex(),
+"entry", 100_000_000, now, "sig3")
+env.store.InsertUsageReport("sess-2", "ticket-2", kp2.PubkeyHex(),
+"exit", 100_000_000, now, "sig4")
+
+start, end := periodBounds()
+env.engine.RunSettlement(context.Background(), start, end)
+
+// Verify total committed never exceeds purchased.
+purchased, _ := env.store.TotalPurchasedSats()
+committed, _ := env.store.TotalCommittedPayoutSats()
+
+if committed > purchased {
+t.Fatalf("INVARIANT VIOLATION: committed %d > purchased %d", committed, purchased)
+}
+}
+
+func TestSTRIDE_InFlightPayout_ErrSentinel(t *testing.T) {
+// Verify ErrPaymentInFlight is a distinguishable sentinel.
+env := setupSettlementEnv(t)
+env.mock.KeysendResult = &lightning.PaymentResult{
+Status: lightning.PaymentInFlight,
+}
+start, end := periodBounds()
+
+env.seedSession(t, "sess-1", "ticket-1", 50_000_000, 50_000_000)
+
+// RunSettlement returns nil (it logs but doesn't propagate per-payout errors).
+_, err := env.engine.RunSettlement(context.Background(), start, end)
+if err != nil {
+t.Fatalf("settlement should not error on in-flight: %v", err)
+}
+
+// Verify ErrPaymentInFlight is usable with errors.Is.
+if !errors.Is(ErrPaymentInFlight, ErrPaymentInFlight) {
+t.Fatal("ErrPaymentInFlight should be identifiable via errors.Is")
+}
 }

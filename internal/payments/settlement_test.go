@@ -96,6 +96,37 @@ func periodBounds() (string, string) {
 	return start, end
 }
 
+// seedSessionWithTier creates a complete chain with a specific tier.
+func (env *settlementEnv) seedSessionWithTier(t *testing.T, sessionID, ticketID, tier string, amountSats, bytesAllowed, ticketBytes, entryBytes, exitBytes int64) {
+	t.Helper()
+
+	env.store.InsertInvoice("hash-"+sessionID, "lnbc...", amountSats, tier, bytesAllowed,
+		time.Now().Add(time.Hour), "")
+	env.store.SettleInvoice("hash-" + sessionID)
+	env.store.InsertTicket(ticketID, "hash-"+sessionID, ticketBytes, "hmac-test")
+	env.store.RedeemTicket(ticketID, "client-1")
+
+	entryKP, _ := nostr.GenerateKeyPair()
+	exitKP, _ := nostr.GenerateKeyPair()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	entryReport := &UsageReport{
+		SessionID: sessionID, TicketID: ticketID, NodeRole: "entry",
+		BytesReported: entryBytes, ReportedAt: now,
+	}
+	entryReport.Sign(entryKP)
+	env.store.InsertUsageReport(sessionID, ticketID, entryReport.NodePubkey,
+		"entry", entryBytes, now, entryReport.Signature)
+
+	exitReport := &UsageReport{
+		SessionID: sessionID, TicketID: ticketID, NodeRole: "exit",
+		BytesReported: exitBytes, ReportedAt: now,
+	}
+	exitReport.Sign(exitKP)
+	env.store.InsertUsageReport(sessionID, ticketID, exitReport.NodePubkey,
+		"exit", exitBytes, now, exitReport.Signature)
+}
+
 // --- Happy path ---
 
 func TestSettlement_SingleSession(t *testing.T) {
@@ -361,21 +392,33 @@ func TestSettlement_BelowMinPayout_NoPayout(t *testing.T) {
 
 func TestComputePayoutSats(t *testing.T) {
 	cases := []struct {
-		billableBytes int64
-		expectedSats  int64
+		billableBytes     int64
+		invoiceAmountSats int64
+		invoiceBytesAllow int64
+		expectedSats      int64
 	}{
-		{1_000_000_000, 500}, // 1 GB = full tier price
-		{500_000_000, 250},   // 500 MB
-		{100_000_000, 50},    // 100 MB (1 ticket)
-		{50_000_000, 25},     // 50 MB
-		{1_000_000, 0},       // 1 MB (too small for 1 sat)
-		{2_000_000, 1},       // 2 MB = 1 sat
-		{0, 0},               // zero bytes
+		// 1GB tier: 500 sats / 1,000,000,000 bytes
+		{1_000_000_000, 500, 1_000_000_000, 500},
+		{500_000_000, 500, 1_000_000_000, 250},
+		{100_000_000, 500, 1_000_000_000, 50},
+		{50_000_000, 500, 1_000_000_000, 25},
+		{1_000_000, 500, 1_000_000_000, 0}, // too small
+		{2_000_000, 500, 1_000_000_000, 1}, // 2 MB = 1 sat
+		{0, 500, 1_000_000_000, 0},         // zero bytes
+		// 10GB tier: 4,000 sats / 10,000,000,000 bytes (20% discount)
+		{1_000_000_000, 4_000, 10_000_000_000, 400},    // 1 GB at 10gb rate
+		{10_000_000_000, 4_000, 10_000_000_000, 4_000}, // full 10GB
+		// 50GB tier: 15,000 sats / 50,000,000,000 bytes (40% discount)
+		{1_000_000_000, 15_000, 50_000_000_000, 300},     // 1 GB at 50gb rate
+		{50_000_000_000, 15_000, 50_000_000_000, 15_000}, // full 50GB
+		// Edge: zero bytes_allowed
+		{1_000_000_000, 500, 0, 0},
 	}
 	for _, c := range cases {
-		got := computePayoutSats(c.billableBytes)
+		got := computePayoutSats(c.billableBytes, c.invoiceAmountSats, c.invoiceBytesAllow)
 		if got != c.expectedSats {
-			t.Errorf("computePayoutSats(%d) = %d, want %d", c.billableBytes, got, c.expectedSats)
+			t.Errorf("computePayoutSats(%d, %d, %d) = %d, want %d",
+				c.billableBytes, c.invoiceAmountSats, c.invoiceBytesAllow, got, c.expectedSats)
 		}
 	}
 }
@@ -728,5 +771,157 @@ func TestSTRIDE_InFlightPayout_ErrSentinel(t *testing.T) {
 	// Verify ErrPaymentInFlight is usable with errors.Is.
 	if !errors.Is(ErrPaymentInFlight, ErrPaymentInFlight) {
 		t.Fatal("ErrPaymentInFlight should be identifiable via errors.Is")
+	}
+}
+
+// --- STRIDE: Context cancellation leaves payout in_flight ---
+
+func TestSTRIDE_ContextCancellation_LeavesInFlight(t *testing.T) {
+	// STRIDE/Tampering: If Keysend returns a context cancellation error,
+	// the payment outcome is unknown. Marking it "failed" risks double-pay on retry.
+	env := setupSettlementEnv(t)
+
+	// Make Keysend return context.Canceled error.
+	env.mock.KeysendErr = context.Canceled
+
+	start, end := periodBounds()
+	env.seedSession(t, "sess-ctx", "ticket-ctx", 50_000_000, 50_000_000)
+
+	result, err := env.engine.RunSettlement(context.Background(), start, end)
+	if err != nil {
+		t.Fatalf("settlement should not error: %v", err)
+	}
+
+	// Should be counted as in-flight, NOT failed.
+	// Two nodes (entry + exit) = 2 payouts.
+	if result.PayoutsInFlight != 2 {
+		t.Errorf("expected 2 in-flight, got %d", result.PayoutsInFlight)
+	}
+	if result.PayoutsFailed != 0 {
+		t.Errorf("expected 0 failed, got %d (context cancel must not be treated as failure)", result.PayoutsFailed)
+	}
+}
+
+func TestSTRIDE_ContextDeadline_LeavesInFlight(t *testing.T) {
+	env := setupSettlementEnv(t)
+	env.mock.KeysendErr = context.DeadlineExceeded
+	start, end := periodBounds()
+	env.seedSession(t, "sess-dl", "ticket-dl", 50_000_000, 50_000_000)
+
+	result, _ := env.engine.RunSettlement(context.Background(), start, end)
+	if result.PayoutsInFlight != 2 {
+		t.Errorf("expected 2 in-flight, got %d", result.PayoutsInFlight)
+	}
+	if result.PayoutsFailed != 0 {
+		t.Errorf("expected 0 failed, got %d", result.PayoutsFailed)
+	}
+}
+
+// --- STRIDE: Volume discount correctness ---
+
+func TestSTRIDE_VolumeDiscount_PayoutReflectsTierRate(t *testing.T) {
+	// STRIDE/Elevation: Using 1gb rate for all tiers overstates node earnings
+	// for discounted tiers, breaking the budget guard.
+	env := setupSettlementEnv(t)
+	start, end := periodBounds()
+
+	// Seed a session with 10gb tier: 4,000 sats / 10,000,000,000 bytes.
+	// Billable = min(100M, 100M) = 100M, capped at ticket bytes (100M).
+	// Each node gets 50M bytes. Sats per node = 50M * 4000 / 10B = 20 sats.
+	env.seedSessionWithTier(t, "sess-10g", "tick-10g", "10gb",
+		4_000, 10_000_000_000, 100_000_000,
+		100_000_000, 100_000_000)
+
+	result, err := env.engine.RunSettlement(context.Background(), start, end)
+	if err != nil {
+		t.Fatalf("settlement: %v", err)
+	}
+	if result.SessionsSettled != 1 {
+		t.Fatalf("expected 1 session, got %d", result.SessionsSettled)
+	}
+
+	// At 1gb rate (500/1B), each node would get 25 sats (wrong).
+	// At 10gb rate (4000/10B), each node should get 20 sats (correct).
+	if result.TotalPaidSats == 50 {
+		t.Fatal("payout uses 1gb rate (50 sats total) instead of 10gb rate (40 sats total)")
+	}
+	if result.TotalPaidSats != 40 {
+		t.Errorf("expected 40 total sats (2×20 at 10gb rate), got %d", result.TotalPaidSats)
+	}
+}
+
+// --- STRIDE: Duplicate settlement_entry_id blocked by UNIQUE constraint ---
+
+func TestSTRIDE_DuplicatePayoutBlocked(t *testing.T) {
+	// STRIDE/Tampering: Without UNIQUE on settlement_entry_id, duplicate
+	// payout rows could be created, risking double payment.
+	env := setupSettlementEnv(t)
+	start, end := periodBounds()
+	env.seedSession(t, "sess-dup", "ticket-dup", 50_000_000, 50_000_000)
+
+	// Run settlement twice — second run should not create duplicate payouts.
+	result1, err := env.engine.RunSettlement(context.Background(), start, end)
+	if err != nil {
+		t.Fatalf("first settlement: %v", err)
+	}
+	if result1.PayoutsSent == 0 {
+		t.Fatal("first run should send payouts")
+	}
+
+	result2, err := env.engine.RunSettlement(context.Background(), start, end)
+	if err != nil {
+		t.Fatalf("second settlement: %v", err)
+	}
+	// Second run: entries already exist (INSERT OR IGNORE), payouts already exist.
+	if result2.PayoutsSent != 0 {
+		t.Errorf("second run should send 0 payouts (already settled), got %d", result2.PayoutsSent)
+	}
+}
+
+// --- STRIDE: Exit-side ticket_id enforcement ---
+
+func TestSTRIDE_ExitMismatchedTicket_Rejected(t *testing.T) {
+	// STRIDE/Spoofing: Entry and exit nodes report different ticket_ids
+	// for the same session. The join on ticket_id should reject this.
+	env := setupSettlementEnv(t)
+
+	// Create invoice and two tickets under same invoice.
+	env.store.InsertInvoice("hash-mismatch", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	env.store.SettleInvoice("hash-mismatch")
+	env.store.InsertTicket("ticket-a", "hash-mismatch", 100_000_000, "hmac-a")
+	env.store.InsertTicket("ticket-b", "hash-mismatch", 100_000_000, "hmac-b")
+	env.store.RedeemTicket("ticket-a", "client-1")
+	env.store.RedeemTicket("ticket-b", "client-1")
+
+	// Entry reports with ticket-a, exit reports with ticket-b.
+	entryKP, _ := nostr.GenerateKeyPair()
+	exitKP, _ := nostr.GenerateKeyPair()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	entryReport := &UsageReport{
+		SessionID: "sess-mm", TicketID: "ticket-a", NodeRole: "entry",
+		BytesReported: 50_000_000, ReportedAt: now,
+	}
+	entryReport.Sign(entryKP)
+	env.store.InsertUsageReport("sess-mm", "ticket-a", entryReport.NodePubkey,
+		"entry", 50_000_000, now, entryReport.Signature)
+
+	exitReport := &UsageReport{
+		SessionID: "sess-mm", TicketID: "ticket-b", NodeRole: "exit",
+		BytesReported: 50_000_000, ReportedAt: now,
+	}
+	exitReport.Sign(exitKP)
+	env.store.InsertUsageReport("sess-mm", "ticket-b", exitReport.NodePubkey,
+		"exit", 50_000_000, now, exitReport.Signature)
+
+	start, end := periodBounds()
+	result, err := env.engine.RunSettlement(context.Background(), start, end)
+	if err != nil {
+		t.Fatalf("settlement: %v", err)
+	}
+	// Session should be rejected — entry ticket-a ≠ exit ticket-b.
+	if result.SessionsSettled != 0 {
+		t.Errorf("expected 0 sessions (mismatched tickets), got %d", result.SessionsSettled)
 	}
 }

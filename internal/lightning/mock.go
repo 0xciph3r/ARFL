@@ -29,7 +29,8 @@ type MockClient struct {
 	// Chaos injection — set these to simulate failures.
 	CreateInvoiceErr error         // if set, CreateInvoice always fails
 	SendPaymentErr   error         // if set, SendPayment always fails
-	PaymentDelay     time.Duration // artificial delay on SendPayment
+	KeysendErr       error         // if set, Keysend always fails
+	PaymentDelay     time.Duration // artificial delay on SendPayment/Keysend
 }
 
 // NewMockClient creates a mock Lightning client.
@@ -138,6 +139,34 @@ func (m *MockClient) SendPayment(ctx context.Context, paymentRequest string, amo
 
 	m.mu.Lock()
 	m.payments[paymentRequest] = result
+	m.mu.Unlock()
+
+	return result, nil
+}
+
+// Keysend simulates a spontaneous payment to a node by public key.
+func (m *MockClient) Keysend(ctx context.Context, destPubkey string, amountSats int64) (*PaymentResult, error) {
+	if m.KeysendErr != nil {
+		return nil, m.KeysendErr
+	}
+
+	if m.PaymentDelay > 0 {
+		select {
+		case <-time.After(m.PaymentDelay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	hash, _ := randomHash()
+	result := &PaymentResult{
+		PaymentHash: hash,
+		Status:      PaymentSucceeded,
+		FeeSats:     1,
+	}
+
+	m.mu.Lock()
+	m.payments["keysend:"+destPubkey] = result
 	m.mu.Unlock()
 
 	return result, nil

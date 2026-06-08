@@ -30,6 +30,10 @@ type PurchaseAPI struct {
 	issuer credentials.Issuer
 	mux    *http.ServeMux
 
+	// Phase 4: blind signature support (nil until EnableBlindSignatures).
+	blindMint     credentials.BlindMint
+	blindVerifier credentials.BlindVerifier
+
 	// Rate limiting: map[IP][]timestamp.
 	rateLimit   map[string][]time.Time
 	rateMu      sync.Mutex

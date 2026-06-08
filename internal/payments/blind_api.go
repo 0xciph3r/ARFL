@@ -47,10 +47,12 @@ type SpendResponse struct {
 }
 
 // EnableBlindSignatures registers the /redeem and /spend endpoints.
+// The defaultKeyID specifies which denomination key to use for new entitlements.
 // Call this after NewPurchaseAPI when Phase 4 blind signatures are enabled.
-func (api *PurchaseAPI) EnableBlindSignatures(mint credentials.BlindMint, verifier credentials.BlindVerifier) {
+func (api *PurchaseAPI) EnableBlindSignatures(mint credentials.BlindMint, verifier credentials.BlindVerifier, defaultKeyID string) {
 	api.blindMint = mint
 	api.blindVerifier = verifier
+	api.blindKeyID = defaultKeyID
 	api.mux.HandleFunc("/redeem", api.handleRedeem)
 	api.mux.HandleFunc("/spend", api.handleSpend)
 }

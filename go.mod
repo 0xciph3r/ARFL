@@ -13,6 +13,8 @@ require (
 
 require (
 	github.com/btcsuite/btcd/chainhash/v2 v2.0.0 // indirect
+	github.com/cryptoballot/fdh v0.0.0-20170924224734-5eb31ce2010c // indirect
+	github.com/cryptoballot/rsablind v0.0.0-20170925165423-14f9913880b7 // indirect
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect

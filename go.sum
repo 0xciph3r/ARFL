@@ -2,6 +2,10 @@ github.com/btcsuite/btcd/btcec/v2 v2.5.0 h1:KioMXOWa76b86sTZZOmbzv/ldaQCmB8KFAyn
 github.com/btcsuite/btcd/btcec/v2 v2.5.0/go.mod h1:+K/MYXcLBtHEQjRbjHuJChuybk4LCgjdjgRwil+e+Kk=
 github.com/btcsuite/btcd/chainhash/v2 v2.0.0 h1:PMLlSloHJuEeB80XG9EjpXWNEKAZAMLl6YHZ6YsEuoA=
 github.com/btcsuite/btcd/chainhash/v2 v2.0.0/go.mod h1:mKxcZ7oGTXE7IRV+sS9hP4EVBwc/SzfNR+52IsOP9j8=
+github.com/cryptoballot/fdh v0.0.0-20170924224734-5eb31ce2010c h1:habgwvtC2G/hgK7TUV7sPmGe43OIqAr0aKUuD4X4D7s=
+github.com/cryptoballot/fdh v0.0.0-20170924224734-5eb31ce2010c/go.mod h1:5pBX/BVsUUknnixeKb1/q20aCjY7Ig5C3LcCrwTSWoU=
+github.com/cryptoballot/rsablind v0.0.0-20170925165423-14f9913880b7 h1:zkd3AG8n/WAUxTIy5DKd22U8oQGDpbaCsaRKewdxnxQ=
+github.com/cryptoballot/rsablind v0.0.0-20170925165423-14f9913880b7/go.mod h1:Jkrm3gC2eNL7k0K6wlLehI7CHiZVUCZ/cu5xT1aDNb4=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/decred/dcrd/crypto/blake256 v1.1.0 h1:zPMNGQCm0g4QTY27fOCorQW7EryeQ/U0x++OzVrdms8=

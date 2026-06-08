@@ -37,7 +37,7 @@ func setupBlindTestEnv(t *testing.T) *blindTestEnv {
 		{KeyID: denomKey.KeyID, BytesPerToken: denomKey.BytesPerToken, PublicKey: denomKey.PublicKey},
 	})
 
-	env.api.EnableBlindSignatures(mint, verifier)
+	env.api.EnableBlindSignatures(mint, verifier, "key-100mb")
 
 	// Re-create server to pick up new routes.
 	env.server.Close()
@@ -620,5 +620,110 @@ func TestSpend_MethodNotAllowed(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", resp.StatusCode)
+	}
+}
+
+// --- Settlement creates entitlement ---
+
+func TestSettlement_CreatesEntitlement(t *testing.T) {
+	env := setupBlindTestEnv(t)
+
+	// Step 1: Purchase.
+	purchaseBody, _ := json.Marshal(PurchaseRequest{TierID: "1gb"})
+	resp := httpPost(t, env.server.URL+"/purchase", "application/json", bytes.NewReader(purchaseBody))
+	var purchase PurchaseResponse
+	json.NewDecoder(resp.Body).Decode(&purchase)
+	resp.Body.Close()
+
+	// Step 2: Settle the invoice via mock.
+	if err := env.mock.SimulateSettlement(purchase.PaymentHash); err != nil {
+		t.Fatalf("SimulateSettlement: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond) // let settlement listener process
+
+	// Step 3: Verify entitlement was created.
+	ent, err := env.store.GetEntitlementByPaymentHash(purchase.PaymentHash)
+	if err != nil {
+		t.Fatalf("GetEntitlementByPaymentHash: %v", err)
+	}
+
+	if ent.TokensTotal != 10 { // 1gb tier = 10 tickets
+		t.Errorf("expected 10 tokens total, got %d", ent.TokensTotal)
+	}
+	if ent.TokensRemaining != 10 {
+		t.Errorf("expected 10 tokens remaining, got %d", ent.TokensRemaining)
+	}
+	if ent.BytesPerToken != 100_000_000 {
+		t.Errorf("expected 100MB per token, got %d", ent.BytesPerToken)
+	}
+	if ent.KeyID != "key-100mb" {
+		t.Errorf("expected key-100mb, got %s", ent.KeyID)
+	}
+}
+
+// TestEndToEnd_PurchaseSettleRedeemSpend tests the complete Phase 4 flow:
+// purchase → pay → settle → redeem → spend
+func TestEndToEnd_PurchaseSettleRedeemSpend(t *testing.T) {
+	env := setupBlindTestEnv(t)
+
+	// Step 1: Purchase.
+	purchaseBody, _ := json.Marshal(PurchaseRequest{TierID: "1gb"})
+	resp := httpPost(t, env.server.URL+"/purchase", "application/json", bytes.NewReader(purchaseBody))
+	var purchase PurchaseResponse
+	json.NewDecoder(resp.Body).Decode(&purchase)
+	resp.Body.Close()
+
+	// Step 2: Settle invoice.
+	env.mock.SimulateSettlement(purchase.PaymentHash)
+	time.Sleep(200 * time.Millisecond)
+
+	// Step 3: Get the preimage from the mock.
+	preimage := env.mock.GetPreimage(purchase.PaymentHash)
+	if preimage == "" {
+		t.Fatal("no preimage from mock")
+	}
+
+	// Step 4: Redeem blind tokens.
+	secret, _ := credentials.GenerateTokenSecret()
+	bm, _ := credentials.BlindTokenSecret(env.denomKey.PublicKey, secret)
+
+	redeemBody, _ := json.Marshal(RedeemRequest{
+		PaymentPreimage: preimage,
+		KeyID:           "key-100mb",
+		BlindedMessages: []string{hex.EncodeToString(bm.Blinded)},
+		Nonce:           "nonce-e2e-full",
+	})
+	redeemResp := httpPost(t, env.server.URL+"/redeem", "application/json", bytes.NewReader(redeemBody))
+	var redeemResult RedeemResponse
+	json.NewDecoder(redeemResp.Body).Decode(&redeemResult)
+	redeemResp.Body.Close()
+
+	if len(redeemResult.BlindSignatures) != 1 {
+		t.Fatalf("expected 1 signature, got %d", len(redeemResult.BlindSignatures))
+	}
+	if redeemResult.TokensRemaining != 9 {
+		t.Fatalf("expected 9 remaining, got %d", redeemResult.TokensRemaining)
+	}
+
+	// Step 5: Unblind and spend.
+	blindSig, _ := hex.DecodeString(redeemResult.BlindSignatures[0])
+	unblinded := credentials.UnblindSignature(env.denomKey.PublicKey, blindSig, bm.Unblinder)
+
+	spendBody, _ := json.Marshal(SpendRequest{
+		KeyID:       "key-100mb",
+		TokenSecret: hex.EncodeToString(secret),
+		Signature:   hex.EncodeToString(unblinded),
+		NodePubkey:  "node-1",
+	})
+	spendResp := httpPost(t, env.server.URL+"/spend", "application/json", bytes.NewReader(spendBody))
+	var spendResult SpendResponse
+	json.NewDecoder(spendResp.Body).Decode(&spendResult)
+	spendResp.Body.Close()
+
+	if !spendResult.FirstSpend {
+		t.Error("expected first_spend=true")
+	}
+	if spendResult.BytesPerToken != 100_000_000 {
+		t.Error("expected 100MB denomination")
 	}
 }

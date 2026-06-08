@@ -242,4 +242,89 @@ BEFORE DELETE ON compensating_entries
 BEGIN
     SELECT RAISE(FAIL, 'compensating_entries is append-only: deletions are prohibited');
 END;
+
+-- ============================================================
+-- ENTITLEMENTS: Track redeemable token quotas per purchase
+-- Created when an invoice is settled. Decremented when client
+-- redeems tokens via POST /redeem.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS entitlements (
+    id               TEXT    PRIMARY KEY,
+    payment_hash     TEXT    NOT NULL UNIQUE REFERENCES invoices(payment_hash),
+    tokens_remaining INTEGER NOT NULL CHECK (tokens_remaining >= 0),
+    tokens_total     INTEGER NOT NULL CHECK (tokens_total > 0),
+    bytes_per_token  INTEGER NOT NULL CHECK (bytes_per_token > 0),
+    key_id           TEXT    NOT NULL,
+    created_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_entitlements_payment ON entitlements(payment_hash);
+
+-- Entitlements: no deletion.
+CREATE TRIGGER IF NOT EXISTS entitlements_no_delete
+BEFORE DELETE ON entitlements
+BEGIN
+    SELECT RAISE(FAIL, 'entitlements is append-only: deletions are prohibited');
+END;
+
+-- Entitlements: immutable fields (only tokens_remaining may change).
+CREATE TRIGGER IF NOT EXISTS entitlements_immutable_fields
+BEFORE UPDATE ON entitlements
+WHEN OLD.payment_hash != NEW.payment_hash
+  OR OLD.tokens_total != NEW.tokens_total
+  OR OLD.bytes_per_token != NEW.bytes_per_token
+  OR OLD.key_id != NEW.key_id
+BEGIN
+    SELECT RAISE(FAIL, 'entitlement financial fields are immutable');
+END;
+
+-- ============================================================
+-- SPENT TOKENS: Double-spend prevention for blind-signed tokens
+-- Atomic INSERT is the sole correctness primitive.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS spent_tokens (
+    token_id    TEXT PRIMARY KEY,
+    key_id      TEXT NOT NULL,
+    node_pubkey TEXT NOT NULL,
+    spent_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- Spent tokens are never deleted or modified.
+CREATE TRIGGER IF NOT EXISTS spent_tokens_no_delete
+BEFORE DELETE ON spent_tokens
+BEGIN
+    SELECT RAISE(FAIL, 'spent_tokens is append-only: deletions are prohibited');
+END;
+
+CREATE TRIGGER IF NOT EXISTS spent_tokens_no_update
+BEFORE UPDATE ON spent_tokens
+BEGIN
+    SELECT RAISE(FAIL, 'spent_tokens is append-only: updates are prohibited');
+END;
+
+-- ============================================================
+-- REDEMPTIONS: Idempotent /redeem response cache
+-- Ensures crash-safe blind signature delivery.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS redemptions (
+    nonce           TEXT PRIMARY KEY,
+    entitlement_id  TEXT    NOT NULL REFERENCES entitlements(id),
+    request_hash    TEXT    NOT NULL,
+    tokens_count    INTEGER NOT NULL CHECK (tokens_count > 0),
+    blind_signatures TEXT   NOT NULL,
+    created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- Redemptions are never deleted or modified.
+CREATE TRIGGER IF NOT EXISTS redemptions_no_delete
+BEFORE DELETE ON redemptions
+BEGIN
+    SELECT RAISE(FAIL, 'redemptions is append-only: deletions are prohibited');
+END;
+
+CREATE TRIGGER IF NOT EXISTS redemptions_no_update
+BEFORE UPDATE ON redemptions
+BEGIN
+    SELECT RAISE(FAIL, 'redemptions is append-only: updates are prohibited');
+END;
 `

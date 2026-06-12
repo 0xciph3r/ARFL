@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -681,5 +682,308 @@ func TestSTRIDE_PayoutSettlementRefImmutable(t *testing.T) {
 	_, err := s.db.Exec(`UPDATE payouts SET settlement_entry_id = ? WHERE id = ?`, entryID2, payoutID)
 	if err == nil {
 		t.Fatal("should not allow changing payout settlement_entry_id")
+	}
+}
+
+// ============================================================
+// Phase 4: Entitlement tests
+// ============================================================
+
+func TestEntitlement_InsertAndGet(t *testing.T) {
+	s := testStore(t)
+	s.InsertInvoice("hash-e1", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	s.SettleInvoice("hash-e1")
+
+	err := s.InsertEntitlement("ent-1", "hash-e1", 10, 100_000_000, "key-100mb")
+	if err != nil {
+		t.Fatalf("InsertEntitlement: %v", err)
+	}
+
+	e, err := s.GetEntitlementByPaymentHash("hash-e1")
+	if err != nil {
+		t.Fatalf("GetEntitlement: %v", err)
+	}
+	if e.TokensRemaining != 10 || e.TokensTotal != 10 {
+		t.Errorf("tokens: remaining=%d, total=%d", e.TokensRemaining, e.TokensTotal)
+	}
+	if e.BytesPerToken != 100_000_000 {
+		t.Errorf("bytes_per_token = %d", e.BytesPerToken)
+	}
+	if e.KeyID != "key-100mb" {
+		t.Errorf("key_id = %s", e.KeyID)
+	}
+}
+
+func TestEntitlement_ConsumeDecrementsRemaining(t *testing.T) {
+	s := testStore(t)
+	s.InsertInvoice("hash-c1", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	s.SettleInvoice("hash-c1")
+	s.InsertEntitlement("ent-c1", "hash-c1", 10, 100_000_000, "key-1")
+
+	// Consume 3 tokens.
+	if err := s.ConsumeEntitlement("ent-c1", 3); err != nil {
+		t.Fatalf("ConsumeEntitlement(3): %v", err)
+	}
+
+	e, _ := s.GetEntitlementByPaymentHash("hash-c1")
+	if e.TokensRemaining != 7 {
+		t.Errorf("remaining = %d, want 7", e.TokensRemaining)
+	}
+
+	// Consume remaining 7.
+	if err := s.ConsumeEntitlement("ent-c1", 7); err != nil {
+		t.Fatalf("ConsumeEntitlement(7): %v", err)
+	}
+
+	e, _ = s.GetEntitlementByPaymentHash("hash-c1")
+	if e.TokensRemaining != 0 {
+		t.Errorf("remaining = %d, want 0", e.TokensRemaining)
+	}
+}
+
+func TestEntitlement_ConsumeRejectsOverdraw(t *testing.T) {
+	s := testStore(t)
+	s.InsertInvoice("hash-od", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	s.SettleInvoice("hash-od")
+	s.InsertEntitlement("ent-od", "hash-od", 5, 100_000_000, "key-1")
+
+	// Try to consume more than available.
+	err := s.ConsumeEntitlement("ent-od", 6)
+	if err == nil {
+		t.Fatal("expected error for overdraw")
+	}
+
+	// Verify remaining unchanged.
+	e, _ := s.GetEntitlementByPaymentHash("hash-od")
+	if e.TokensRemaining != 5 {
+		t.Errorf("remaining = %d after rejected overdraw, want 5", e.TokensRemaining)
+	}
+}
+
+func TestEntitlement_ImmutableFields(t *testing.T) {
+	s := testStore(t)
+	s.InsertInvoice("hash-imm", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	s.SettleInvoice("hash-imm")
+	s.InsertEntitlement("ent-imm", "hash-imm", 10, 100_000_000, "key-1")
+
+	// Try to modify bytes_per_token.
+	_, err := s.db.Exec(`UPDATE entitlements SET bytes_per_token = 999 WHERE id = 'ent-imm'`)
+	if err == nil {
+		t.Fatal("expected trigger to block bytes_per_token change")
+	}
+}
+
+func TestEntitlement_NoDeletion(t *testing.T) {
+	s := testStore(t)
+	s.InsertInvoice("hash-nd", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	s.SettleInvoice("hash-nd")
+	s.InsertEntitlement("ent-nd", "hash-nd", 10, 100_000_000, "key-1")
+
+	_, err := s.db.Exec(`DELETE FROM entitlements WHERE id = 'ent-nd'`)
+	if err == nil {
+		t.Fatal("expected trigger to block deletion")
+	}
+}
+
+// ============================================================
+// Phase 4: Spent token tests
+// ============================================================
+
+func TestSpentToken_MarkSpent_FirstSpend(t *testing.T) {
+	s := testStore(t)
+
+	first, err := s.MarkSpent("token-1", "key-1", "node-abc")
+	if err != nil {
+		t.Fatalf("MarkSpent: %v", err)
+	}
+	if !first {
+		t.Fatal("expected first_spend=true")
+	}
+}
+
+func TestSpentToken_MarkSpent_DoubleSpend(t *testing.T) {
+	s := testStore(t)
+
+	s.MarkSpent("token-ds", "key-1", "node-a")
+
+	// Second spend of same token — should return false.
+	first, err := s.MarkSpent("token-ds", "key-1", "node-b")
+	if err != nil {
+		t.Fatalf("MarkSpent double: %v", err)
+	}
+	if first {
+		t.Fatal("expected first_spend=false for double spend")
+	}
+}
+
+func TestSpentToken_IsSpent(t *testing.T) {
+	s := testStore(t)
+
+	spent, _ := s.IsSpent("token-x")
+	if spent {
+		t.Fatal("unspent token reported as spent")
+	}
+
+	s.MarkSpent("token-x", "key-1", "node-a")
+
+	spent, _ = s.IsSpent("token-x")
+	if !spent {
+		t.Fatal("spent token reported as unspent")
+	}
+}
+
+func TestSpentToken_NoDeletion(t *testing.T) {
+	s := testStore(t)
+	s.MarkSpent("token-del", "key-1", "node-a")
+
+	_, err := s.db.Exec(`DELETE FROM spent_tokens WHERE token_id = 'token-del'`)
+	if err == nil {
+		t.Fatal("expected trigger to block deletion")
+	}
+}
+
+func TestSpentToken_NoUpdate(t *testing.T) {
+	s := testStore(t)
+	s.MarkSpent("token-upd", "key-1", "node-a")
+
+	_, err := s.db.Exec(`UPDATE spent_tokens SET node_pubkey = 'node-b' WHERE token_id = 'token-upd'`)
+	if err == nil {
+		t.Fatal("expected trigger to block update")
+	}
+}
+
+// ============================================================
+// Phase 4: Redemption cache tests
+// ============================================================
+
+func TestRedemption_InsertAndGet(t *testing.T) {
+	s := testStore(t)
+	s.InsertInvoice("hash-r1", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	s.SettleInvoice("hash-r1")
+	s.InsertEntitlement("ent-r1", "hash-r1", 10, 100_000_000, "key-1")
+
+	err := s.InsertRedemption("nonce-1", "ent-r1", "reqhash-abc", 5, `["sig1","sig2"]`)
+	if err != nil {
+		t.Fatalf("InsertRedemption: %v", err)
+	}
+
+	r, err := s.GetRedemption("nonce-1")
+	if err != nil {
+		t.Fatalf("GetRedemption: %v", err)
+	}
+	if r.EntitlementID != "ent-r1" {
+		t.Errorf("entitlement_id = %s", r.EntitlementID)
+	}
+	if r.TokensCount != 5 {
+		t.Errorf("tokens_count = %d", r.TokensCount)
+	}
+	if r.RequestHash != "reqhash-abc" {
+		t.Errorf("request_hash = %s", r.RequestHash)
+	}
+}
+
+func TestRedemption_NotFound(t *testing.T) {
+	s := testStore(t)
+
+	r, err := s.GetRedemption("nonexistent")
+	if err != nil {
+		t.Fatalf("GetRedemption: %v", err)
+	}
+	if r != nil {
+		t.Fatal("expected nil for nonexistent nonce")
+	}
+}
+
+func TestRedemption_NoDeletion(t *testing.T) {
+	s := testStore(t)
+	s.InsertInvoice("hash-rd", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	s.SettleInvoice("hash-rd")
+	s.InsertEntitlement("ent-rd", "hash-rd", 10, 100_000_000, "key-1")
+	s.InsertRedemption("nonce-rd", "ent-rd", "rh", 1, `["sig"]`)
+
+	_, err := s.db.Exec(`DELETE FROM redemptions WHERE nonce = 'nonce-rd'`)
+	if err == nil {
+		t.Fatal("expected trigger to block deletion")
+	}
+}
+
+func TestRedemption_NoUpdate(t *testing.T) {
+	s := testStore(t)
+	s.InsertInvoice("hash-ru", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	s.SettleInvoice("hash-ru")
+	s.InsertEntitlement("ent-ru", "hash-ru", 10, 100_000_000, "key-1")
+	s.InsertRedemption("nonce-ru", "ent-ru", "rh", 1, `["sig"]`)
+
+	_, err := s.db.Exec(`UPDATE redemptions SET tokens_count = 99 WHERE nonce = 'nonce-ru'`)
+	if err == nil {
+		t.Fatal("expected trigger to block update")
+	}
+}
+
+// ============================================================
+// Phase 4 STRIDE: Concurrent entitlement consumption
+// ============================================================
+
+func TestSTRIDE_ConcurrentConsumeEntitlement(t *testing.T) {
+	s := testStore(t)
+	s.InsertInvoice("hash-cc", "lnbc...", 500, "1gb", 1_000_000_000,
+		time.Now().Add(time.Hour), "")
+	s.SettleInvoice("hash-cc")
+	s.InsertEntitlement("ent-cc", "hash-cc", 10, 100_000_000, "key-1")
+
+	// 20 goroutines each try to consume 1 token.
+	// Exactly 10 should succeed, 10 should fail.
+	var wg sync.WaitGroup
+	successes := int32(0)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := s.ConsumeEntitlement("ent-cc", 1); err == nil {
+				atomic.AddInt32(&successes, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if successes != 10 {
+		t.Errorf("expected exactly 10 successes, got %d", successes)
+	}
+
+	e, _ := s.GetEntitlementByPaymentHash("hash-cc")
+	if e.TokensRemaining != 0 {
+		t.Errorf("remaining = %d, want 0", e.TokensRemaining)
+	}
+}
+
+func TestSTRIDE_ConcurrentMarkSpent(t *testing.T) {
+	s := testStore(t)
+
+	// 20 goroutines race to spend the same token.
+	// Exactly 1 should win.
+	var wg sync.WaitGroup
+	wins := int32(0)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			first, err := s.MarkSpent("race-token", "key-1", fmt.Sprintf("node-%d", idx))
+			if err == nil && first {
+				atomic.AddInt32(&wins, 1)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if wins != 1 {
+		t.Errorf("expected exactly 1 winner, got %d", wins)
 	}
 }

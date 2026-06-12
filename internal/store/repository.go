@@ -609,3 +609,129 @@ func (s *Store) GetTicketSettlementInfo(ticketID string) (*TicketSettlementInfo,
 	}
 	return &info, nil
 }
+
+// --- Entitlement operations (Phase 4: blind signatures) ---
+
+// EntitlementRecord is the read model for an entitlement.
+type EntitlementRecord struct {
+	ID              string
+	PaymentHash     string
+	TokensRemaining int
+	TokensTotal     int
+	BytesPerToken   int64
+	KeyID           string
+	CreatedAt       string
+}
+
+// InsertEntitlement creates a new entitlement for a settled invoice.
+// Called by the settlement listener when an invoice is paid.
+func (s *Store) InsertEntitlement(id, paymentHash string, tokensTotal int, bytesPerToken int64, keyID string) error {
+	_, err := s.db.Exec(`
+INSERT INTO entitlements (id, payment_hash, tokens_remaining, tokens_total, bytes_per_token, key_id)
+VALUES (?, ?, ?, ?, ?, ?)`,
+		id, paymentHash, tokensTotal, tokensTotal, bytesPerToken, keyID,
+	)
+	return err
+}
+
+// GetEntitlementByPaymentHash retrieves the entitlement for a given invoice.
+func (s *Store) GetEntitlementByPaymentHash(paymentHash string) (*EntitlementRecord, error) {
+	row := s.db.QueryRow(`
+SELECT id, payment_hash, tokens_remaining, tokens_total, bytes_per_token, key_id, created_at
+FROM entitlements WHERE payment_hash = ?`, paymentHash)
+
+	var e EntitlementRecord
+	err := row.Scan(&e.ID, &e.PaymentHash, &e.TokensRemaining, &e.TokensTotal,
+		&e.BytesPerToken, &e.KeyID, &e.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+// ConsumeEntitlement atomically decrements tokens_remaining by count.
+// Returns an error if insufficient tokens remain (0 rows affected).
+// This is the sole entitlement mutation operation — all other fields are immutable.
+func (s *Store) ConsumeEntitlement(entitlementID string, count int) error {
+	res, err := s.db.Exec(`
+UPDATE entitlements
+SET tokens_remaining = tokens_remaining - ?
+WHERE id = ? AND tokens_remaining >= ?`,
+		count, entitlementID, count,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("insufficient entitlement: %s (requested %d)", entitlementID, count)
+	}
+	return nil
+}
+
+// --- Spent token operations (Phase 4: double-spend prevention) ---
+
+// MarkSpent atomically checks and marks a token as spent.
+// Returns (true, nil) if this is the first spend (insert succeeded).
+// Returns (false, nil) if the token was already spent (conflict).
+// This is the SOLE double-spend prevention primitive — never do separate check + insert.
+func (s *Store) MarkSpent(tokenID, keyID, nodePubkey string) (bool, error) {
+	res, err := s.db.Exec(`
+INSERT INTO spent_tokens (token_id, key_id, node_pubkey)
+VALUES (?, ?, ?)
+ON CONFLICT(token_id) DO NOTHING`,
+		tokenID, keyID, nodePubkey,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// IsSpent checks whether a token has been spent (read-only).
+func (s *Store) IsSpent(tokenID string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM spent_tokens WHERE token_id = ?`, tokenID).Scan(&count)
+	return count > 0, err
+}
+
+// --- Redemption cache operations (Phase 4: idempotent /redeem) ---
+
+// InsertRedemption stores a completed redemption for crash recovery.
+// The nonce + request_hash pair ensures idempotent retries.
+func (s *Store) InsertRedemption(nonce, entitlementID, requestHash string, tokensCount int, blindSignaturesJSON string) error {
+	_, err := s.db.Exec(`
+INSERT INTO redemptions (nonce, entitlement_id, request_hash, tokens_count, blind_signatures)
+VALUES (?, ?, ?, ?, ?)`,
+		nonce, entitlementID, requestHash, tokensCount, blindSignaturesJSON,
+	)
+	return err
+}
+
+// RedemptionRecord is the read model for a cached redemption.
+type RedemptionRecord struct {
+	Nonce           string
+	EntitlementID   string
+	RequestHash     string
+	TokensCount     int
+	BlindSignatures string // JSON array of base64 signatures
+}
+
+// GetRedemption retrieves a cached redemption by nonce.
+// Returns (nil, nil) if not found.
+func (s *Store) GetRedemption(nonce string) (*RedemptionRecord, error) {
+	row := s.db.QueryRow(`
+SELECT nonce, entitlement_id, request_hash, tokens_count, blind_signatures
+FROM redemptions WHERE nonce = ?`, nonce)
+
+	var r RedemptionRecord
+	err := row.Scan(&r.Nonce, &r.EntitlementID, &r.RequestHash, &r.TokensCount, &r.BlindSignatures)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}

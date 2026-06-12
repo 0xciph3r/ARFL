@@ -30,6 +30,11 @@ type PurchaseAPI struct {
 	issuer credentials.Issuer
 	mux    *http.ServeMux
 
+	// Phase 4: blind signature support (nil until EnableBlindSignatures).
+	blindMint     credentials.BlindMint
+	blindVerifier credentials.BlindVerifier
+	blindKeyID    string // default denomination key for new entitlements
+
 	// Rate limiting: map[IP][]timestamp.
 	rateLimit   map[string][]time.Time
 	rateMu      sync.Mutex
@@ -347,6 +352,25 @@ func (api *PurchaseAPI) onInvoiceSettled(inv *lightning.Invoice) error {
 
 	log.Printf("[payment-api] issued %d tickets for invoice %s (tier %s)",
 		len(tickets), inv.PaymentHash, record.Tier)
+
+	// Step 6 (Phase 4): Create entitlement if blind signatures are enabled.
+	// The entitlement enables POST /redeem for this payment.
+	if api.blindMint != nil {
+		entID := fmt.Sprintf("ent-%s", inv.PaymentHash)
+		err := api.store.InsertEntitlement(entID, inv.PaymentHash, tier.TicketCount, tier.TicketBytes, api.blindKeyID)
+		if err != nil {
+			// Idempotency: if entitlement already exists, that's fine.
+			existing, getErr := api.store.GetEntitlementByPaymentHash(inv.PaymentHash)
+			if getErr != nil || existing == nil {
+				return fmt.Errorf("insert entitlement for %s: %w", inv.PaymentHash, err)
+			}
+			log.Printf("[payment-api] entitlement already exists for %s", inv.PaymentHash)
+		} else {
+			log.Printf("[payment-api] created entitlement for %s (key=%s, tokens=%d)",
+				inv.PaymentHash, api.blindKeyID, tier.TicketCount)
+		}
+	}
+
 	return nil
 }
 

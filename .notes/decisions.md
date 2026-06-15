@@ -1543,3 +1543,326 @@ RetryFailedPayouts reuses same row (MarkPayoutRetrying), so UNIQUE is compatible
 go.mod marked it indirect, which can confuse tooling and go mod tidy.
 
 **Decision:** Moved to direct require block. Matches actual usage pattern.
+
+---
+
+## Phase 4 — Blind Signatures
+
+---
+
+### Decision 65: RSA blind signatures via cryptoballot/rsablind
+
+**Context:** Need Chaumian ecash-style unlinkability for bandwidth tokens.
+Hub signs blinded messages without seeing the token secret, preventing
+buyer-session linkage.
+
+**Decision:** Full-Domain-Hash RSA blind signatures using cryptoballot/rsablind
+(2048-bit RSA, 1536-bit FDH). Not production-audited — acceptable for PoC
+and grant applications. Production requires formal audit.
+
+**Why not Cashu NUTs?** ARFL's product is bandwidth, not ecash. Cashu
+compatibility would add complexity without benefit. We use the same
+cryptographic primitive but with our own wire format.
+
+---
+
+### Decision 66: Denomination-keyed model (key_id → bytes_per_token)
+
+**Context:** Need to encode bandwidth value into tokens without revealing it
+during signing (Hub is blind to content).
+
+**Decision:** Each RSA signing key maps to a fixed denomination via immutable
+config. key_id "key-100mb" always means 100,000,000 bytes. The mapping MUST NOT
+change after tokens are issued — changing it would alter the value of outstanding
+tokens.
+
+**Trade-off:** Less flexible than encoding denomination in the signed message,
+but simpler and avoids the need for denomination-in-message verification.
+Matches the Cashu model.
+
+---
+
+### Decision 67: System model is online bounded-risk authorization
+
+**Context:** Pure offline ecash would allow unlimited double-spending across
+nodes. Pure online ecash would require Hub connectivity for every byte.
+
+**Decision:** Hybrid model — nodes verify signatures locally (offline-capable),
+then call Hub /spend for double-spend check (online requirement). Bounded risk:
+during Hub unavailability, each token can be replayed to at most N offline nodes,
+capped at 100MB × N per token. This is explicitly stated in the architecture.
+
+**Grant narrative:** "Online bounded-risk authorization for bandwidth" — NOT
+"offline anonymous ecash." Reviewers will assume the latter unless stated.
+
+---
+
+### Decision 68: Payment preimage as /redeem authentication
+
+**Context:** Need to prove the caller paid the invoice without linking identity.
+
+**Decision:** POST /redeem requires the payment preimage. SHA256(preimage) must
+match a payment_hash with a settled entitlement. Only the payer knows the
+preimage (Lightning protocol guarantee), so this is proof-of-payment without
+identity.
+
+**Why not payment_hash?** Anyone can observe a payment_hash on the network.
+The preimage is a secret revealed only to the payer upon successful payment.
+
+---
+
+### Decision 69: Atomic entitlement consumption before signing
+
+**Context:** If signing fails after tokens are consumed, those tokens are lost.
+If tokens are consumed after signing, a crash could lead to free tokens.
+
+**Decision:** Consume first, sign second. Tokens consumed but unsigned is a
+loss scenario that requires manual remediation (contact support). Tokens signed
+but unconsumed would be free bandwidth — worse outcome. The "consume then sign"
+ordering is safer.
+
+**CRITICAL failure mode:** If signing fails after consumption, log at CRITICAL
+level and include "tokens consumed — contact support" in the error response.
+
+---
+
+### Decision 70: Nonce + request_hash idempotency for /redeem
+
+**Context:** Network failures during /redeem could cause the client to retry.
+Without idempotency, retries would consume additional tokens.
+
+**Decision:** Each redemption has a client-provided nonce. The Hub stores
+(nonce, request_hash, blind_signatures). On retry:
+- Same nonce + same request → return cached signatures (no token consumption)
+- Same nonce + different request → 409 Conflict
+
+The request_hash = SHA256(key_id + "|" + join(blinded_messages, "|")).
+
+---
+
+### Decision 71: Token ID derivation with domain separation
+
+**Context:** Token IDs must be unique across key versions, protocol versions,
+and denomination keys.
+
+**Decision:** SHA256("ARFL|v1|{key_id}|{token_secret_hex}"). The domain prefix
+prevents cross-version collisions, key_id prevents cross-denomination collisions,
+and token_secret ensures uniqueness per token.
+
+---
+
+### Decision 72: Separated /redeem from payment (two-step redemption)
+
+**Context:** The rubber-duck review identified that combining payment
+confirmation, entitlement tracking, and blind signing in one endpoint
+creates fragility.
+
+**Decision:** POST /purchase creates invoice + (on settlement) entitlement.
+POST /redeem consumes entitlement → blind-signs. Financial logic and
+cryptographic logic are isolated. The /redeem endpoint does only cryptographic
+work after the entitlement guard.
+
+---
+
+### Decision 73: /spend returns first_spend flag (not error on double-spend)
+
+**Context:** A double-spend attempt could be malicious (replay attack) or
+benign (node retrying after network failure).
+
+**Decision:** POST /spend always returns 200 with {first_spend: bool}. The
+node decides how to act: first_spend=true → serve traffic,
+first_spend=false → reject or investigate. This avoids the Hub making
+policy decisions for nodes.
+
+---
+
+### Decision 74: EnableBlindSignatures opt-in method
+
+**Context:** Phase 3 HMAC tickets and Phase 4 blind signatures must coexist.
+Not all deployments will have blind sig keys.
+
+**Decision:** PurchaseAPI.EnableBlindSignatures(mint, verifier, defaultKeyID)
+registers /redeem and /spend routes. If not called, these routes don't exist.
+The settlement listener creates entitlements only when blindMint != nil.
+
+---
+
+### Decision 75: Mock Lightning client generates preimage→hash pairs
+
+**Context:** The /redeem endpoint authenticates via SHA256(preimage) == payment_hash.
+The mock was generating random hashes without corresponding preimages.
+
+**Decision:** MockClient.CreateInvoice now generates a random 32-byte preimage,
+computes SHA256(preimage) as the payment_hash, and stores both. GetPreimage()
+returns the preimage for end-to-end testing. This properly simulates the
+Lightning payment flow.
+
+---
+
+### Decision 76: Settlement listener creates entitlements atomically
+
+**Context:** When an invoice is settled, the Hub needs to create both Phase 3
+tickets and Phase 4 entitlements.
+
+**Decision:** onInvoiceSettled creates the entitlement after ticket insertion
+(Step 6). Idempotent: if the entitlement already exists (concurrent/retry),
+the duplicate insert is caught and logged. The entitlement ID is
+"ent-{payment_hash}" for deterministic deduplication.
+
+---
+
+### Decision 77: STRIDE test coverage for blind sig paths
+
+**Context:** Grant reviewers (HRF, OpenSats) value security rigor. STRIDE
+analysis is uncommon in crypto protocol implementations.
+
+**Decision:** 14 STRIDE tests covering:
+- Spoofing: fake preimage, forged signature
+- Tampering: tampered token secret, oversized body
+- Repudiation: redemption audit trail, spent token audit trail
+- DoS: message count limit
+- Elevation: cross-key redemption, entitlement overdraw, cross-key spend
+- Concurrent: no overdraw under concurrent redeem, exactly-one first_spend
+- Info disclosure: payment hash not leaked in errors
+- Replay: nonce reuse across payments blocked
+
+---
+
+## Phase 5: Client Integration
+
+### Decision 78: Hub generates denomination key once, loads on restart
+
+**Context:** The Hub needs an RSA key pair for blind signing. If it regenerates
+on every startup, all outstanding tokens become invalid.
+
+**Decision:** `loadOrGenerateDenomKey()` checks `{BlindKeyDir}/key-100mb.json`.
+If missing, it generates a 2048-bit RSA key and saves it (private PEM + JSON
+metadata at 0600). On restart, it loads the existing key. The key is immutable
+for the lifetime of that denomination — regeneration would invalidate all
+outstanding tokens. Public key is exported to `key-100mb.pub.json` (0644) for
+distribution to nodes.
+
+---
+
+### Decision 79: Client-side blinding — secrets never leave the client
+
+**Context:** The blind signature protocol requires the client to generate
+random secrets, blind them, send blinded messages to the Hub, receive blind
+signatures, and unblind locally. The Hub must never see the raw token secrets.
+
+**Decision:** `BandwidthClient.RedeemTokens()` generates N random 32-byte
+secrets, blinds each via FDH+RSA, sends only blinded messages to Hub /redeem,
+receives blind signatures, and unblinds locally. The token secrets are only
+ever stored in client memory and written to the local `tokens.json` file.
+The Hub mathematically cannot link tokens to buyers.
+
+---
+
+### Decision 80: TokenGate two-phase verification — local then remote
+
+**Context:** Nodes need to verify tokens before granting bandwidth. Local-only
+verification is fast but allows double-spend. Hub-only verification adds
+latency and a network dependency.
+
+**Decision:** `TokenGate.VerifyAndSpend()` performs two-phase verification:
+1. **Local RSA signature check** — fast, no network, catches invalid tokens
+2. **Hub /spend POST** — double-spend detection via atomic INSERT OR IGNORE
+
+The Hub's `MarkSpent()` is a single atomic SQL operation:
+`INSERT OR IGNORE INTO spent_tokens` + check rows affected.
+Nodes never do separate check + insert logic.
+
+If the Hub is unreachable, the node gets an error. Policy (fail-open vs
+fail-closed) is decided by the calling code, not the TokenGate.
+
+---
+
+### Decision 81: VerifyOnly grace period — bounded offline risk
+
+**Context:** If the Hub is temporarily unavailable, nodes still need to serve
+traffic. But allowing tokens without double-spend checking creates risk.
+
+**Decision:** `TokenGate.VerifyOnly()` does local RSA verification only (no
+Hub call). It assumes `FirstSpend=true` since it can't check. The risk is
+bounded: a replayed token can at most steal `100MB × N_offline_nodes` of
+bandwidth. The calling code must bound the grace period with at least one of:
+- per-node rate limit during grace
+- max bytes per unverified token
+- short TTL for grace mode
+
+---
+
+### Decision 82: Token persistence format — JSON at 0600
+
+**Context:** Redeemed tokens need to survive client restarts so users don't
+lose purchased bandwidth.
+
+**Decision:** Tokens are saved to `tokens.json` with 0600 permissions using
+a `TokenStore` struct. Format is a JSON array of `BlindToken` envelopes, each
+containing: version, key_id, token_secret (hex), signature (hex). The file is
+append-only in design — new redemptions are merged into the existing store.
+
+---
+
+### Decision 83: Hub binary initialization sequence
+
+**Context:** The Hub binary needs to initialize multiple subsystems in the
+correct order for blind signatures to work.
+
+**Decision:** Startup sequence in `arfl-hub/main.go`:
+1. Load or generate denomination key (Decision 78)
+2. Create `BlindMint` (needs private key) and `BlindVerifier` (needs public key)
+3. Call `api.EnableBlindSignatures(mint, verifier, keyID)` to wire them in
+4. Export public key to disk for node distribution
+5. Register `/redeem` and `/spend` on the HTTP mux
+
+Each step depends on the previous. If key loading fails, the Hub refuses to
+start (fail-fast).
+
+---
+
+### Decision 84: Client SDK vs mobile app separation
+
+**Context:** The mobile app (iOS/Android) needs bandwidth purchase and token
+management, but should not duplicate protocol logic.
+
+**Decision:** The Go client SDK (`internal/client/bandwidth.go` and
+`internal/client/tokengate.go`) is the protocol engine. It handles:
+- HTTP communication with Hub
+- RSA blinding/unblinding
+- Token verification
+
+The mobile app will either:
+- Use `gomobile` bindings to call the Go SDK directly (preferred)
+- Re-implement the HTTP calls in Swift/Kotlin (fallback)
+
+The SDK is designed as a library, not a binary. `arfl-client` is one consumer;
+the mobile app will be another.
+
+---
+
+### Decision 85: Token ID derivation — deterministic, collision-resistant
+
+**Context:** Tokens need unique identifiers for double-spend tracking. The ID
+must be derivable by anyone who knows the token (client and Hub at spend time)
+but must not leak the raw secret.
+
+**Decision:** Token ID = `SHA256("ARFL|v1|{key_id}|{token_secret_hex}")`.
+This is deterministic (same token always produces same ID), collision-resistant
+(SHA256), and includes the version and key_id as domain separation.
+
+---
+
+### Decision 86: Integration test design — in-process, no infrastructure
+
+**Context:** Grant reviewers need to see the system works. Integration tests
+that require running nodes, Lightning, and WireGuard are not practical for CI.
+
+**Decision:** Integration tests in `test/integration/` run entirely in-process
+using `httptest.Server`. They exercise the full flow: Hub startup, client
+purchase, mock payment settlement, blind token redemption, node verification,
+and double-spend detection. Four tests cover:
+1. Full protocol flow (the "one test that proves it works")
+2. Multi-client independence (entitlement isolation)
+3. Key persistence round-trip (tokens survive key save/load)
+4. Unlinkability proof (blinded ≠ secret, mathematically)

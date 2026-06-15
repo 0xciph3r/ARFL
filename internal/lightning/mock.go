@@ -3,6 +3,7 @@ package lightning
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"sync"
@@ -19,9 +20,10 @@ import (
 //   - Concurrent access from multiple goroutines
 //   - Broadcast to multiple subscribers
 type MockClient struct {
-	mu       sync.Mutex
-	invoices map[string]*Invoice // paymentHash → invoice
-	payments map[string]*PaymentResult
+	mu        sync.Mutex
+	invoices  map[string]*Invoice // paymentHash → invoice
+	preimages map[string]string   // paymentHash → preimage (hex)
+	payments  map[string]*PaymentResult
 
 	// Subscriber management — each subscriber gets its own channel.
 	subs map[chan *Invoice]struct{}
@@ -37,9 +39,10 @@ type MockClient struct {
 // NewMockClient creates a mock Lightning client.
 func NewMockClient() *MockClient {
 	return &MockClient{
-		invoices: make(map[string]*Invoice),
-		payments: make(map[string]*PaymentResult),
-		subs:     make(map[chan *Invoice]struct{}),
+		invoices:  make(map[string]*Invoice),
+		preimages: make(map[string]string),
+		payments:  make(map[string]*PaymentResult),
+		subs:      make(map[chan *Invoice]struct{}),
 	}
 }
 
@@ -52,7 +55,7 @@ func (m *MockClient) CreateInvoice(ctx context.Context, amountSats int64, memo s
 		return nil, fmt.Errorf("amount must be positive")
 	}
 
-	hash, err := randomHash()
+	hash, preimage, err := randomPreimageHash()
 	if err != nil {
 		return nil, err
 	}
@@ -70,6 +73,7 @@ func (m *MockClient) CreateInvoice(ctx context.Context, amountSats int64, memo s
 
 	m.mu.Lock()
 	m.invoices[hash] = inv
+	m.preimages[hash] = preimage
 	m.mu.Unlock()
 
 	return inv, nil
@@ -131,7 +135,7 @@ func (m *MockClient) SendPayment(ctx context.Context, paymentRequest string, amo
 		}
 	}
 
-	hash, _ := randomHash()
+	hash := randomHex()
 	result := &PaymentResult{
 		PaymentHash: hash,
 		Status:      PaymentSucceeded,
@@ -165,7 +169,7 @@ func (m *MockClient) Keysend(ctx context.Context, destPubkey string, amountSats 
 		return &copy, nil
 	}
 
-	hash, _ := randomHash()
+	hash := randomHex()
 	result := &PaymentResult{
 		PaymentHash: hash,
 		Status:      PaymentSucceeded,
@@ -234,10 +238,29 @@ func (m *MockClient) InvoiceCount() int {
 	return len(m.invoices)
 }
 
-func randomHash() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
+// GetPreimage returns the hex-encoded preimage for a payment hash.
+// Only the payer knows the preimage — this simulates that knowledge.
+func (m *MockClient) GetPreimage(paymentHash string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.preimages[paymentHash]
+}
+
+// randomPreimageHash generates a random 32-byte preimage and its SHA256 hash.
+// Returns (payment_hash_hex, preimage_hex, error).
+func randomPreimageHash() (string, string, error) {
+	preimage := make([]byte, 32)
+	if _, err := rand.Read(preimage); err != nil {
+		return "", "", err
 	}
-	return hex.EncodeToString(b), nil
+	hash := sha256.Sum256(preimage)
+	return hex.EncodeToString(hash[:]), hex.EncodeToString(preimage), nil
+}
+
+// randomHex generates a random 32-byte hex string (for payment IDs that
+// don't need a preimage relationship).
+func randomHex() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }

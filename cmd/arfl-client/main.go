@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -11,8 +13,11 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/Radi-Labs/ARFL/internal/client"
 	"github.com/Radi-Labs/ARFL/internal/config"
+	"github.com/Radi-Labs/ARFL/internal/credentials"
 	"github.com/Radi-Labs/ARFL/internal/discovery"
 	"github.com/Radi-Labs/ARFL/internal/wg"
 	"github.com/Radi-Labs/ARFL/pkg/protocol"
@@ -25,6 +30,13 @@ func main() {
 	genKey := flag.Bool("genkey", false, "generate a new WireGuard keypair and exit")
 	discoverFlag := flag.String("discover", "", "hub URL for dynamic node discovery (Phase 2)")
 	hubPubkeys := flag.String("hub-pubkeys", "", "comma-separated trusted hub pubkeys for verification")
+
+	// Phase 5: Bandwidth purchase flags.
+	purchaseTier := flag.String("purchase", "", "purchase bandwidth tier (1gb, 10gb, 50gb)")
+	hubURL := flag.String("hub-url", "", "hub API URL for purchasing/redeeming tokens")
+	hubKeyFile := flag.String("hub-key", "", "path to hub's blind signature public key file")
+	tokenFile := flag.String("tokens", "tokens.json", "path to save/load bandwidth tokens")
+	tokenCount := flag.Int("token-count", 0, "how many tokens to redeem (default: all)")
 	flag.Parse()
 
 	if *genKey {
@@ -46,6 +58,15 @@ func main() {
 		fmt.Printf("Encrypted keypair written to %s\n", *keyFile)
 		fmt.Printf("Public key: %s\n", kp.PublicKey)
 		fmt.Println("⚠ If you lose this passphrase, your bandwidth balance is irrecoverable.")
+		return
+	}
+
+	// --- Phase 5: Purchase bandwidth tokens ---
+	if *purchaseTier != "" {
+		if *hubURL == "" || *hubKeyFile == "" {
+			log.Fatalf("--hub-url and --hub-key are required for --purchase")
+		}
+		runPurchaseFlow(*hubURL, *hubKeyFile, *purchaseTier, *tokenFile, *tokenCount)
 		return
 	}
 
@@ -392,4 +413,134 @@ func splitLines(s string) []string {
 		lines = append(lines, current)
 	}
 	return lines
+}
+
+// --- Phase 5: Bandwidth purchase flow ---
+
+// runPurchaseFlow handles the complete bandwidth purchase:
+// 1. Load hub's public key
+// 2. Purchase a tier (get Lightning invoice)
+// 3. Wait for the user to pay
+// 4. Redeem blind tokens
+// 5. Save tokens to disk
+func runPurchaseFlow(hubURL, hubKeyFile, tierID, tokenFile string, tokenCount int) {
+	// Load hub's blind signature public key.
+	pubKey, err := credentials.LoadPublicKey(hubKeyFile)
+	if err != nil {
+		log.Fatalf("load hub public key: %v", err)
+	}
+	log.Printf("[purchase] hub key: %s (%d bytes/token)", pubKey.KeyID, pubKey.BytesPerToken)
+
+	bwClient := client.NewBandwidthClient(hubURL, pubKey.PublicKey, pubKey.KeyID)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle Ctrl-C gracefully.
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+		cancel()
+	}()
+
+	// Step 1: Purchase.
+	log.Printf("[purchase] requesting %s tier...", tierID)
+	purchase, err := bwClient.Purchase(ctx, tierID)
+	if err != nil {
+		log.Fatalf("purchase failed: %v", err)
+	}
+
+	fmt.Println()
+	fmt.Println("╔══════════════════════════════════════╗")
+	fmt.Println("║      ARFL Bandwidth Purchase         ║")
+	fmt.Println("╠══════════════════════════════════════╣")
+	fmt.Printf("║ Tier:    %-28s ║\n", purchase.Tier)
+	fmt.Printf("║ Amount:  %-28s ║\n", fmt.Sprintf("%d sats", purchase.AmountSats))
+	fmt.Printf("║ Expires: %-28s ║\n", purchase.ExpiresAt)
+	fmt.Println("╠══════════════════════════════════════╣")
+	fmt.Println("║ Pay this invoice:                    ║")
+	fmt.Println("╚══════════════════════════════════════╝")
+	fmt.Println()
+	fmt.Println(purchase.PaymentRequest)
+	fmt.Println()
+	fmt.Println("Waiting for payment...")
+
+	// Step 2: Wait for settlement.
+	status, err := bwClient.WaitForSettlement(ctx, purchase.PaymentHash, 2*time.Second)
+	if err != nil {
+		log.Fatalf("settlement failed: %v", err)
+	}
+	_ = status
+
+	fmt.Println("✓ Payment received!")
+	fmt.Println()
+
+	// Step 3: Get preimage.
+	// In production, the wallet returns the preimage after payment.
+	// For the PoC, we prompt the user.
+	fmt.Print("Enter payment preimage (hex): ")
+	var preimage string
+	fmt.Scanln(&preimage)
+	preimage = strings.TrimSpace(preimage)
+	if preimage == "" {
+		log.Fatalf("preimage is required to redeem tokens")
+	}
+
+	// Step 4: Redeem tokens.
+	count := tokenCount
+	if count <= 0 {
+		// Default: redeem all available tokens for the tier.
+		tier, err := credentials.LookupTier(tierID)
+		if err != nil {
+			log.Fatalf("unknown tier: %v", err)
+		}
+		count = tier.TicketCount
+	}
+
+	nonce := fmt.Sprintf("purchase-%s-%d", purchase.PaymentHash[:16], time.Now().UnixNano())
+	log.Printf("[purchase] redeeming %d tokens...", count)
+
+	result, err := bwClient.RedeemTokens(ctx, preimage, count, nonce)
+	if err != nil {
+		log.Fatalf("redeem failed: %v", err)
+	}
+
+	fmt.Printf("✓ Redeemed %d tokens (%d remaining)\n", result.TokensRedeemed, result.TokensRemaining)
+	fmt.Printf("  Each token: %d MB\n", result.BytesPerToken/1_000_000)
+
+	// Step 5: Save tokens to disk.
+	if err := saveTokens(tokenFile, result.Tokens); err != nil {
+		log.Fatalf("save tokens: %v", err)
+	}
+	fmt.Printf("✓ Tokens saved to %s\n", tokenFile)
+	fmt.Printf("\nUse --session or --discover to connect with these tokens.\n")
+}
+
+// --- Token persistence ---
+
+// TokenStore is the on-disk format for saved tokens.
+type TokenStore struct {
+	Tokens []*credentials.BlindToken `json:"tokens"`
+}
+
+func saveTokens(path string, tokens []*credentials.BlindToken) error {
+	store := TokenStore{Tokens: tokens}
+	data, err := json.MarshalIndent(store, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0600)
+}
+
+func loadTokens(path string) ([]*credentials.BlindToken, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var store TokenStore
+	if err := json.Unmarshal(data, &store); err != nil {
+		return nil, err
+	}
+	return store.Tokens, nil
 }

@@ -135,10 +135,10 @@ func TestSTRIDE_Client_RogueHubSignatures(t *testing.T) {
 				sigs[i] = hex.EncodeToString(garbage)
 			}
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"blind_signatures":  sigs,
-				"bytes_per_token":   100_000_000,
-				"tokens_redeemed":   len(sigs),
-				"tokens_remaining":  0,
+				"blind_signatures": sigs,
+				"bytes_per_token":  100_000_000,
+				"tokens_redeemed":  len(sigs),
+				"tokens_remaining": 0,
 			})
 		}
 	}))

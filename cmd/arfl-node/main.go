@@ -10,12 +10,15 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/Radi-Labs/ARFL/internal/client"
 	"github.com/Radi-Labs/ARFL/internal/config"
 	"github.com/Radi-Labs/ARFL/internal/control"
+	"github.com/Radi-Labs/ARFL/internal/credentials"
 	"github.com/Radi-Labs/ARFL/internal/discovery"
 	"github.com/Radi-Labs/ARFL/internal/nostr"
 	"github.com/Radi-Labs/ARFL/internal/quota"
@@ -117,6 +120,25 @@ func main() {
 
 	// Start admin API
 	adminServer := control.NewServer(wgMgr, quotaMgr, cfg.Interface)
+
+	// Wire token-gated /connect if hub_url and hub_pubkey_file are configured.
+	if cfg.HubURL != "" && cfg.HubPubkeyFile != "" {
+		pubKey, err := credentials.LoadPublicKey(cfg.HubPubkeyFile)
+		if err != nil {
+			log.Fatalf("load hub public key: %v", err)
+		}
+		log.Printf("[node] loaded hub public key: %s (%d bytes/token)", pubKey.KeyID, pubKey.BytesPerToken)
+
+		verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{pubKey})
+		gate := client.NewTokenGate(verifier, cfg.HubURL, wgPubKeyB64)
+
+		// Derive subnet from tunnel IP (e.g. "10.100.0.1/24" → "10.100.0").
+		subnet := deriveTunnelSubnet(cfg.TunnelIP)
+		adminServer.EnableTokenGate(gate, wgPubKeyB64, subnet)
+	} else {
+		log.Println("[node] token gate disabled (no hub_url or hub_pubkey_file configured)")
+	}
+
 	go func() {
 		if err := adminServer.ListenAndServe(cfg.AdminAddr); err != nil {
 			log.Fatalf("admin API: %v", err)
@@ -217,4 +239,20 @@ func pollByteCounters(ctx context.Context, mgr *wg.WgctrlManager, iface string, 
 			atomic.StoreInt32(load, activePeers)
 		}
 	}
+}
+
+// deriveTunnelSubnet extracts the first 3 octets from a tunnel IP.
+// "10.100.0.1/24" → "10.100.0"
+func deriveTunnelSubnet(tunnelIP string) string {
+	// Strip CIDR prefix if present.
+	ip := tunnelIP
+	if idx := strings.Index(ip, "/"); idx >= 0 {
+		ip = ip[:idx]
+	}
+	// Take first 3 octets.
+	parts := strings.Split(ip, ".")
+	if len(parts) >= 3 {
+		return parts[0] + "." + parts[1] + "." + parts[2]
+	}
+	return "10.100.0" // fallback
 }

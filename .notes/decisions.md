@@ -1725,3 +1725,144 @@ analysis is uncommon in crypto protocol implementations.
 - Concurrent: no overdraw under concurrent redeem, exactly-one first_spend
 - Info disclosure: payment hash not leaked in errors
 - Replay: nonce reuse across payments blocked
+
+---
+
+## Phase 5: Client Integration
+
+### Decision 78: Hub generates denomination key once, loads on restart
+
+**Context:** The Hub needs an RSA key pair for blind signing. If it regenerates
+on every startup, all outstanding tokens become invalid.
+
+**Decision:** `loadOrGenerateDenomKey()` checks `{BlindKeyDir}/key-100mb.json`.
+If missing, it generates a 2048-bit RSA key and saves it (private PEM + JSON
+metadata at 0600). On restart, it loads the existing key. The key is immutable
+for the lifetime of that denomination — regeneration would invalidate all
+outstanding tokens. Public key is exported to `key-100mb.pub.json` (0644) for
+distribution to nodes.
+
+---
+
+### Decision 79: Client-side blinding — secrets never leave the client
+
+**Context:** The blind signature protocol requires the client to generate
+random secrets, blind them, send blinded messages to the Hub, receive blind
+signatures, and unblind locally. The Hub must never see the raw token secrets.
+
+**Decision:** `BandwidthClient.RedeemTokens()` generates N random 32-byte
+secrets, blinds each via FDH+RSA, sends only blinded messages to Hub /redeem,
+receives blind signatures, and unblinds locally. The token secrets are only
+ever stored in client memory and written to the local `tokens.json` file.
+The Hub mathematically cannot link tokens to buyers.
+
+---
+
+### Decision 80: TokenGate two-phase verification — local then remote
+
+**Context:** Nodes need to verify tokens before granting bandwidth. Local-only
+verification is fast but allows double-spend. Hub-only verification adds
+latency and a network dependency.
+
+**Decision:** `TokenGate.VerifyAndSpend()` performs two-phase verification:
+1. **Local RSA signature check** — fast, no network, catches invalid tokens
+2. **Hub /spend POST** — double-spend detection via atomic INSERT OR IGNORE
+
+The Hub's `MarkSpent()` is a single atomic SQL operation:
+`INSERT OR IGNORE INTO spent_tokens` + check rows affected.
+Nodes never do separate check + insert logic.
+
+If the Hub is unreachable, the node gets an error. Policy (fail-open vs
+fail-closed) is decided by the calling code, not the TokenGate.
+
+---
+
+### Decision 81: VerifyOnly grace period — bounded offline risk
+
+**Context:** If the Hub is temporarily unavailable, nodes still need to serve
+traffic. But allowing tokens without double-spend checking creates risk.
+
+**Decision:** `TokenGate.VerifyOnly()` does local RSA verification only (no
+Hub call). It assumes `FirstSpend=true` since it can't check. The risk is
+bounded: a replayed token can at most steal `100MB × N_offline_nodes` of
+bandwidth. The calling code must bound the grace period with at least one of:
+- per-node rate limit during grace
+- max bytes per unverified token
+- short TTL for grace mode
+
+---
+
+### Decision 82: Token persistence format — JSON at 0600
+
+**Context:** Redeemed tokens need to survive client restarts so users don't
+lose purchased bandwidth.
+
+**Decision:** Tokens are saved to `tokens.json` with 0600 permissions using
+a `TokenStore` struct. Format is a JSON array of `BlindToken` envelopes, each
+containing: version, key_id, token_secret (hex), signature (hex). The file is
+append-only in design — new redemptions are merged into the existing store.
+
+---
+
+### Decision 83: Hub binary initialization sequence
+
+**Context:** The Hub binary needs to initialize multiple subsystems in the
+correct order for blind signatures to work.
+
+**Decision:** Startup sequence in `arfl-hub/main.go`:
+1. Load or generate denomination key (Decision 78)
+2. Create `BlindMint` (needs private key) and `BlindVerifier` (needs public key)
+3. Call `api.EnableBlindSignatures(mint, verifier, keyID)` to wire them in
+4. Export public key to disk for node distribution
+5. Register `/redeem` and `/spend` on the HTTP mux
+
+Each step depends on the previous. If key loading fails, the Hub refuses to
+start (fail-fast).
+
+---
+
+### Decision 84: Client SDK vs mobile app separation
+
+**Context:** The mobile app (iOS/Android) needs bandwidth purchase and token
+management, but should not duplicate protocol logic.
+
+**Decision:** The Go client SDK (`internal/client/bandwidth.go` and
+`internal/client/tokengate.go`) is the protocol engine. It handles:
+- HTTP communication with Hub
+- RSA blinding/unblinding
+- Token verification
+
+The mobile app will either:
+- Use `gomobile` bindings to call the Go SDK directly (preferred)
+- Re-implement the HTTP calls in Swift/Kotlin (fallback)
+
+The SDK is designed as a library, not a binary. `arfl-client` is one consumer;
+the mobile app will be another.
+
+---
+
+### Decision 85: Token ID derivation — deterministic, collision-resistant
+
+**Context:** Tokens need unique identifiers for double-spend tracking. The ID
+must be derivable by anyone who knows the token (client and Hub at spend time)
+but must not leak the raw secret.
+
+**Decision:** Token ID = `SHA256("ARFL|v1|{key_id}|{token_secret_hex}")`.
+This is deterministic (same token always produces same ID), collision-resistant
+(SHA256), and includes the version and key_id as domain separation.
+
+---
+
+### Decision 86: Integration test design — in-process, no infrastructure
+
+**Context:** Grant reviewers need to see the system works. Integration tests
+that require running nodes, Lightning, and WireGuard are not practical for CI.
+
+**Decision:** Integration tests in `test/integration/` run entirely in-process
+using `httptest.Server`. They exercise the full flow: Hub startup, client
+purchase, mock payment settlement, blind token redemption, node verification,
+and double-spend detection. Four tests cover:
+1. Full protocol flow (the "one test that proves it works")
+2. Multi-client independence (entitlement isolation)
+3. Key persistence round-trip (tokens survive key save/load)
+4. Unlinkability proof (blinded ≠ secret, mathematically)

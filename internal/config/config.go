@@ -26,6 +26,10 @@ type NodeConfig struct {
 	UploadMbps      int      `json:"upload_mbps"`   // Advertised upload speed
 	DownloadMbps    int      `json:"download_mbps"` // Advertised download speed
 	Capacity        int      `json:"capacity"`      // Max concurrent peers
+
+	// Phase 5: Blind token verification
+	HubURL        string `json:"hub_url"`         // Hub API base URL (e.g. "http://hub:8080")
+	HubPubkeyFile string `json:"hub_pubkey_file"` // Path to hub's blind sig public key file
 }
 
 // HubConfig holds configuration for an ARFL hub daemon.
@@ -39,6 +43,9 @@ type HubConfig struct {
 	CredentialKey   string `json:"credential_key"`   // Hex-encoded HMAC secret for ticket issuance
 	SettlementHours int    `json:"settlement_hours"` // Settlement interval in hours (default: 6)
 	MinPayoutSats   int64  `json:"min_payout_sats"`  // Minimum payout threshold (default: 1000)
+
+	// Phase 4: Blind signatures
+	BlindKeyDir string `json:"blind_key_dir"` // Directory for RSA denomination keys (default: "keys/")
 }
 
 // ClientConfig holds configuration for the ARFL client.

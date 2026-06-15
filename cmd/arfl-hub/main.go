@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -130,6 +131,36 @@ func main() {
 	}
 	defer purchaseAPI.Stop()
 
+	// --- Phase 4: Blind Signatures ---
+
+	// Load or generate denomination key.
+	// On first run: generates a new RSA key and saves it.
+	// On subsequent runs: loads from disk (keys are immutable once issued).
+	blindKeyDir := cfg.BlindKeyDir
+	if blindKeyDir == "" {
+		blindKeyDir = "keys"
+	}
+	denomKey, err := loadOrGenerateDenomKey(blindKeyDir, "key-100mb", 100_000_000)
+	if err != nil {
+		log.Fatalf("denomination key: %v", err)
+	}
+
+	mint := credentials.NewRSABlindMint([]*credentials.DenominationKey{denomKey})
+	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
+		credentials.ExportPublicKey(denomKey),
+	})
+	purchaseAPI.EnableBlindSignatures(mint, verifier, denomKey.KeyID)
+	log.Printf("[hub] blind signatures enabled (key=%s, denomination=%d bytes)",
+		denomKey.KeyID, denomKey.BytesPerToken)
+
+	// Export public key for nodes.
+	pubKeyPath := filepath.Join(blindKeyDir, denomKey.KeyID+".pub.json")
+	if err := credentials.SavePublicKey(pubKeyPath, denomKey); err != nil {
+		log.Printf("[hub] warning: could not export public key: %v", err)
+	} else {
+		log.Printf("[hub] public key exported to %s (distribute to nodes)", pubKeyPath)
+	}
+
 	// Create settlement engine.
 	engine := payments.NewSettlementEngine(db, lnc)
 	if cfg.MinPayoutSats > 0 {
@@ -156,6 +187,10 @@ func main() {
 	mux.Handle("/purchase", purchaseAPI.Handler())
 	mux.Handle("/purchase/", purchaseAPI.Handler())
 	mux.Handle("/report", purchaseAPI.Handler())
+
+	// Blind signature endpoints (Phase 4).
+	mux.Handle("/redeem", purchaseAPI.Handler())
+	mux.Handle("/spend", purchaseAPI.Handler())
 
 	server := &http.Server{
 		Addr:    cfg.ListenAddr,
@@ -243,5 +278,37 @@ func parseCredentialKey(hexKey string, devMode bool) ([]byte, error) {
 	if len(key) < 32 {
 		return nil, fmt.Errorf("credential key must be at least 32 bytes, got %d", len(key))
 	}
+	return key, nil
+}
+
+// loadOrGenerateDenomKey loads an RSA denomination key from disk, or generates
+// one on first run. Keys are immutable — once tokens are issued with a key,
+// the key MUST NOT be regenerated (it would invalidate all outstanding tokens).
+func loadOrGenerateDenomKey(keyDir, keyID string, bytesPerToken int64) (*credentials.DenominationKey, error) {
+	keyPath := filepath.Join(keyDir, keyID+".json")
+
+	// Try to load existing key.
+	key, err := credentials.LoadDenominationKey(keyPath)
+	if err == nil {
+		log.Printf("[hub] loaded denomination key %s from %s", keyID, keyPath)
+		return key, nil
+	}
+
+	// Key doesn't exist — generate a new one.
+	if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read key %s: %w", keyPath, err)
+	}
+
+	log.Printf("[hub] generating new denomination key %s (%d bytes/token)...", keyID, bytesPerToken)
+	key, err = credentials.GenerateDenominationKey(keyID, bytesPerToken)
+	if err != nil {
+		return nil, fmt.Errorf("generate key %s: %w", keyID, err)
+	}
+
+	if err := credentials.SaveDenominationKey(keyPath, key); err != nil {
+		return nil, fmt.Errorf("save key %s: %w", keyID, err)
+	}
+
+	log.Printf("[hub] denomination key %s saved to %s", keyID, keyPath)
 	return key, nil
 }

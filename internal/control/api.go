@@ -29,9 +29,9 @@ type Server struct {
 	mux      *http.ServeMux
 
 	// Token gate (optional — set via EnableTokenGate).
-	gate      *client.TokenGate
-	ipPool    *tunnelIPPool
-	wgPubkey  string // This node's WireGuard public key (returned to clients).
+	gate     *client.TokenGate
+	ipPool   *tunnelIPPool
+	wgPubkey string // This node's WireGuard public key (returned to clients).
 }
 
 // NewServer creates a new admin API server.
@@ -190,11 +190,11 @@ type ConnectToken struct {
 
 // ConnectResponse is returned on successful token verification.
 type ConnectResponse struct {
-	Status        string `json:"status"`          // "connected"
-	TunnelIP      string `json:"tunnel_ip"`       // Assigned IP (e.g. "10.100.0.5/32")
-	NodeWGPubkey  string `json:"node_wg_pubkey"`  // Node's WG pubkey for client config
-	BytesAllowed  int64  `json:"bytes_allowed"`   // Bandwidth granted by this token
-	FirstSpend    bool   `json:"first_spend"`     // Whether this was a fresh token
+	Status       string `json:"status"`         // "connected"
+	TunnelIP     string `json:"tunnel_ip"`      // Assigned IP (e.g. "10.100.0.5/32")
+	NodeWGPubkey string `json:"node_wg_pubkey"` // Node's WG pubkey for client config
+	BytesAllowed int64  `json:"bytes_allowed"`  // Bandwidth granted by this token
+	FirstSpend   bool   `json:"first_spend"`    // Whether this was a fresh token
 }
 
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {

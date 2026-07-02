@@ -125,6 +125,7 @@ func main() {
 	// to get authorized WireGuard access. This is the full privacy flow:
 	// the nodes never see who purchased the tokens.
 
+	var spentTokenCount int // Track how many tokens were spent (for deferred store update).
 	if session.EntryConnectURL != "" && session.ExitConnectURL != "" {
 		tokens, err := loadTokens(*tokenFile)
 		if err != nil {
@@ -163,14 +164,20 @@ func main() {
 		session.InnerTunnelIP = exitResult.TunnelIP
 		session.EntryWGPubkey = entryResult.NodeWGPubkey
 		session.ExitWGPubkey = exitResult.NodeWGPubkey
+		spentTokenCount = 2
 
-		// Mark tokens as spent — remove from store so they can't be reused.
-		remaining := tokens[2:]
-		if err := saveTokens(*tokenFile, remaining); err != nil {
-			log.Printf("[client] warning: could not update token store: %v", err)
-		} else {
-			log.Printf("[client] %d tokens remaining", len(remaining))
+		// NOTE: Token store update is deferred until AFTER tunnel creation
+		// succeeds. If WG setup fails, tokens stay in the store so the user
+		// doesn't lose paid bandwidth.
+	} else if session.EntryConnectURL == "" && session.ExitConnectURL == "" {
+		// No connect URLs — legacy static session mode (Phase 1).
+		// Tunnel IPs must be in the session file.
+		if session.OuterTunnelIP == "" || session.InnerTunnelIP == "" {
+			log.Fatalf("session file missing tunnel IPs and no connect URLs — cannot proceed")
 		}
+	} else {
+		log.Fatalf("both entry and exit nodes must have connect URLs (got entry=%q, exit=%q)",
+			session.EntryConnectURL, session.ExitConnectURL)
 	}
 
 	// Create WireGuard manager
@@ -249,6 +256,21 @@ func main() {
 	log.Println("[client]   inner tunnel: you <-> exit node (double encrypted)")
 	log.Println("[client]   all traffic routed through two-hop tunnel")
 	log.Printf("[client]   DNS: %s (Quad9, no leak)", protocol.DNSResolver)
+
+	// Now that tunnels are up, update the token store.
+	// Deferred from the connect phase so tokens aren't lost if WG setup fails.
+	if spentTokenCount > 0 {
+		tokens, _ := loadTokens(*tokenFile)
+		if len(tokens) >= spentTokenCount {
+			remaining := tokens[spentTokenCount:]
+			if err := saveTokens(*tokenFile, remaining); err != nil {
+				log.Printf("[client] warning: could not update token store: %v", err)
+			} else {
+				log.Printf("[client] %d tokens remaining", len(remaining))
+			}
+		}
+	}
+
 	log.Println("[client] press Ctrl-C to disconnect")
 
 	// Wait for shutdown

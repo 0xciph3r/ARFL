@@ -44,9 +44,12 @@ type ConnectResult struct {
 }
 
 // Connect presents a blind token to a node's /connect endpoint.
-// connectURL is the node's connect API base (e.g. "http://1.2.3.4:9090").
+// connectURL is the node's connect API base (e.g. "https://1.2.3.4:9091").
 // token is an unspent BlindToken from the client's token store.
 // clientWGPubkey is the client's WireGuard public key (base64).
+//
+// In production, connectURL MUST use HTTPS to prevent token interception.
+// HTTP is allowed in development/testing only.
 func (nc *NodeConnector) Connect(ctx context.Context, connectURL string, token *credentials.BlindToken, clientWGPubkey string) (*ConnectResult, error) {
 	reqBody, err := json.Marshal(connectRequest{
 		Token: connectToken{

@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
@@ -122,6 +123,7 @@ func main() {
 	adminServer := control.NewServer(wgMgr, quotaMgr, cfg.Interface)
 
 	// Wire token-gated /connect if hub_url and hub_pubkey_file are configured.
+	var connectAddr string
 	if cfg.HubURL != "" && cfg.HubPubkeyFile != "" {
 		pubKey, err := credentials.LoadPublicKey(cfg.HubPubkeyFile)
 		if err != nil {
@@ -135,6 +137,24 @@ func main() {
 		// Derive subnet from tunnel IP (e.g. "10.100.0.1/24" → "10.100.0").
 		subnet := deriveTunnelSubnet(cfg.TunnelIP)
 		adminServer.EnableTokenGate(gate, wgPubKeyB64, subnet)
+
+		// Start public-facing /connect API on a separate port if configured.
+		// The admin API stays on localhost; the connect API is exposed to clients.
+		connectAddr = cfg.ConnectAddr
+		if connectAddr != "" {
+			connectMux := http.NewServeMux()
+			connectMux.HandleFunc("POST /connect", adminServer.HandleConnect)
+			connectMux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"status":"healthy"}`))
+			})
+			go func() {
+				log.Printf("[node] public /connect API on %s", connectAddr)
+				if err := http.ListenAndServe(connectAddr, connectMux); err != nil {
+					log.Fatalf("connect API: %v", err)
+				}
+			}()
+		}
 	} else {
 		log.Println("[node] token gate disabled (no hub_url or hub_pubkey_file configured)")
 	}
@@ -170,7 +190,7 @@ func main() {
 		} else {
 			// nodeInfoFn is called every 60s to get fresh load/capacity data.
 			nodeInfoFn := func() types.NodeInfo {
-				return types.NodeInfo{
+				info := types.NodeInfo{
 					NostrPubkey:  nodeKP.PubkeyHex(),
 					WGPubkey:     wgPubKeyB64,
 					Endpoint:     cfg.Endpoint,
@@ -181,6 +201,13 @@ func main() {
 					Role:         types.NodeRole(cfg.Role),
 					Version:      "0.1.0",
 				}
+				if connectAddr != "" {
+					// Derive public connect URL from the WG endpoint host + connect port.
+					host := strings.Split(cfg.Endpoint, ":")[0]
+					_, port, _ := strings.Cut(connectAddr, ":")
+					info.ConnectURL = "http://" + host + ":" + port
+				}
+				return info
 			}
 
 			announcer := discovery.NewAnnouncer(nodeKP, nodeInfoFn, att, pool)

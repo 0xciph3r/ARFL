@@ -30,6 +30,7 @@ type NodeConfig struct {
 	// Phase 5: Blind token verification
 	HubURL        string `json:"hub_url"`         // Hub API base URL (e.g. "http://hub:8080")
 	HubPubkeyFile string `json:"hub_pubkey_file"` // Path to hub's blind sig public key file
+	ConnectAddr   string `json:"connect_addr"`    // Public-facing /connect API listen address (e.g. "0.0.0.0:9091")
 }
 
 // HubConfig holds configuration for an ARFL hub daemon.
@@ -57,12 +58,14 @@ type ClientConfig struct {
 // SessionFile is the static session config read by the client in Phase 1.
 // In later phases this is generated dynamically by the hub.
 type SessionFile struct {
-	EntryEndpoint string `json:"entry_endpoint"`  // Entry node public IP:port
-	EntryWGPubkey string `json:"entry_wg_pubkey"` // Entry node WG public key
-	ExitEndpoint  string `json:"exit_endpoint"`   // Exit node public IP:port
-	ExitWGPubkey  string `json:"exit_wg_pubkey"`  // Exit node WG public key
-	OuterTunnelIP string `json:"outer_tunnel_ip"` // Client's outer tunnel IP, e.g. "10.100.0.2/24"
-	InnerTunnelIP string `json:"inner_tunnel_ip"` // Client's inner tunnel IP, e.g. "10.200.0.2/24"
+	EntryEndpoint   string `json:"entry_endpoint"`    // Entry node public IP:port
+	EntryWGPubkey   string `json:"entry_wg_pubkey"`   // Entry node WG public key
+	EntryConnectURL string `json:"entry_connect_url"` // Entry node /connect API URL
+	ExitEndpoint    string `json:"exit_endpoint"`     // Exit node public IP:port
+	ExitWGPubkey    string `json:"exit_wg_pubkey"`    // Exit node WG public key
+	ExitConnectURL  string `json:"exit_connect_url"`  // Exit node /connect API URL
+	OuterTunnelIP   string `json:"outer_tunnel_ip"`   // Client's outer tunnel IP, e.g. "10.100.0.2/24"
+	InnerTunnelIP   string `json:"inner_tunnel_ip"`   // Client's inner tunnel IP, e.g. "10.200.0.2/24"
 }
 
 func LoadNodeConfig(path string) (*NodeConfig, error) {

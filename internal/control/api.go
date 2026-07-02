@@ -197,6 +197,12 @@ type ConnectResponse struct {
 	FirstSpend   bool   `json:"first_spend"`    // Whether this was a fresh token
 }
 
+// HandleConnect is the exported handler for POST /connect, used when the
+// connect API is served on a separate public-facing port.
+func (s *Server) HandleConnect(w http.ResponseWriter, r *http.Request) {
+	s.handleConnect(w, r)
+}
+
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if s.gate == nil {
 		writeError(w, http.StatusServiceUnavailable, "token verification not configured")
@@ -245,7 +251,11 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Token is valid and first-spend. Grant WireGuard access.
-	tunnelIP := s.ipPool.Next()
+	tunnelIP, err := s.ipPool.Allocate(req.WGPubkey)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("no IPs available: %v", err))
+		return
+	}
 
 	if err := s.wgMgr.AddPeer(s.iface, wg.PeerConfig{
 		PublicKey:  req.WGPubkey,
@@ -260,8 +270,12 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[connect] warning: set quota for %s: %v", tunnelIP, err)
 	}
 
+	pubkeyLog := req.WGPubkey
+	if len(pubkeyLog) > 16 {
+		pubkeyLog = pubkeyLog[:16] + "..."
+	}
 	log.Printf("[connect] peer %s connected (ip=%s, bytes=%d)",
-		req.WGPubkey[:16]+"...", tunnelIP, spend.BytesPerToken)
+		pubkeyLog, tunnelIP, spend.BytesPerToken)
 
 	writeJSON(w, http.StatusOK, ConnectResponse{
 		Status:       "connected",
@@ -295,28 +309,56 @@ func parseConnectToken(ct *ConnectToken) (*credentials.BlindToken, error) {
 	}, nil
 }
 
-// tunnelIPPool assigns sequential IPs within a /24 subnet.
+// tunnelIPPool assigns IPs within a /24 subnet, tracking allocations
+// to prevent collisions when IPs wrap or peers disconnect.
 // Thread-safe for concurrent /connect requests.
 type tunnelIPPool struct {
-	subnet string // e.g. "10.100.0"
-	next   int
-	mu     sync.Mutex
+	subnet    string         // e.g. "10.100.0"
+	allocated map[int]string // IP suffix → peer pubkey
+	mu        sync.Mutex
 }
 
 func newTunnelIPPool(subnet string) *tunnelIPPool {
 	return &tunnelIPPool{
-		subnet: subnet,
-		next:   2, // .1 is the node itself, start clients at .2
+		subnet:    subnet,
+		allocated: make(map[int]string),
 	}
 }
 
-func (p *tunnelIPPool) Next() string {
+// Allocate assigns the next available IP to a peer, returning "subnet.N".
+// Returns an error if the pool is exhausted (253 peers).
+func (p *tunnelIPPool) Allocate(peerPubkey string) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	ip := fmt.Sprintf("%s.%d", p.subnet, p.next)
-	p.next++
-	if p.next > 254 {
-		p.next = 2 // wrap (in production, track and reclaim)
+
+	// Scan .2 through .254 for an unallocated slot.
+	for i := 2; i <= 254; i++ {
+		if _, taken := p.allocated[i]; !taken {
+			p.allocated[i] = peerPubkey
+			return fmt.Sprintf("%s.%d", p.subnet, i), nil
+		}
 	}
-	return ip
+	return "", fmt.Errorf("IP pool exhausted (253/253 allocated)")
+}
+
+// Release frees an IP allocation when a peer disconnects.
+func (p *tunnelIPPool) Release(ip string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Extract the last octet.
+	parts := strings.Split(ip, ".")
+	if len(parts) != 4 {
+		return
+	}
+	var n int
+	fmt.Sscanf(parts[3], "%d", &n)
+	delete(p.allocated, n)
+}
+
+// Count returns how many IPs are currently allocated.
+func (p *tunnelIPPool) Count() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.allocated)
 }

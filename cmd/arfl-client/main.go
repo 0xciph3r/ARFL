@@ -100,14 +100,15 @@ func main() {
 		log.Printf("[client] selected exit:  %s (operator=%s)",
 			pair.Exit.Info.Endpoint, pair.Exit.Attestation.OperatorID)
 
-		// Convert discovered nodes to a SessionFile for the existing tunnel setup code.
 		session = &config.SessionFile{
-			EntryEndpoint: pair.Entry.Info.Endpoint,
-			EntryWGPubkey: pair.Entry.Info.WGPubkey,
-			ExitEndpoint:  pair.Exit.Info.Endpoint,
-			ExitWGPubkey:  pair.Exit.Info.WGPubkey,
-			OuterTunnelIP: "10.100.0.2/24",
-			InnerTunnelIP: "10.200.0.2/24",
+			EntryEndpoint:   pair.Entry.Info.Endpoint,
+			EntryWGPubkey:   pair.Entry.Info.WGPubkey,
+			EntryConnectURL: pair.Entry.Info.ConnectURL,
+			ExitEndpoint:    pair.Exit.Info.Endpoint,
+			ExitWGPubkey:    pair.Exit.Info.WGPubkey,
+			ExitConnectURL:  pair.Exit.Info.ConnectURL,
+			OuterTunnelIP:   "10.100.0.2/24",
+			InnerTunnelIP:   "10.200.0.2/24",
 		}
 	} else if *sessionPath != "" {
 		// Phase 1: Static session file.
@@ -117,6 +118,66 @@ func main() {
 		}
 	} else {
 		log.Fatalf("provide either --session <file> or --discover <hub-url>")
+	}
+
+	// --- Phase 6: Present tokens to nodes before creating tunnels ---
+	// If we have tokens and both nodes have connect URLs, present tokens
+	// to get authorized WireGuard access. This is the full privacy flow:
+	// the nodes never see who purchased the tokens.
+
+	var spentTokenCount int // Track how many tokens were spent (for deferred store update).
+	if session.EntryConnectURL != "" && session.ExitConnectURL != "" {
+		tokens, err := loadTokens(*tokenFile)
+		if err != nil {
+			log.Fatalf("load tokens from %s: %v (run --purchase first)", *tokenFile, err)
+		}
+		if len(tokens) < 2 {
+			log.Fatalf("need at least 2 tokens (have %d) — one for entry, one for exit", len(tokens))
+		}
+
+		connector := client.NewNodeConnector()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+
+		// Connect to entry node with first token.
+		log.Printf("[client] presenting token to entry node %s...", session.EntryConnectURL)
+		entryResult, err := connector.Connect(ctx, session.EntryConnectURL, tokens[0], kp.PublicKey)
+		if err != nil {
+			cancel()
+			log.Fatalf("entry node connect: %v", err)
+		}
+		log.Printf("[client] entry node: assigned IP %s, quota %d MB",
+			entryResult.TunnelIP, entryResult.BytesAllowed/1_000_000)
+
+		// Connect to exit node with second token.
+		log.Printf("[client] presenting token to exit node %s...", session.ExitConnectURL)
+		exitResult, err := connector.Connect(ctx, session.ExitConnectURL, tokens[1], kp.PublicKey)
+		if err != nil {
+			cancel()
+			log.Fatalf("exit node connect: %v", err)
+		}
+		log.Printf("[client] exit node: assigned IP %s, quota %d MB",
+			exitResult.TunnelIP, exitResult.BytesAllowed/1_000_000)
+		cancel()
+
+		// Use node-assigned IPs and pubkeys instead of static config.
+		session.OuterTunnelIP = entryResult.TunnelIP
+		session.InnerTunnelIP = exitResult.TunnelIP
+		session.EntryWGPubkey = entryResult.NodeWGPubkey
+		session.ExitWGPubkey = exitResult.NodeWGPubkey
+		spentTokenCount = 2
+
+		// NOTE: Token store update is deferred until AFTER tunnel creation
+		// succeeds. If WG setup fails, tokens stay in the store so the user
+		// doesn't lose paid bandwidth.
+	} else if session.EntryConnectURL == "" && session.ExitConnectURL == "" {
+		// No connect URLs — legacy static session mode (Phase 1).
+		// Tunnel IPs must be in the session file.
+		if session.OuterTunnelIP == "" || session.InnerTunnelIP == "" {
+			log.Fatalf("session file missing tunnel IPs and no connect URLs — cannot proceed")
+		}
+	} else {
+		log.Fatalf("both entry and exit nodes must have connect URLs (got entry=%q, exit=%q)",
+			session.EntryConnectURL, session.ExitConnectURL)
 	}
 
 	// Create WireGuard manager
@@ -195,6 +256,21 @@ func main() {
 	log.Println("[client]   inner tunnel: you <-> exit node (double encrypted)")
 	log.Println("[client]   all traffic routed through two-hop tunnel")
 	log.Printf("[client]   DNS: %s (Quad9, no leak)", protocol.DNSResolver)
+
+	// Now that tunnels are up, update the token store.
+	// Deferred from the connect phase so tokens aren't lost if WG setup fails.
+	if spentTokenCount > 0 {
+		tokens, _ := loadTokens(*tokenFile)
+		if len(tokens) >= spentTokenCount {
+			remaining := tokens[spentTokenCount:]
+			if err := saveTokens(*tokenFile, remaining); err != nil {
+				log.Printf("[client] warning: could not update token store: %v", err)
+			} else {
+				log.Printf("[client] %d tokens remaining", len(remaining))
+			}
+		}
+	}
+
 	log.Println("[client] press Ctrl-C to disconnect")
 
 	// Wait for shutdown

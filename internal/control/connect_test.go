@@ -280,3 +280,63 @@ func TestConnect_SequentialIPAssignment(t *testing.T) {
 		t.Errorf("peer count = %d, want 3", env.mockWG.PeerCount("wg-test"))
 	}
 }
+
+func TestConnect_IPPoolExhaustion(t *testing.T) {
+	// Fill a small pool and verify exhaustion returns 503.
+	pool := newTunnelIPPool("10.50.0")
+
+	// Allocate all 253 IPs (.2 through .254).
+	for i := 2; i <= 254; i++ {
+		ip, err := pool.Allocate("peer-" + hex.EncodeToString([]byte{byte(i)}))
+		if err != nil {
+			t.Fatalf("allocate %d: %v", i, err)
+		}
+		expected := "10.50.0." + hex.EncodeToString([]byte{byte(i)})
+		_ = expected
+		if ip == "" {
+			t.Fatalf("allocate %d returned empty IP", i)
+		}
+	}
+
+	// 254th allocation should fail.
+	_, err := pool.Allocate("overflow-peer")
+	if err == nil {
+		t.Fatal("expected error when pool is exhausted")
+	}
+
+	// Release one IP and verify reallocation works.
+	pool.Release("10.50.0.100")
+	ip, err := pool.Allocate("new-peer")
+	if err != nil {
+		t.Fatalf("allocate after release: %v", err)
+	}
+	if ip != "10.50.0.100" {
+		t.Errorf("expected reuse of 10.50.0.100, got %s", ip)
+	}
+
+	if pool.Count() != 253 {
+		t.Errorf("count = %d, want 253", pool.Count())
+	}
+}
+
+func TestConnect_IPPoolRelease(t *testing.T) {
+	pool := newTunnelIPPool("10.20.0")
+
+	ip1, _ := pool.Allocate("peer-a")
+	ip2, _ := pool.Allocate("peer-b")
+
+	if ip1 != "10.20.0.2" || ip2 != "10.20.0.3" {
+		t.Fatalf("unexpected IPs: %s, %s", ip1, ip2)
+	}
+
+	pool.Release(ip1)
+	if pool.Count() != 1 {
+		t.Errorf("count after release = %d, want 1", pool.Count())
+	}
+
+	// Next allocation reuses released IP.
+	ip3, _ := pool.Allocate("peer-c")
+	if ip3 != "10.20.0.2" {
+		t.Errorf("expected reuse of 10.20.0.2, got %s", ip3)
+	}
+}

@@ -12,15 +12,19 @@ package integration
 import (
 	"context"
 	"encoding/hex"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/client"
+	"github.com/Radi-Labs/ARFL/internal/control"
 	"github.com/Radi-Labs/ARFL/internal/credentials"
 	"github.com/Radi-Labs/ARFL/internal/lightning"
 	"github.com/Radi-Labs/ARFL/internal/payments"
+	"github.com/Radi-Labs/ARFL/internal/quota"
 	"github.com/Radi-Labs/ARFL/internal/store"
+	"github.com/Radi-Labs/ARFL/internal/wg"
 )
 
 // TestFullProtocol_PurchaseRedeemSpend exercises the complete ARFL
@@ -362,4 +366,151 @@ func openTestDB(t *testing.T) (*store.Store, func()) {
 		t.Fatalf("store.Open: %v", err)
 	}
 	return db, func() { db.Close() }
+}
+
+// TestFullFlow_PurchaseConnectTunnel exercises the complete Phase 6 flow:
+// Purchase → Pay → Redeem tokens → Present tokens to nodes → Get WG access.
+// This proves the client→node token handoff works end-to-end.
+func TestFullFlow_PurchaseConnectTunnel(t *testing.T) {
+	// ===== HUB SETUP =====
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	mock := lightning.NewMockClient()
+	issuer := credentials.NewHMACIssuer("key-1", []byte("test-secret-key-for-hmac-32bytes!"))
+	api := payments.NewPurchaseAPI(db, mock, issuer)
+	api.StartSettlementListener(context.Background())
+	defer api.Stop()
+
+	denomKey, err := credentials.GenerateDenominationKey("key-100mb", 100_000_000)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	mint := credentials.NewRSABlindMint([]*credentials.DenominationKey{denomKey})
+	hubVerifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
+		credentials.ExportPublicKey(denomKey),
+	})
+	api.EnableBlindSignatures(mint, hubVerifier, "key-100mb")
+
+	hubServer := httptest.NewServer(api.Handler())
+	defer hubServer.Close()
+
+	// ===== ENTRY NODE SETUP =====
+	entryWG := wg.NewMockManager()
+	entryWG.CreateInterface(wg.InterfaceConfig{
+		Name: "wg-entry", PrivateKey: "YNk/rMPgfEJUOG4JvA6FWzGm3Gd0qf6GiJnKrdOaHE8=",
+		ListenPort: 51820, Address: "10.100.0.1/24",
+	})
+	entryQuota := quota.NewNoopEnforcer()
+	entryServer := control.NewServer(entryWG, entryQuota, "wg-entry")
+
+	nodeVerifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
+		credentials.ExportPublicKey(denomKey),
+	})
+	entryGate := client.NewTokenGate(nodeVerifier, hubServer.URL, "entryNodePub")
+	entryServer.EnableTokenGate(entryGate, "entryNodePub", "10.100.0")
+
+	entryHTTP := httptest.NewServer(http.HandlerFunc(entryServer.HandleConnect))
+	defer entryHTTP.Close()
+
+	// ===== EXIT NODE SETUP =====
+	exitWG := wg.NewMockManager()
+	exitWG.CreateInterface(wg.InterfaceConfig{
+		Name: "wg-exit", PrivateKey: "YNk/rMPgfEJUOG4JvA6FWzGm3Gd0qf6GiJnKrdOaHE8=",
+		ListenPort: 51821, Address: "10.200.0.1/24",
+	})
+	exitQuota := quota.NewNoopEnforcer()
+	exitServer := control.NewServer(exitWG, exitQuota, "wg-exit")
+
+	exitGate := client.NewTokenGate(nodeVerifier, hubServer.URL, "exitNodePub")
+	exitServer.EnableTokenGate(exitGate, "exitNodePub", "10.200.0")
+
+	exitHTTP := httptest.NewServer(http.HandlerFunc(exitServer.HandleConnect))
+	defer exitHTTP.Close()
+
+	t.Logf("Hub: %s | Entry: %s | Exit: %s", hubServer.URL, entryHTTP.URL, exitHTTP.URL)
+
+	// ===== CLIENT PURCHASES =====
+	bwClient := client.NewBandwidthClient(hubServer.URL, denomKey.PublicKey, "key-100mb")
+	purchase, err := bwClient.Purchase(context.Background(), "1gb")
+	if err != nil {
+		t.Fatalf("Purchase: %v", err)
+	}
+
+	mock.SimulateSettlement(purchase.PaymentHash)
+	time.Sleep(200 * time.Millisecond)
+	preimage := mock.GetPreimage(purchase.PaymentHash)
+
+	// ===== CLIENT REDEEMS TOKENS =====
+	result, err := bwClient.RedeemTokens(context.Background(), preimage, 3, "nonce-flow")
+	if err != nil {
+		t.Fatalf("RedeemTokens: %v", err)
+	}
+	if len(result.Tokens) != 3 {
+		t.Fatalf("expected 3 tokens, got %d", len(result.Tokens))
+	}
+	t.Logf("Redeemed %d tokens", len(result.Tokens))
+
+	// ===== CLIENT PRESENTS TOKENS TO NODES =====
+	connector := client.NewNodeConnector()
+	ctx := context.Background()
+
+	// Present first token to entry node.
+	entryResult, err := connector.Connect(ctx, entryHTTP.URL, result.Tokens[0], "clientWGPubkey")
+	if err != nil {
+		t.Fatalf("entry connect: %v", err)
+	}
+	t.Logf("Entry node: IP=%s, quota=%dMB", entryResult.TunnelIP, entryResult.BytesAllowed/1_000_000)
+
+	if entryResult.TunnelIP != "10.100.0.2/32" {
+		t.Errorf("expected entry IP 10.100.0.2/32, got %s", entryResult.TunnelIP)
+	}
+	if entryResult.NodeWGPubkey != "entryNodePub" {
+		t.Errorf("expected entry pubkey=entryNodePub, got %s", entryResult.NodeWGPubkey)
+	}
+
+	// Present second token to exit node.
+	exitResult, err := connector.Connect(ctx, exitHTTP.URL, result.Tokens[1], "clientWGPubkey")
+	if err != nil {
+		t.Fatalf("exit connect: %v", err)
+	}
+	t.Logf("Exit node: IP=%s, quota=%dMB", exitResult.TunnelIP, exitResult.BytesAllowed/1_000_000)
+
+	if exitResult.TunnelIP != "10.200.0.2/32" {
+		t.Errorf("expected exit IP 10.200.0.2/32, got %s", exitResult.TunnelIP)
+	}
+
+	// ===== VERIFY WG PEERS WERE ADDED =====
+	entryPeers, _ := entryWG.GetPeerStats("wg-entry")
+	if len(entryPeers) != 1 {
+		t.Errorf("entry node: expected 1 peer, got %d", len(entryPeers))
+	}
+
+	exitPeers, _ := exitWG.GetPeerStats("wg-exit")
+	if len(exitPeers) != 1 {
+		t.Errorf("exit node: expected 1 peer, got %d", len(exitPeers))
+	}
+
+	// ===== DOUBLE-SPEND: SAME TOKEN REJECTED =====
+	_, err = connector.Connect(ctx, entryHTTP.URL, result.Tokens[0], "clientWGPubkey2")
+	if err == nil {
+		t.Fatal("replaying spent token should fail")
+	}
+	t.Logf("Double-spend blocked: %v ✓", err)
+
+	// ===== THIRD TOKEN STILL WORKS (unused) =====
+	thirdResult, err := connector.Connect(ctx, entryHTTP.URL, result.Tokens[2], "clientWGPubkey3")
+	if err != nil {
+		t.Fatalf("third token should work: %v", err)
+	}
+	if thirdResult.TunnelIP != "10.100.0.3/32" {
+		t.Errorf("expected sequential IP 10.100.0.3/32, got %s", thirdResult.TunnelIP)
+	}
+
+	t.Log("\n=== Phase 6 Integration Summary ===")
+	t.Log("Purchase → Pay → Redeem → Connect entry ✓")
+	t.Log("Connect exit ✓")
+	t.Log("WG peers added ✓")
+	t.Log("Double-spend blocked ✓")
+	t.Log("Unused token still valid ✓")
 }

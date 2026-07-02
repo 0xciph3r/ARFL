@@ -17,6 +17,7 @@ type NodeInfo struct {
 	NostrPubkey  string   `json:"nostr_pubkey"`
 	WGPubkey     string   `json:"wg_pubkey"`
 	Endpoint     string   `json:"endpoint"`
+	ConnectURL   string   `json:"connect_url,omitempty"` // HTTP base URL for token-gated /connect
 	LNURL        string   `json:"lnurl"`
 	DepositSats  int64    `json:"deposit_sats"`
 	UploadMbps   int      `json:"upload_mbps"`

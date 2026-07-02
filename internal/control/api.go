@@ -197,6 +197,12 @@ type ConnectResponse struct {
 	FirstSpend   bool   `json:"first_spend"`    // Whether this was a fresh token
 }
 
+// HandleConnect is the exported handler for POST /connect, used when the
+// connect API is served on a separate public-facing port.
+func (s *Server) HandleConnect(w http.ResponseWriter, r *http.Request) {
+	s.handleConnect(w, r)
+}
+
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if s.gate == nil {
 		writeError(w, http.StatusServiceUnavailable, "token verification not configured")
@@ -260,8 +266,12 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[connect] warning: set quota for %s: %v", tunnelIP, err)
 	}
 
+	pubkeyLog := req.WGPubkey
+	if len(pubkeyLog) > 16 {
+		pubkeyLog = pubkeyLog[:16] + "..."
+	}
 	log.Printf("[connect] peer %s connected (ip=%s, bytes=%d)",
-		req.WGPubkey[:16]+"...", tunnelIP, spend.BytesPerToken)
+		pubkeyLog, tunnelIP, spend.BytesPerToken)
 
 	writeJSON(w, http.StatusOK, ConnectResponse{
 		Status:       "connected",

@@ -4,6 +4,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
+)
+
+// Environment variable names for sensitive configuration.
+// These override JSON config values when set, keeping secrets out of files.
+const (
+	EnvLNDHost         = "ARFL_LND_HOST"
+	EnvLNDPort         = "ARFL_LND_PORT"
+	EnvLNDTLSCertPath  = "ARFL_LND_TLS_CERT_PATH"
+	EnvLNDMacaroonPath = "ARFL_LND_MACAROON_PATH"
+	EnvLNDFeeLimitSat  = "ARFL_LND_FEE_LIMIT_SAT"
+	EnvCredentialKey   = "ARFL_CREDENTIAL_KEY"
+	EnvNostrPrivkey    = "ARFL_NOSTR_PRIVKEY"
+	EnvDBPath          = "ARFL_DB_PATH"
 )
 
 // NodeConfig holds configuration for an ARFL node daemon.
@@ -80,7 +94,45 @@ func LoadNodeConfig(path string) (*NodeConfig, error) {
 }
 
 func LoadHubConfig(path string) (*HubConfig, error) {
-	return loadJSON[HubConfig](path)
+	cfg, err := loadJSON[HubConfig](path)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ApplyEnv()
+	return cfg, nil
+}
+
+// ApplyEnv overrides config fields with environment variables when set.
+// Priority: env var > JSON config file. This keeps secrets out of config files.
+func (c *HubConfig) ApplyEnv() {
+	if v := os.Getenv(EnvLNDHost); v != "" {
+		c.LNDHost = v
+	}
+	if v := os.Getenv(EnvLNDPort); v != "" {
+		if port, err := strconv.Atoi(v); err == nil {
+			c.LNDPort = port
+		}
+	}
+	if v := os.Getenv(EnvLNDTLSCertPath); v != "" {
+		c.LNDTLSCertPath = v
+	}
+	if v := os.Getenv(EnvLNDMacaroonPath); v != "" {
+		c.LNDMacaroonPath = v
+	}
+	if v := os.Getenv(EnvLNDFeeLimitSat); v != "" {
+		if limit, err := strconv.ParseInt(v, 10, 64); err == nil {
+			c.LNDFeeLimitSat = limit
+		}
+	}
+	if v := os.Getenv(EnvCredentialKey); v != "" {
+		c.CredentialKey = v
+	}
+	if v := os.Getenv(EnvNostrPrivkey); v != "" {
+		c.NostrPrivkey = v
+	}
+	if v := os.Getenv(EnvDBPath); v != "" {
+		c.DBPath = v
+	}
 }
 
 func LoadClientConfig(path string) (*ClientConfig, error) {

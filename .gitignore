@@ -21,5 +21,13 @@ target
 #.idea/
 .DS_Store
 
-# Local dev notes (tracked, protected by CODEOWNERS)
+# Binaries
 arfl-hub
+arfl-node
+arfl-client
+
+# Config files (may contain secrets)
+hub.json
+node.json
+*.macaroon
+keys/

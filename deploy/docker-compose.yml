@@ -27,11 +27,15 @@ services:
       context: ..
       dockerfile: Dockerfile
       target: hub
-    command: ["--config", "/data/hub.json", "--dev"]
+    command: ["--config", "/data/hub.json"]
     volumes:
       - ./data/hub:/data
+      - ~/.polar/networks/1/volumes/lnd/alice/tls.cert:/lnd/tls.cert:ro
+      - ~/.polar/networks/1/volumes/lnd/alice/data/chain/bitcoin/regtest/admin.macaroon:/lnd/admin.macaroon:ro
     ports:
       - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - relay
     restart: unless-stopped

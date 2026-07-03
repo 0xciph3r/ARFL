@@ -130,7 +130,7 @@ func (c *LNDClient) LookupInvoice(ctx context.Context, paymentHash string) (*Inv
 		return nil, fmt.Errorf("lookup invoice: %w", err)
 	}
 
-	return lndInvoiceToInvoice(&resp), nil
+	return lndInvoiceToInvoice(&resp)
 }
 
 // SubscribeInvoices opens a streaming connection to LND's invoice subscription.
@@ -192,12 +192,16 @@ func (c *LNDClient) subscribeLoop(ctx context.Context, ch chan<- *Invoice) error
 
 		var wrapper lndStreamWrapper
 		if err := json.Unmarshal([]byte(line), &wrapper); err != nil {
-			log.Printf("[lnd] subscribe: unmarshal error: %v", err)
-			continue
+			// Don't silently drop — return error to trigger reconnection.
+			// A malformed line likely means a protocol issue.
+			return fmt.Errorf("unmarshal invoice event: %w", err)
 		}
 
 		if wrapper.Result.State == "SETTLED" {
-			inv := lndInvoiceToInvoice(&wrapper.Result)
+			inv, err := lndInvoiceToInvoice(&wrapper.Result)
+			if err != nil {
+				return fmt.Errorf("parse settled invoice: %w", err)
+			}
 			select {
 			case ch <- inv:
 			case <-ctx.Done():
@@ -232,16 +236,14 @@ func (c *LNDClient) Keysend(ctx context.Context, destPubkey string, amountSats i
 	}
 
 	// Generate a random preimage for keysend.
-	preimage := make([]byte, 32)
-	if _, err := io.ReadFull(strings.NewReader(randomHex()[:64]), preimage); err != nil {
-		return nil, err
-	}
-	// Actually use crypto/rand properly.
 	preimageHex, _, err := randomPreimageHash()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("generate keysend preimage: %w", err)
 	}
-	preimageBytes, _ := hex.DecodeString(preimageHex)
+	preimageBytes, err := hex.DecodeString(preimageHex)
+	if err != nil {
+		return nil, fmt.Errorf("decode keysend preimage: %w", err)
+	}
 
 	body := map[string]interface{}{
 		"dest":                base64.StdEncoding.EncodeToString(destBytes),
@@ -260,7 +262,10 @@ func (c *LNDClient) Keysend(ctx context.Context, destPubkey string, amountSats i
 
 // sendPaymentV2 calls the v2/router/send streaming endpoint and collects the final status.
 func (c *LNDClient) sendPaymentV2(ctx context.Context, body map[string]interface{}) (*PaymentResult, error) {
-	data, _ := json.Marshal(body)
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal payment request: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v2/router/send", strings.NewReader(string(data)))
 	if err != nil {
 		return nil, err
@@ -320,9 +325,10 @@ func (c *LNDClient) sendPaymentV2(ctx context.Context, body map[string]interface
 		result.Error = fmt.Sprintf("unexpected status: %s", lastPayment.Status)
 	}
 
-	// Parse fee from the response.
 	if lastPayment.FeeSat != "" {
-		fmt.Sscanf(lastPayment.FeeSat, "%d", &result.FeeSats)
+		if _, err := fmt.Sscanf(lastPayment.FeeSat, "%d", &result.FeeSats); err != nil {
+			log.Printf("[lnd] warning: could not parse fee %q: %v", lastPayment.FeeSat, err)
+		}
 	}
 
 	return result, nil
@@ -420,14 +426,18 @@ type lndPayment struct {
 
 // --- Conversion helpers ---
 
-func lndInvoiceToInvoice(lnd *lndInvoice) *Invoice {
+func lndInvoiceToInvoice(lnd *lndInvoice) (*Invoice, error) {
 	inv := &Invoice{
 		PaymentHash:    base64ToHex(lnd.RHash),
 		PaymentRequest: lnd.PaymentRequest,
 		Memo:           lnd.Memo,
 	}
 
-	fmt.Sscanf(lnd.Value, "%d", &inv.AmountSats)
+	if lnd.Value != "" {
+		if _, err := fmt.Sscanf(lnd.Value, "%d", &inv.AmountSats); err != nil {
+			return nil, fmt.Errorf("parse invoice amount %q: %w", lnd.Value, err)
+		}
+	}
 
 	switch lnd.State {
 	case "SETTLED":
@@ -440,22 +450,28 @@ func lndInvoiceToInvoice(lnd *lndInvoice) *Invoice {
 
 	if lnd.CreationDate != "" {
 		var ts int64
-		fmt.Sscanf(lnd.CreationDate, "%d", &ts)
+		if _, err := fmt.Sscanf(lnd.CreationDate, "%d", &ts); err != nil {
+			return nil, fmt.Errorf("parse creation_date %q: %w", lnd.CreationDate, err)
+		}
 		inv.CreatedAt = time.Unix(ts, 0)
 	}
 	if lnd.SettleDate != "" && lnd.SettleDate != "0" {
 		var ts int64
-		fmt.Sscanf(lnd.SettleDate, "%d", &ts)
+		if _, err := fmt.Sscanf(lnd.SettleDate, "%d", &ts); err != nil {
+			return nil, fmt.Errorf("parse settle_date %q: %w", lnd.SettleDate, err)
+		}
 		inv.SettledAt = time.Unix(ts, 0)
 	}
 	if lnd.Expiry != "" && lnd.CreationDate != "" {
 		var created, expiry int64
-		fmt.Sscanf(lnd.CreationDate, "%d", &created)
-		fmt.Sscanf(lnd.Expiry, "%d", &expiry)
+		fmt.Sscanf(lnd.CreationDate, "%d", &created) // already validated above
+		if _, err := fmt.Sscanf(lnd.Expiry, "%d", &expiry); err != nil {
+			return nil, fmt.Errorf("parse expiry %q: %w", lnd.Expiry, err)
+		}
 		inv.ExpiresAt = time.Unix(created+expiry, 0)
 	}
 
-	return inv
+	return inv, nil
 }
 
 // base64ToHex converts a base64 (standard or URL-safe) string to hex.

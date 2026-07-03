@@ -31,3 +31,6 @@ hub.json
 node.json
 *.macaroon
 keys/
+
+# Testnet generated data
+deploy/data/

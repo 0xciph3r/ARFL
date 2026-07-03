@@ -54,6 +54,7 @@ ARFL is an **online bounded-risk authorization system for bandwidth** — not of
 - **Go 1.23+** — [install](https://go.dev/dl/)
 - **WireGuard** — `apt install wireguard wireguard-tools` (Linux) or `brew install wireguard-tools` (macOS)
 - **nftables** (Linux nodes only) — `apt install nftables` (for kernel-level quota enforcement)
+- **LND** (hub, production) — Lightning node with REST API enabled ([Polar](https://lightningpolar.com) for local dev)
 
 ### Build from Source
 
@@ -92,9 +93,29 @@ sudo bash deployments/setup-node.sh
   "credential_key": "<64-char hex HMAC secret>",
   "blind_key_dir": "keys/",
   "settlement_hours": 6,
-  "min_payout_sats": 1000
+  "min_payout_sats": 1000,
+  "lnd_host": "localhost",
+  "lnd_port": 8080,
+  "lnd_tls_cert_path": "~/.lnd/tls.cert",
+  "lnd_macaroon_path": "~/.lnd/data/chain/bitcoin/mainnet/admin.macaroon",
+  "lnd_fee_limit_sat": 100
 }
 ```
+
+#### Environment Variable Overrides
+
+Sensitive config can be set via environment variables (recommended for production). These take priority over `hub.json`:
+
+| Env Var | Overrides | Purpose |
+|---|---|---|
+| `ARFL_LND_HOST` | `lnd_host` | LND REST hostname |
+| `ARFL_LND_PORT` | `lnd_port` | LND REST port |
+| `ARFL_LND_TLS_CERT_PATH` | `lnd_tls_cert_path` | Path to LND's tls.cert |
+| `ARFL_LND_MACAROON_PATH` | `lnd_macaroon_path` | Path to admin.macaroon |
+| `ARFL_LND_FEE_LIMIT_SAT` | `lnd_fee_limit_sat` | Max routing fee per payment |
+| `ARFL_CREDENTIAL_KEY` | `credential_key` | HMAC secret for tickets |
+| `ARFL_NOSTR_PRIVKEY` | `nostr_privkey` | Hub's Nostr private key |
+| `ARFL_DB_PATH` | `db_path` | SQLite database path |
 
 ```bash
 # Development mode (auto-generates credential key — NOT for production):
@@ -131,7 +152,8 @@ On first run, the Hub generates an RSA denomination key in `keys/key-100mb.json`
   "relays": ["wss://relay.damus.io"],
   "attestation": "<hub-issued attestation JSON>",
   "hub_url": "http://<hub-ip>:8080",
-  "hub_pubkey_file": "keys/key-100mb.pub.json"
+  "hub_pubkey_file": "keys/key-100mb.pub.json",
+  "connect_addr": "0.0.0.0:9091"
 }
 ```
 
@@ -144,7 +166,8 @@ On first run, the Hub generates an RSA denomination key in `keys/key-100mb.json`
   "tunnel_ip": "10.200.0.1/24",
   "interface": "wg-exit",
   "out_interface": "eth0",
-  "admin_addr": "127.0.0.1:9091",
+  "admin_addr": "127.0.0.1:9090",
+  "connect_addr": "0.0.0.0:9091",
   "endpoint": "<public-ip>:51821",
   "upload_mbps": 100,
   "download_mbps": 100,
@@ -153,13 +176,9 @@ On first run, the Hub generates an RSA denomination key in `keys/key-100mb.json`
   "relays": ["wss://relay.damus.io"],
   "attestation": "<hub-issued attestation JSON>",
   "hub_url": "http://<hub-ip>:8080",
-  "hub_pubkey_file": "keys/key-100mb.pub.json"
+  "hub_pubkey_file": "keys/key-100mb.pub.json",
+  "connect_addr": "0.0.0.0:9091"
 }
-```
-
-```bash
-sudo ./arfl-node --config node-entry.json
-sudo ./arfl-node --config node-exit.json
 ```
 
 ### Client
@@ -197,6 +216,26 @@ sudo ./arfl-client --discover http://<hub-ip>:8080 \
 | 10 GB | 10,000 MB | 4,500 sats | 100 × 100 MB |
 | 50 GB | 50,000 MB | 20,000 sats | 500 × 100 MB |
 
+```bash
+sudo ./arfl-node --config node-entry.json
+sudo ./arfl-node --config node-exit.json
+```
+
+## Docker Testnet
+
+One-command local testnet with hub, 2 nodes, and a Nostr relay:
+
+```bash
+cd deploy
+./init-testnet.sh          # generate WG keys, Nostr keys, configs
+docker compose up --build  # start all services
+./smoke-test.sh            # verify everything is healthy
+```
+
+Uses distroless base images for minimal attack surface. The hub image has zero shell access.
+
+**With Polar (real Lightning):** Install [Polar](https://lightningpolar.com), create a network with 2 LND nodes, then update `data/hub/hub.json` with the LND connection details. See `deploy/docker-compose.yml` for the volume mount pattern.
+
 ## Architecture
 
 ```
@@ -210,7 +249,7 @@ internal/
   control/           Node admin API (POST /connect, /peers, /quota)
   credentials/       Blind signatures (RSA mint/verifier), HMAC tickets, key persistence
   discovery/         Nostr-based node discovery + attestation
-  lightning/         Lightning client interface + mock
+  lightning/         Lightning client interface (LND REST adapter + mock)
   nostr/             Nostr relay pool, keypairs, event handling
   payments/          Purchase API, settlement engine, blind sig endpoints
   quota/             Kernel-level bandwidth enforcement (nftables)
@@ -221,6 +260,7 @@ pkg/
   protocol/          Protocol constants (MTU, ports, intervals)
   types/             Shared types (NodeInfo, NodeRole)
 deployments/         systemd units, nftables rules, setup scripts
+deploy/              Docker Compose testnet (hub + nodes + relay)
 test/integration/    End-to-end integration tests
 .notes/              Architecture decisions (87 documented decisions)
 ```
@@ -229,7 +269,7 @@ See [docs/architecture.md](./docs/architecture.md) for the nested WireGuard two-
 
 ## Testing
 
-383 tests across 10 packages, all passing with `-race`:
+408 tests across 10 packages, all passing with `-race`:
 
 ```bash
 go test -race ./...
@@ -332,9 +372,10 @@ go vet ./...
 - [x] **Phase 3** — Lightning payments (invoices, settlement, tickets)
 - [x] **Phase 4** — Blind signatures (RSA mint, Chaumian tokens, STRIDE)
 - [x] **Phase 5** — Client integration (SDK, TokenGate, binary wiring)
-- [ ] **Phase 6** — Fedimint federation deposits
-- [ ] **Phase 7** — Mobile app (gomobile bindings)
-- [ ] **Phase 8** — Multi-hop routing (>2 hops)
+- [x] **Phase 6** — Token→connect flow, LND adapter, Docker testnet
+- [ ] **Phase 7** — Fedimint federation deposits
+- [ ] **Phase 8** — Mobile app (gomobile bindings)
+- [ ] **Phase 9** — Multi-hop routing (>2 hops)
 
 ## Links
 

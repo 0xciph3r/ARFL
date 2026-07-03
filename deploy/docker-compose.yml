@@ -26,7 +26,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    command: "arfl-hub --config /data/hub.json --dev"
+      target: hub
+    command: ["--config", "/data/hub.json", "--dev"]
     volumes:
       - ./data/hub:/data
     ports:
@@ -42,7 +43,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    command: "arfl-node --config /data/node.json"
+      target: node
+    command: ["--config", "/data/node.json"]
     volumes:
       - ./data/entry:/data
     cap_add:
@@ -66,7 +68,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    command: "arfl-node --config /data/node.json"
+      target: node
+    command: ["--config", "/data/node.json"]
     volumes:
       - ./data/exit:/data
     cap_add:

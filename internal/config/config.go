@@ -47,6 +47,13 @@ type HubConfig struct {
 
 	// Phase 4: Blind signatures
 	BlindKeyDir string `json:"blind_key_dir"` // Directory for RSA denomination keys (default: "keys/")
+
+	// Phase 6: LND connection (omit for mock/dev mode)
+	LNDHost         string `json:"lnd_host"`          // LND REST host (e.g. "localhost")
+	LNDPort         int    `json:"lnd_port"`          // LND REST port (e.g. 8080)
+	LNDTLSCertPath  string `json:"lnd_tls_cert_path"` // Path to LND's tls.cert
+	LNDMacaroonPath string `json:"lnd_macaroon_path"` // Path to admin.macaroon
+	LNDFeeLimitSat  int64  `json:"lnd_fee_limit_sat"` // Max routing fee per payment (default: 100)
 }
 
 // ClientConfig holds configuration for the ARFL client.

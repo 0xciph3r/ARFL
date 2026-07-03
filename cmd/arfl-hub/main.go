@@ -120,9 +120,27 @@ func main() {
 	issuer := credentials.NewHMACIssuer("key-1", credKey)
 
 	// Initialize Lightning client.
-	// Phase 3: mock client for development. Real LND adapter in production.
-	lnc := lightning.NewMockClient()
-	log.Printf("[hub] lightning: mock client (development mode)")
+	var lnc lightning.Client
+	if cfg.LNDHost != "" && cfg.LNDPort > 0 {
+		lndClient, err := lightning.NewLNDClient(lightning.LNDConfig{
+			Host:         cfg.LNDHost,
+			Port:         cfg.LNDPort,
+			TLSCertPath:  cfg.LNDTLSCertPath,
+			MacaroonPath: cfg.LNDMacaroonPath,
+			FeeLimitSat:  cfg.LNDFeeLimitSat,
+		})
+		if err != nil {
+			log.Fatalf("connect to LND: %v", err)
+		}
+		lnc = lndClient
+		log.Printf("[hub] lightning: LND at %s:%d", cfg.LNDHost, cfg.LNDPort)
+	} else {
+		if !*devMode {
+			log.Fatalf("LND config required (lnd_host, lnd_port, lnd_tls_cert_path, lnd_macaroon_path) — use --dev for mock")
+		}
+		lnc = lightning.NewMockClient()
+		log.Printf("[hub] lightning: mock client (--dev mode)")
+	}
 
 	// Create payment API.
 	purchaseAPI := payments.NewPurchaseAPI(db, lnc, issuer)

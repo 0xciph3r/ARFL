@@ -77,26 +77,35 @@ func (a *Announcer) announce(ctx context.Context) error {
 		return fmt.Errorf("marshal node info: %w", err)
 	}
 
-	// Encode the attestation for the tag.
-	attJSON, err := a.attestation.Encode()
-	if err != nil {
-		return fmt.Errorf("encode attestation: %w", err)
+	// Encode the attestation for the tag (optional for testnet).
+	var attJSON string
+	if a.attestation != nil {
+		attJSON, err = a.attestation.Encode()
+		if err != nil {
+			return fmt.Errorf("encode attestation: %w", err)
+		}
 	}
 
 	// Build the NIP-33 replaceable event.
 	// The "d" tag is the node's Nostr pubkey — one announcement per node.
+	tags := nostr.Tags{
+		{"d", a.nodeKP.PubkeyHex()},
+		{"wg_pubkey", info.WGPubkey},
+		{"role", string(info.Role)},
+	}
+	if a.attestation != nil {
+		tags = append(tags,
+			nostr.Tag{"hub", a.attestation.HubPubkey},
+			nostr.Tag{"attestation", attJSON},
+			nostr.Tag{"operator", a.attestation.OperatorID},
+		)
+	}
+
 	event := &nostr.Event{
 		CreatedAt: time.Now().Unix(),
 		Kind:      protocol.NostrKindNodeAnnouncement,
-		Tags: nostr.Tags{
-			{"d", a.nodeKP.PubkeyHex()},
-			{"hub", a.attestation.HubPubkey},
-			{"attestation", attJSON},
-			{"wg_pubkey", info.WGPubkey},
-			{"role", string(info.Role)},
-			{"operator", a.attestation.OperatorID},
-		},
-		Content: string(content),
+		Tags:      tags,
+		Content:   string(content),
 	}
 
 	if err := event.Sign(a.nodeKP); err != nil {
@@ -121,23 +130,28 @@ func BuildAnnouncementEvent(nodeKP *nostr.KeyPair, info types.NodeInfo, att *nos
 		return nil, fmt.Errorf("marshal node info: %w", err)
 	}
 
-	attJSON, err := att.Encode()
-	if err != nil {
-		return nil, fmt.Errorf("encode attestation: %w", err)
+	tags := nostr.Tags{
+		{"d", nodeKP.PubkeyHex()},
+		{"wg_pubkey", info.WGPubkey},
+		{"role", string(info.Role)},
+	}
+	if att != nil {
+		attJSON, err := att.Encode()
+		if err != nil {
+			return nil, fmt.Errorf("encode attestation: %w", err)
+		}
+		tags = append(tags,
+			nostr.Tag{"hub", att.HubPubkey},
+			nostr.Tag{"attestation", attJSON},
+			nostr.Tag{"operator", att.OperatorID},
+		)
 	}
 
 	event := &nostr.Event{
 		CreatedAt: time.Now().Unix(),
 		Kind:      protocol.NostrKindNodeAnnouncement,
-		Tags: nostr.Tags{
-			{"d", nodeKP.PubkeyHex()},
-			{"hub", att.HubPubkey},
-			{"attestation", attJSON},
-			{"wg_pubkey", info.WGPubkey},
-			{"role", string(info.Role)},
-			{"operator", att.OperatorID},
-		},
-		Content: string(content),
+		Tags:      tags,
+		Content:   string(content),
 	}
 
 	if err := event.Sign(nodeKP); err != nil {

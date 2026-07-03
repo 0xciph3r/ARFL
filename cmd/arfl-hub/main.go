@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -313,8 +314,13 @@ func loadOrGenerateDenomKey(keyDir, keyID string, bytesPerToken int64) (*credent
 	}
 
 	// Key doesn't exist — generate a new one.
-	if !os.IsNotExist(err) {
+	if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read key %s: %w", keyPath, err)
+	}
+
+	// Ensure key directory exists.
+	if err := os.MkdirAll(keyDir, 0700); err != nil {
+		return nil, fmt.Errorf("create key dir %s: %w", keyDir, err)
 	}
 
 	log.Printf("[hub] generating new denomination key %s (%d bytes/token)...", keyID, bytesPerToken)

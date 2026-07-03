@@ -177,10 +177,13 @@ func main() {
 		}
 		log.Printf("[node] Nostr pubkey: %s", nodeKP.PubkeyHex())
 
-		// Parse the hub attestation.
-		att, err := nostr.DecodeAttestation(cfg.AttestationJSON)
-		if err != nil {
-			log.Fatalf("parse attestation: %v", err)
+		// Parse the hub attestation (optional for testnet).
+		var att *nostr.Attestation
+		if cfg.AttestationJSON != "" {
+			att, err = nostr.DecodeAttestation(cfg.AttestationJSON)
+			if err != nil {
+				log.Fatalf("parse attestation: %v", err)
+			}
 		}
 
 		// Connect to Nostr relays.

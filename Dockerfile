@@ -35,10 +35,10 @@ RUN apt-get update && \
 FROM gcr.io/distroless/base-debian12 AS node
 
 # Copy required network binaries and their library dependencies.
-COPY --from=tools /sbin/ip           /sbin/ip
-COPY --from=tools /sbin/nft          /sbin/nft
-COPY --from=tools /sbin/iptables     /sbin/iptables
-COPY --from=tools /sbin/wg           /sbin/wg
+COPY --from=tools /usr/sbin/ip       /usr/sbin/ip
+COPY --from=tools /usr/sbin/nft      /usr/sbin/nft
+COPY --from=tools /usr/sbin/iptables /usr/sbin/iptables
+COPY --from=tools /usr/bin/wg        /usr/bin/wg
 COPY --from=tools /lib/              /lib/
 COPY --from=tools /usr/lib/          /usr/lib/
 

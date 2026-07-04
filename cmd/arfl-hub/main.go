@@ -31,6 +31,15 @@ func main() {
 		case "attest":
 			runAttest(os.Args[2:])
 			return
+		case "revoke":
+			runRevoke(os.Args[2:])
+			return
+		case "renew":
+			runRenew(os.Args[2:])
+			return
+		case "list-nodes":
+			runListNodes(os.Args[2:])
+			return
 		}
 	}
 
@@ -208,7 +217,7 @@ func main() {
 
 	// Discovery endpoints.
 	discoveryAPI := discovery.NewDiscoveryAPI(idx)
-	discoveryAPI.SetHubKeyPair(hubKP)
+	discoveryAPI.SetHubKeyPair(hubKP, db)
 	mux.Handle("/nodes", discoveryAPI.Handler())
 	mux.Handle("/health", discoveryAPI.Handler())
 	mux.Handle("/attest/", discoveryAPI.Handler())
@@ -349,7 +358,7 @@ func loadOrGenerateDenomKey(keyDir, keyID string, bytesPerToken int64) (*credent
 }
 
 // runAttest generates a signed attestation for a node.
-// Usage: arfl-hub attest --config hub.json --node-pubkey <hex> --node-wg-key <base64> --operator <id> --role <entry|exit>
+// Usage: arfl-hub attest --config hub.json --node-pubkey <hex> --node-wg-key <base64> --operator <id> --role <entry|exit> [--lease 90d]
 func runAttest(args []string) {
 	fs := flag.NewFlagSet("attest", flag.ExitOnError)
 	cfgPath := fs.String("config", "hub.json", "path to hub config file")
@@ -358,6 +367,7 @@ func runAttest(args []string) {
 	operator := fs.String("operator", "", "operator identifier")
 	role := fs.String("role", "", "allowed role: entry, exit, or both")
 	outFile := fs.String("out", "", "write attestation to file (default: stdout)")
+	leaseDur := fs.String("lease", "", "lease duration (e.g. 90d, 30d, 7d). Stores in DB and enforces on refresh")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: arfl-hub attest [flags]\n\n")
 		fmt.Fprintf(os.Stderr, "Generate a signed attestation for a node. The hub vouches that this\n")
@@ -367,7 +377,7 @@ func runAttest(args []string) {
 		fmt.Fprintf(os.Stderr, "    --node-pubkey abc123...def \\\n")
 		fmt.Fprintf(os.Stderr, "    --node-wg-key YWJjZGVm... \\\n")
 		fmt.Fprintf(os.Stderr, "    --operator my-org \\\n")
-		fmt.Fprintf(os.Stderr, "    --role entry\n\n")
+		fmt.Fprintf(os.Stderr, "    --role entry --lease 90d\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		fs.PrintDefaults()
 	}
@@ -414,9 +424,40 @@ func runAttest(args []string) {
 		os.Exit(1)
 	}
 
-	encoded, err := att.Encode()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: encode attestation: %v\n", err)
+	// If lease specified, store in database.
+	if *leaseDur != "" {
+		dur, parseErr := parseDuration(*leaseDur)
+		if parseErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid --lease: %v\n", parseErr)
+			os.Exit(1)
+		}
+
+		dbPath := filepath.Join(filepath.Dir(*cfgPath), "arfl-hub.db")
+		db, dbErr := store.Open(dbPath)
+		if dbErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: open database: %v\n", dbErr)
+			os.Exit(1)
+		}
+		defer db.Close()
+
+		lease := store.NodeLease{
+			NodePubkey:   *nodePubkey,
+			NodeWGPubkey: *nodeWGKey,
+			OperatorID:   *operator,
+			AllowedRoles: roles,
+			LeaseStart:   time.Now().UTC(),
+			LeaseEnd:     time.Now().UTC().Add(dur),
+		}
+		if err := db.UpsertNodeLease(lease); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: store lease: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Lease stored: expires %s\n", lease.LeaseEnd.Format(time.RFC3339))
+	}
+
+	encoded, encErr := att.Encode()
+	if encErr != nil {
+		fmt.Fprintf(os.Stderr, "Error: encode attestation: %v\n", encErr)
 		os.Exit(1)
 	}
 
@@ -432,5 +473,157 @@ func runAttest(args []string) {
 		fmt.Fprintf(os.Stderr, "Expires:     %d (%s)\n", att.ExpiresAt, time.Unix(att.ExpiresAt, 0).Format(time.RFC3339))
 	} else {
 		fmt.Println(encoded)
+	}
+}
+
+// runRevoke immediately revokes a node's lease.
+func runRevoke(args []string) {
+	fs := flag.NewFlagSet("revoke", flag.ExitOnError)
+	cfgPath := fs.String("config", "hub.json", "path to hub config file")
+	nodePubkey := fs.String("node-pubkey", "", "node's Nostr public key (64-char hex)")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: arfl-hub revoke --node-pubkey <hex> [--config hub.json]\n\n")
+		fmt.Fprintf(os.Stderr, "Immediately revoke a node's lease. The node will be unable to\n")
+		fmt.Fprintf(os.Stderr, "refresh its attestation and will drop off the network.\n\n")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+	if *nodePubkey == "" {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	dbPath := filepath.Join(filepath.Dir(*cfgPath), "arfl-hub.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: open database: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	if err := db.RevokeNodeLease(*nodePubkey); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "Node %s revoked successfully\n", *nodePubkey)
+}
+
+// runRenew extends a node's lease.
+func runRenew(args []string) {
+	fs := flag.NewFlagSet("renew", flag.ExitOnError)
+	cfgPath := fs.String("config", "hub.json", "path to hub config file")
+	nodePubkey := fs.String("node-pubkey", "", "node's Nostr public key (64-char hex)")
+	leaseDur := fs.String("lease", "", "new lease duration from now (e.g. 90d, 30d)")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: arfl-hub renew --node-pubkey <hex> --lease 90d [--config hub.json]\n\n")
+		fmt.Fprintf(os.Stderr, "Extend a node's lease. Clears any revocation.\n\n")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+	if *nodePubkey == "" || *leaseDur == "" {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	dur, err := parseDuration(*leaseDur)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: invalid --lease: %v\n", err)
+		os.Exit(1)
+	}
+
+	dbPath := filepath.Join(filepath.Dir(*cfgPath), "arfl-hub.db")
+	db, dbErr := store.Open(dbPath)
+	if dbErr != nil {
+		fmt.Fprintf(os.Stderr, "Error: open database: %v\n", dbErr)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	newEnd := time.Now().UTC().Add(dur)
+	if err := db.RenewNodeLease(*nodePubkey, newEnd); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "Node %s renewed until %s\n", *nodePubkey, newEnd.Format(time.RFC3339))
+}
+
+// runListNodes shows all node leases.
+func runListNodes(args []string) {
+	fs := flag.NewFlagSet("list-nodes", flag.ExitOnError)
+	cfgPath := fs.String("config", "hub.json", "path to hub config file")
+	fs.Parse(args)
+
+	dbPath := filepath.Join(filepath.Dir(*cfgPath), "arfl-hub.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: open database: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	leases, err := db.ListNodeLeases()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(leases) == 0 {
+		fmt.Println("No node leases found.")
+		return
+	}
+
+	now := time.Now()
+	fmt.Printf("%-18s %-10s %-12s %-8s %-25s %s\n",
+		"NODE (first 16)", "OPERATOR", "ROLES", "STATUS", "EXPIRES", "WG KEY")
+	fmt.Println("-------------------------------------------------------------------------------------------------------------------")
+	for _, l := range leases {
+		status := "ACTIVE"
+		if l.Revoked {
+			status = "REVOKED"
+		} else if now.After(l.LeaseEnd) {
+			status = "EXPIRED"
+		}
+		rolesStr := fmt.Sprintf("%v", l.AllowedRoles)
+		pubShort := l.NodePubkey
+		if len(pubShort) > 16 {
+			pubShort = pubShort[:16] + ".."
+		}
+		wgShort := l.NodeWGPubkey
+		if len(wgShort) > 20 {
+			wgShort = wgShort[:20] + ".."
+		}
+		fmt.Printf("%-18s %-10s %-12s %-8s %-25s %s\n",
+			pubShort, l.OperatorID, rolesStr, status,
+			l.LeaseEnd.Format("2006-01-02 15:04 UTC"), wgShort)
+	}
+}
+
+// parseDuration parses human-friendly durations like "90d", "30d", "7d", "24h".
+func parseDuration(s string) (time.Duration, error) {
+	if len(s) < 2 {
+		return 0, fmt.Errorf("too short: %q", s)
+	}
+	unit := s[len(s)-1]
+	numStr := s[:len(s)-1]
+	var n int
+	if _, err := fmt.Sscanf(numStr, "%d", &n); err != nil {
+		return 0, fmt.Errorf("invalid number in %q: %w", s, err)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("duration must be positive: %q", s)
+	}
+	switch unit {
+	case 'd':
+		return time.Duration(n) * 24 * time.Hour, nil
+	case 'h':
+		return time.Duration(n) * time.Hour, nil
+	default:
+		return 0, fmt.Errorf("unknown unit %q in %q (use d or h)", string(unit), s)
 	}
 }

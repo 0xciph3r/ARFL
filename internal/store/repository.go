@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/credentials"
@@ -734,4 +735,141 @@ FROM redemptions WHERE nonce = ?`, nonce)
 		return nil, err
 	}
 	return &r, nil
+}
+
+// --- Node Lease operations ---
+
+// NodeLease represents an authorization window for a node.
+type NodeLease struct {
+	NodePubkey   string
+	NodeWGPubkey string
+	OperatorID   string
+	AllowedRoles []string
+	LeaseStart   time.Time
+	LeaseEnd     time.Time
+	Revoked      bool
+}
+
+// UpsertNodeLease creates or updates a node lease.
+func (s *Store) UpsertNodeLease(lease NodeLease) error {
+	roles := strings.Join(lease.AllowedRoles, ",")
+	_, err := s.db.Exec(`
+		INSERT INTO node_leases (node_pubkey, node_wg_pubkey, operator_id, allowed_roles, lease_start, lease_end, revoked)
+		VALUES (?, ?, ?, ?, ?, ?, 0)
+		ON CONFLICT(node_pubkey) DO UPDATE SET
+			node_wg_pubkey = excluded.node_wg_pubkey,
+			operator_id = excluded.operator_id,
+			allowed_roles = excluded.allowed_roles,
+			lease_start = excluded.lease_start,
+			lease_end = excluded.lease_end,
+			revoked = 0,
+			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`,
+		lease.NodePubkey, lease.NodeWGPubkey, lease.OperatorID, roles,
+		lease.LeaseStart.UTC().Format(time.RFC3339),
+		lease.LeaseEnd.UTC().Format(time.RFC3339),
+	)
+	return err
+}
+
+// GetNodeLease retrieves a node's lease. Returns nil if not found.
+func (s *Store) GetNodeLease(nodePubkey string) (*NodeLease, error) {
+	var l NodeLease
+	var roles string
+	var start, end string
+	var revoked int
+	err := s.db.QueryRow(`
+		SELECT node_pubkey, node_wg_pubkey, operator_id, allowed_roles,
+		       lease_start, lease_end, revoked
+		FROM node_leases WHERE node_pubkey = ?`, nodePubkey).Scan(
+		&l.NodePubkey, &l.NodeWGPubkey, &l.OperatorID, &roles,
+		&start, &end, &revoked,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	l.AllowedRoles = strings.Split(roles, ",")
+	l.LeaseStart, _ = time.Parse(time.RFC3339, start)
+	l.LeaseEnd, _ = time.Parse(time.RFC3339, end)
+	l.Revoked = revoked != 0
+	return &l, nil
+}
+
+// IsLeaseActive checks if a node has a valid, non-revoked, non-expired lease.
+func (s *Store) IsLeaseActive(nodePubkey string) (bool, error) {
+	lease, err := s.GetNodeLease(nodePubkey)
+	if err != nil {
+		return false, err
+	}
+	if lease == nil {
+		return false, nil
+	}
+	if lease.Revoked {
+		return false, nil
+	}
+	return time.Now().Before(lease.LeaseEnd), nil
+}
+
+// RevokeNodeLease immediately revokes a node's lease.
+func (s *Store) RevokeNodeLease(nodePubkey string) error {
+	res, err := s.db.Exec(`
+		UPDATE node_leases SET revoked = 1,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE node_pubkey = ?`, nodePubkey)
+	if err != nil {
+		return err
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("no lease found for node %s", nodePubkey)
+	}
+	return nil
+}
+
+// RenewNodeLease extends a node's lease end time. Clears revocation.
+func (s *Store) RenewNodeLease(nodePubkey string, newEnd time.Time) error {
+	res, err := s.db.Exec(`
+		UPDATE node_leases SET lease_end = ?, revoked = 0,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE node_pubkey = ?`,
+		newEnd.UTC().Format(time.RFC3339), nodePubkey)
+	if err != nil {
+		return err
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("no lease found for node %s", nodePubkey)
+	}
+	return nil
+}
+
+// ListNodeLeases returns all node leases.
+func (s *Store) ListNodeLeases() ([]NodeLease, error) {
+	rows, err := s.db.Query(`
+		SELECT node_pubkey, node_wg_pubkey, operator_id, allowed_roles,
+		       lease_start, lease_end, revoked
+		FROM node_leases ORDER BY lease_end DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var leases []NodeLease
+	for rows.Next() {
+		var l NodeLease
+		var roles, start, end string
+		var revoked int
+		if err := rows.Scan(&l.NodePubkey, &l.NodeWGPubkey, &l.OperatorID,
+			&roles, &start, &end, &revoked); err != nil {
+			return nil, err
+		}
+		l.AllowedRoles = strings.Split(roles, ",")
+		l.LeaseStart, _ = time.Parse(time.RFC3339, start)
+		l.LeaseEnd, _ = time.Parse(time.RFC3339, end)
+		l.Revoked = revoked != 0
+		leases = append(leases, l)
+	}
+	return leases, nil
 }

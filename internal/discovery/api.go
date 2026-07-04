@@ -22,6 +22,7 @@ import (
 type DiscoveryAPI struct {
 	index *NodeIndex
 	hubKP *nostr.KeyPair
+	store LeaseChecker
 	mux   *http.ServeMux
 
 	// Rate limiting: map[IP][]timestamp of recent requests.
@@ -29,6 +30,11 @@ type DiscoveryAPI struct {
 	rateMu      sync.Mutex
 	maxRequests int
 	rateWindow  time.Duration
+}
+
+// LeaseChecker is the interface needed to verify node leases.
+type LeaseChecker interface {
+	IsLeaseActive(nodePubkey string) (bool, error)
 }
 
 // DiscoveryResponse is what the client receives.
@@ -57,8 +63,9 @@ func NewDiscoveryAPI(index *NodeIndex) *DiscoveryAPI {
 }
 
 // SetHubKeyPair enables the /attest/refresh endpoint.
-func (api *DiscoveryAPI) SetHubKeyPair(kp *nostr.KeyPair) {
+func (api *DiscoveryAPI) SetHubKeyPair(kp *nostr.KeyPair, leaseStore LeaseChecker) {
 	api.hubKP = kp
+	api.store = leaseStore
 	api.mux.HandleFunc("/attest/refresh", api.handleAttestRefresh)
 }
 
@@ -195,6 +202,21 @@ func (api *DiscoveryAPI) handleAttestRefresh(w http.ResponseWriter, r *http.Requ
 	if err := nostr.VerifyRefreshRequest(att.NodePubkey, req.Attestation, req.Timestamp, req.Signature); err != nil {
 		http.Error(w, "invalid signature: "+err.Error(), http.StatusForbidden)
 		return
+	}
+
+	// Check if the node has an active lease.
+	if api.store != nil {
+		active, err := api.store.IsLeaseActive(att.NodePubkey)
+		if err != nil {
+			log.Printf("[attest-refresh] lease check error for %s: %v", att.NodePubkey[:16], err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if !active {
+			log.Printf("[attest-refresh] denied: node %s has no active lease", att.NodePubkey[:16]+"...")
+			http.Error(w, "lease expired or revoked", http.StatusForbidden)
+			return
+		}
 	}
 
 	// Issue a fresh attestation with the same parameters.

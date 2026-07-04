@@ -251,64 +251,47 @@ echo "net.ipv4.ip_forward=1" >> /etc/sysctl.d/99-arfl.conf
 The hub must vouch for each node before they can join the network.
 This prevents Sybil attacks — only hub-attested nodes are accepted.
 
-You need a small Go program to generate attestations. Create `attest.go`:
-
-```go
-//go:build ignore
-
-package main
-
-import (
-    "encoding/json"
-    "fmt"
-    "os"
-
-    "github.com/Radi-Labs/ARFL/internal/nostr"
-)
-
-func main() {
-    if len(os.Args) != 6 {
-        fmt.Fprintf(os.Stderr, "usage: %s <hub_privkey> <node_nostr_pub> <node_wg_pub> <operator_id> <role>\n", os.Args[0])
-        os.Exit(1)
-    }
-    hubKP, _ := nostr.KeyPairFromPrivHex(os.Args[1])
-    att, _ := nostr.CreateAttestation(hubKP, os.Args[2], os.Args[3], os.Args[4], []string{os.Args[5]})
-    b, _ := json.Marshal(att)
-    fmt.Println(string(b))
-}
-```
-
-Run it from the ARFL source directory:
+Use the built-in `attest` subcommand on the hub:
 
 ```bash
-# Get the node's Nostr pubkey (from its startup log)
-# Get the node's WireGuard pubkey
-cat /opt/arfl/data/wg-public.key
-
-# Generate attestation
-go run attest.go \
-  <hub_nostr_privkey> \
-  <node_nostr_pubkey> \
-  <node_wg_pubkey> \
-  "my-operator-id" \
-  "entry"   # or "exit"
+arfl-hub attest --config /opt/arfl/data/hub.json \
+  --node-pubkey <node_nostr_pubkey_hex> \
+  --node-wg-key <node_wireguard_pubkey_base64> \
+  --operator "my-org" \
+  --role entry \
+  --out /tmp/entry-attestation.json
 ```
 
-This outputs a JSON attestation. Add it to the node's config as the `attestation`
-field (the entire JSON string, escaped):
+To get the values you need:
 
 ```bash
-# Use python to inject it cleanly
-python3 -c "
+# Node's Nostr pubkey (from its startup log)
+journalctl -u arfl-node | grep "Nostr pubkey"
+
+# Node's WireGuard pubkey
+wg show wg-entry public-key   # or wg-exit
+```
+
+Run this once for each node (changing `--role` to `entry` or `exit`).
+Use `--role both` if a node serves both roles.
+
+Then inject the attestation into the node's config:
+
+```bash
+# Copy attestation to the node
+scp /tmp/entry-attestation.json root@<entry-ip>:/opt/arfl/data/
+
+# Inject into config
+ssh root@<entry-ip> 'python3 -c "
 import json
-cfg = json.load(open('/opt/arfl/data/node.json'))
-att = json.loads('<paste attestation JSON here>')
-cfg['attestation'] = json.dumps(att)
-json.dump(cfg, open('/opt/arfl/data/node.json', 'w'), indent=2)
-"
+cfg = json.load(open(\"/opt/arfl/data/node.json\"))
+cfg[\"attestation\"] = open(\"/opt/arfl/data/entry-attestation.json\").read().strip()
+json.dump(cfg, open(\"/opt/arfl/data/node.json\", \"w\"), indent=2)
+"'
 ```
 
-Repeat for both entry and exit nodes.
+Repeat for both entry and exit nodes. Attestations expire after 30 days —
+regenerate with the same command when needed.
 
 ## 10. Start the Nodes
 

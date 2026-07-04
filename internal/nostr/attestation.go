@@ -71,6 +71,11 @@ func CreateAttestation(hubKP *KeyPair, nodePubkey, nodeWGPubkey, operatorID stri
 	return att, nil
 }
 
+// RecomputeID recomputes the attestation content hash for verification.
+func (a *Attestation) RecomputeID() (string, error) {
+	return a.computeID()
+}
+
 // computeID produces a deterministic hash of the attestation content.
 // This is what gets signed — change any field and the signature breaks.
 func (a *Attestation) computeID() (string, error) {
@@ -202,4 +207,57 @@ func DecodeAttestation(data string) (*Attestation, error) {
 		return nil, fmt.Errorf("decode attestation: %w", err)
 	}
 	return &att, nil
+}
+
+// SignRefreshRequest signs a refresh request with a node's private key.
+// The signature is over SHA256(attestationJSON || timestamp).
+func SignRefreshRequest(nodeKP *KeyPair, attJSON string, timestamp int64) (string, error) {
+	msg := fmt.Sprintf("%s%d", attJSON, timestamp)
+	hash := sha256.Sum256([]byte(msg))
+	sig, err := schnorr.Sign(nodeKP.PrivateKey, hash[:])
+	if err != nil {
+		return "", fmt.Errorf("sign refresh request: %w", err)
+	}
+	return hex.EncodeToString(sig.Serialize()), nil
+}
+
+// VerifyRefreshRequest verifies a node's signature on a refresh request.
+func VerifyRefreshRequest(nodePubkeyHex, attJSON string, timestamp int64, signatureHex string) error {
+	// Reject if timestamp is too old (5-minute window to prevent replay).
+	if abs(time.Now().Unix()-timestamp) > 300 {
+		return fmt.Errorf("timestamp too far from current time")
+	}
+
+	msg := fmt.Sprintf("%s%d", attJSON, timestamp)
+	hash := sha256.Sum256([]byte(msg))
+
+	pubBytes, err := hex.DecodeString(nodePubkeyHex)
+	if err != nil {
+		return fmt.Errorf("decode node pubkey: %w", err)
+	}
+	pubKey, err := schnorr.ParsePubKey(pubBytes)
+	if err != nil {
+		return fmt.Errorf("parse node pubkey: %w", err)
+	}
+
+	sigBytes, err := hex.DecodeString(signatureHex)
+	if err != nil {
+		return fmt.Errorf("decode signature: %w", err)
+	}
+	sig, err := schnorr.ParseSignature(sigBytes)
+	if err != nil {
+		return fmt.Errorf("parse signature: %w", err)
+	}
+
+	if !sig.Verify(hash[:], pubKey) {
+		return fmt.Errorf("invalid signature")
+	}
+	return nil
+}
+
+func abs(x int64) int64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }

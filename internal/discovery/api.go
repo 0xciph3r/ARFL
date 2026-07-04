@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Radi-Labs/ARFL/internal/nostr"
 	"github.com/Radi-Labs/ARFL/pkg/types"
 )
 
@@ -20,6 +21,7 @@ import (
 // The hub CANNOT manipulate the list without being detected.
 type DiscoveryAPI struct {
 	index *NodeIndex
+	hubKP *nostr.KeyPair
 	mux   *http.ServeMux
 
 	// Rate limiting: map[IP][]timestamp of recent requests.
@@ -52,6 +54,12 @@ func NewDiscoveryAPI(index *NodeIndex) *DiscoveryAPI {
 	api.mux.HandleFunc("/health", api.handleHealth)
 
 	return api
+}
+
+// SetHubKeyPair enables the /attest/refresh endpoint.
+func (api *DiscoveryAPI) SetHubKeyPair(kp *nostr.KeyPair) {
+	api.hubKP = kp
+	api.mux.HandleFunc("/attest/refresh", api.handleAttestRefresh)
 }
 
 // Handler returns the HTTP handler for use with http.Server.
@@ -144,4 +152,80 @@ func (api *DiscoveryAPI) checkRateLimit(clientIP string) bool {
 
 	api.rateLimit[clientIP] = append(fresh, now)
 	return true
+}
+
+// handleAttestRefresh handles POST /attest/refresh.
+// A node presents its current attestation + a Schnorr signature proving
+// it owns the Nostr key. The hub verifies the signature, checks the
+// attestation was originally issued by itself, and returns a fresh one.
+func (api *DiscoveryAPI) handleAttestRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if api.hubKP == nil {
+		http.Error(w, "attestation refresh not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req AttestRefreshRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 8192)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Decode the current attestation.
+	att, err := nostr.DecodeAttestation(req.Attestation)
+	if err != nil {
+		http.Error(w, "invalid attestation: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// The attestation must have been issued by THIS hub.
+	if att.HubPubkey != api.hubKP.PubkeyHex() {
+		http.Error(w, "attestation not issued by this hub", http.StatusForbidden)
+		return
+	}
+
+	// Verify the attestation's own signature (proves it hasn't been tampered with).
+	// We allow expired attestations here — the whole point is to refresh them.
+	// But the signature and content hash must still be valid.
+	if att.Protocol != "arfl-node-attestation-v1" {
+		http.Error(w, "unknown attestation protocol", http.StatusBadRequest)
+		return
+	}
+	computedID, err := att.RecomputeID()
+	if err != nil || computedID != att.AttestationID {
+		http.Error(w, "attestation content hash mismatch", http.StatusBadRequest)
+		return
+	}
+
+	// Verify the node's signature on the refresh request.
+	if err := nostr.VerifyRefreshRequest(att.NodePubkey, req.Attestation, req.Timestamp, req.Signature); err != nil {
+		http.Error(w, "invalid signature: "+err.Error(), http.StatusForbidden)
+		return
+	}
+
+	// Issue a fresh attestation with the same parameters.
+	newAtt, err := nostr.CreateAttestation(api.hubKP, att.NodePubkey, att.NodeWGPubkey, att.OperatorID, att.AllowedRoles)
+	if err != nil {
+		log.Printf("[attest-refresh] create attestation error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	encoded, err := newAtt.Encode()
+	if err != nil {
+		log.Printf("[attest-refresh] encode attestation error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[attest-refresh] refreshed attestation for node %s (role=%v, expires=%s)",
+		att.NodePubkey[:16]+"...", att.AllowedRoles, time.Unix(newAtt.ExpiresAt, 0).Format(time.RFC3339))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(AttestRefreshResponse{Attestation: encoded})
 }

@@ -214,6 +214,9 @@ func main() {
 			}
 
 			announcer := discovery.NewAnnouncer(nodeKP, nodeInfoFn, att, pool)
+			if cfg.HubURL != "" {
+				announcer.SetHubURL(cfg.HubURL)
+			}
 			go announcer.Run(ctx)
 			defer pool.Close()
 			log.Printf("[node] announcing to %d relay(s)", len(cfg.Relays))

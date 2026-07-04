@@ -208,8 +208,10 @@ func main() {
 
 	// Discovery endpoints.
 	discoveryAPI := discovery.NewDiscoveryAPI(idx)
+	discoveryAPI.SetHubKeyPair(hubKP)
 	mux.Handle("/nodes", discoveryAPI.Handler())
 	mux.Handle("/health", discoveryAPI.Handler())
+	mux.Handle("/attest/", discoveryAPI.Handler())
 
 	// Payment endpoints.
 	mux.Handle("/purchase", purchaseAPI.Handler())

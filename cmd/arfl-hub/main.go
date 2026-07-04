@@ -25,6 +25,15 @@ import (
 )
 
 func main() {
+	// Handle subcommands before flag parsing.
+	if len(os.Args) > 1 && os.Args[0] != "-" {
+		switch os.Args[1] {
+		case "attest":
+			runAttest(os.Args[2:])
+			return
+		}
+	}
+
 	cfgPath := flag.String("config", "hub.json", "path to hub config file")
 	devMode := flag.Bool("dev", false, "development mode (insecure credential key, NOT for production)")
 	flag.Parse()
@@ -335,4 +344,91 @@ func loadOrGenerateDenomKey(keyDir, keyID string, bytesPerToken int64) (*credent
 
 	log.Printf("[hub] denomination key %s saved to %s", keyID, keyPath)
 	return key, nil
+}
+
+// runAttest generates a signed attestation for a node.
+// Usage: arfl-hub attest --config hub.json --node-pubkey <hex> --node-wg-key <base64> --operator <id> --role <entry|exit>
+func runAttest(args []string) {
+	fs := flag.NewFlagSet("attest", flag.ExitOnError)
+	cfgPath := fs.String("config", "hub.json", "path to hub config file")
+	nodePubkey := fs.String("node-pubkey", "", "node's Nostr public key (64-char hex)")
+	nodeWGKey := fs.String("node-wg-key", "", "node's WireGuard public key (base64)")
+	operator := fs.String("operator", "", "operator identifier")
+	role := fs.String("role", "", "allowed role: entry, exit, or both")
+	outFile := fs.String("out", "", "write attestation to file (default: stdout)")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: arfl-hub attest [flags]\n\n")
+		fmt.Fprintf(os.Stderr, "Generate a signed attestation for a node. The hub vouches that this\n")
+		fmt.Fprintf(os.Stderr, "node is authorized to join the network.\n\n")
+		fmt.Fprintf(os.Stderr, "Example:\n")
+		fmt.Fprintf(os.Stderr, "  arfl-hub attest --config hub.json \\\n")
+		fmt.Fprintf(os.Stderr, "    --node-pubkey abc123...def \\\n")
+		fmt.Fprintf(os.Stderr, "    --node-wg-key YWJjZGVm... \\\n")
+		fmt.Fprintf(os.Stderr, "    --operator my-org \\\n")
+		fmt.Fprintf(os.Stderr, "    --role entry\n\n")
+		fmt.Fprintf(os.Stderr, "Flags:\n")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	if *nodePubkey == "" || *nodeWGKey == "" || *operator == "" || *role == "" {
+		fs.Usage()
+		fmt.Fprintf(os.Stderr, "\nError: all flags are required\n")
+		os.Exit(1)
+	}
+
+	if *role != "entry" && *role != "exit" && *role != "both" {
+		fmt.Fprintf(os.Stderr, "Error: --role must be entry, exit, or both\n")
+		os.Exit(1)
+	}
+
+	// Load hub config for the Nostr private key.
+	cfg, err := config.LoadHubConfig(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	hubKP, err := nostr.KeyPairFromPrivHex(cfg.NostrPrivkey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: parse hub key: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Determine allowed roles.
+	var roles []string
+	if *role == "both" {
+		roles = []string{"entry", "exit"}
+	} else {
+		roles = []string{*role}
+	}
+
+	att, err := nostr.CreateAttestation(hubKP, *nodePubkey, *nodeWGKey, *operator, roles)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: create attestation: %v\n", err)
+		os.Exit(1)
+	}
+
+	encoded, err := att.Encode()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: encode attestation: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *outFile != "" {
+		if err := os.WriteFile(*outFile, []byte(encoded+"\n"), 0600); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: write file: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Attestation written to %s\n", *outFile)
+		fmt.Fprintf(os.Stderr, "Hub pubkey:  %s\n", hubKP.PubkeyHex())
+		fmt.Fprintf(os.Stderr, "Node pubkey: %s\n", *nodePubkey)
+		fmt.Fprintf(os.Stderr, "Role:        %s\n", *role)
+		fmt.Fprintf(os.Stderr, "Expires:     %d (%s)\n", att.ExpiresAt, time.Unix(att.ExpiresAt, 0).Format(time.RFC3339))
+	} else {
+		fmt.Println(encoded)
+	}
 }

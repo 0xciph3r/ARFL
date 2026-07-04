@@ -184,21 +184,10 @@ func (api *DiscoveryAPI) handleAttestRefresh(w http.ResponseWriter, r *http.Requ
 	}
 
 	// The attestation must have been issued by THIS hub.
-	if att.HubPubkey != api.hubKP.PubkeyHex() {
-		http.Error(w, "attestation not issued by this hub", http.StatusForbidden)
-		return
-	}
-
-	// Verify the attestation's own signature (proves it hasn't been tampered with).
-	// We allow expired attestations here — the whole point is to refresh them.
-	// But the signature and content hash must still be valid.
-	if att.Protocol != "arfl-node-attestation-v1" {
-		http.Error(w, "unknown attestation protocol", http.StatusBadRequest)
-		return
-	}
-	computedID, err := att.RecomputeID()
-	if err != nil || computedID != att.AttestationID {
-		http.Error(w, "attestation content hash mismatch", http.StatusBadRequest)
+	// Verify the hub's Schnorr signature (proves it wasn't forged).
+	// We skip expiry check — the whole point is to refresh expired attestations.
+	if err := att.VerifySignature(api.hubKP.PubkeyHex()); err != nil {
+		http.Error(w, "attestation verification failed: "+err.Error(), http.StatusForbidden)
 		return
 	}
 

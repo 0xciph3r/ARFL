@@ -98,6 +98,56 @@ func (a *Attestation) computeID() (string, error) {
 	return hex.EncodeToString(hash[:]), nil
 }
 
+// VerifySignature checks that the attestation was signed by the given hub key,
+// without checking expiry. Used by the refresh endpoint to validate attestations
+// that are near or past expiry before re-issuing.
+func (a *Attestation) VerifySignature(hubPubkeyHex string) error {
+	if a.Protocol != "arfl-node-attestation-v1" {
+		return fmt.Errorf("unknown attestation protocol: %s", a.Protocol)
+	}
+
+	if a.HubPubkey != hubPubkeyHex {
+		return fmt.Errorf("hub pubkey mismatch: got %s, expected %s", a.HubPubkey, hubPubkeyHex)
+	}
+
+	computedID, err := a.computeID()
+	if err != nil {
+		return fmt.Errorf("recompute attestation ID: %w", err)
+	}
+	if computedID != a.AttestationID {
+		return fmt.Errorf("attestation ID mismatch: computed %s, got %s", computedID, a.AttestationID)
+	}
+
+	pubBytes, err := hex.DecodeString(a.HubPubkey)
+	if err != nil {
+		return fmt.Errorf("decode hub pubkey: %w", err)
+	}
+	pubKey, err := schnorr.ParsePubKey(pubBytes)
+	if err != nil {
+		return fmt.Errorf("parse hub pubkey: %w", err)
+	}
+
+	sigBytes, err := hex.DecodeString(a.Signature)
+	if err != nil {
+		return fmt.Errorf("decode signature: %w", err)
+	}
+	sig, err := schnorr.ParseSignature(sigBytes)
+	if err != nil {
+		return fmt.Errorf("parse signature: %w", err)
+	}
+
+	idBytes, err := hex.DecodeString(a.AttestationID)
+	if err != nil {
+		return fmt.Errorf("decode attestation ID: %w", err)
+	}
+
+	if !sig.Verify(idBytes, pubKey) {
+		return fmt.Errorf("invalid attestation signature")
+	}
+
+	return nil
+}
+
 // Verify checks that an attestation is valid:
 //  1. Protocol version is correct
 //  2. Not expired

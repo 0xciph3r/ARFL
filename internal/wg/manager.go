@@ -156,7 +156,15 @@ func (m *WgctrlManager) Close() error {
 func (m *WgctrlManager) createOSInterface(name string) error {
 	switch runtime.GOOS {
 	case "linux":
-		return run("ip", "link", "add", name, "type", "wireguard")
+		// If the interface already exists (e.g. crash recovery), remove it first.
+		if err := run("ip", "link", "add", name, "type", "wireguard"); err != nil {
+			if strings.Contains(err.Error(), "File exists") {
+				_ = run("ip", "link", "delete", name)
+				return run("ip", "link", "add", name, "type", "wireguard")
+			}
+			return err
+		}
+		return nil
 	case "darwin":
 		// macOS uses wireguard-go userspace implementation
 		return run("wireguard-go", name)

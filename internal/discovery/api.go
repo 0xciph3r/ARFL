@@ -58,6 +58,7 @@ func NewDiscoveryAPI(index *NodeIndex) *DiscoveryAPI {
 
 	api.mux.HandleFunc("/nodes", api.handleNodes)
 	api.mux.HandleFunc("/health", api.handleHealth)
+	api.mux.HandleFunc("/announce", api.handleAnnounce)
 
 	return api
 }
@@ -131,6 +132,32 @@ func (api *DiscoveryAPI) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// handleAnnounce accepts direct node announcements over HTTP.
+// This is the reliable fallback when Nostr relays are unavailable or rate-limiting.
+// The node posts its signed Nostr event directly; the hub verifies and indexes it.
+func (api *DiscoveryAPI) handleAnnounce(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 8192)
+
+	var event nostr.Event
+	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+		http.Error(w, "invalid event JSON", http.StatusBadRequest)
+		return
+	}
+
+	if err := api.index.ProcessEvent(&event); err != nil {
+		http.Error(w, "rejected: "+err.Error(), http.StatusForbidden)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
 }
 
 // checkRateLimit implements a sliding window rate limiter.

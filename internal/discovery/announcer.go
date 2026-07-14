@@ -150,13 +150,51 @@ func (a *Announcer) announce(ctx context.Context) error {
 		return fmt.Errorf("sign announcement: %w", err)
 	}
 
-	accepted, err := a.pool.Publish(ctx, event)
-	if err != nil {
-		return fmt.Errorf("publish announcement: %w", err)
+	// Try Nostr relays first.
+	accepted, relayErr := a.pool.Publish(ctx, event)
+	if relayErr == nil && accepted > 0 {
+		log.Printf("[announcer] published to %d relay(s) | load=%d/%d | role=%s",
+			accepted, info.Load, info.Capacity, info.Role)
+		return nil
 	}
 
-	log.Printf("[announcer] published to %d relay(s) | load=%d/%d | role=%s",
-		accepted, info.Load, info.Capacity, info.Role)
+	// Fallback: announce directly to hub over HTTP.
+	if a.hubURL != "" {
+		if err := a.announceDirectToHub(event); err != nil {
+			if relayErr != nil {
+				return fmt.Errorf("relays failed (%v) and direct announce failed: %w", relayErr, err)
+			}
+			return fmt.Errorf("direct announce failed: %w", err)
+		}
+		log.Printf("[announcer] published direct to hub | load=%d/%d | role=%s",
+			info.Load, info.Capacity, info.Role)
+		return nil
+	}
+
+	if relayErr != nil {
+		return fmt.Errorf("publish announcement: %w", relayErr)
+	}
+	return nil
+}
+
+// announceDirectToHub posts the signed event directly to the hub's /announce endpoint.
+func (a *Announcer) announceDirectToHub(event *nostr.Event) error {
+	body, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+
+	url := a.hubURL + "/announce"
+	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("POST %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("hub rejected: %s %s", resp.Status, string(respBody))
+	}
 	return nil
 }
 

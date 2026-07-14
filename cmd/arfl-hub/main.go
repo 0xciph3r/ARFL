@@ -220,6 +220,7 @@ func main() {
 	discoveryAPI.SetHubKeyPair(hubKP, db)
 	mux.Handle("/nodes", discoveryAPI.Handler())
 	mux.Handle("/health", discoveryAPI.Handler())
+	mux.Handle("/announce", discoveryAPI.Handler())
 	mux.Handle("/attest/", discoveryAPI.Handler())
 
 	// Payment endpoints.
@@ -432,7 +433,7 @@ func runAttest(args []string) {
 			os.Exit(1)
 		}
 
-		dbPath := filepath.Join(filepath.Dir(*cfgPath), "arfl-hub.db")
+		dbPath := resolveDBPath(*cfgPath)
 		db, dbErr := store.Open(dbPath)
 		if dbErr != nil {
 			fmt.Fprintf(os.Stderr, "Error: open database: %v\n", dbErr)
@@ -496,7 +497,7 @@ func runRevoke(args []string) {
 		os.Exit(1)
 	}
 
-	dbPath := filepath.Join(filepath.Dir(*cfgPath), "arfl-hub.db")
+	dbPath := resolveDBPath(*cfgPath)
 	db, err := store.Open(dbPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: open database: %v\n", err)
@@ -537,7 +538,7 @@ func runRenew(args []string) {
 		os.Exit(1)
 	}
 
-	dbPath := filepath.Join(filepath.Dir(*cfgPath), "arfl-hub.db")
+	dbPath := resolveDBPath(*cfgPath)
 	db, dbErr := store.Open(dbPath)
 	if dbErr != nil {
 		fmt.Fprintf(os.Stderr, "Error: open database: %v\n", dbErr)
@@ -559,7 +560,7 @@ func runListNodes(args []string) {
 	cfgPath := fs.String("config", "hub.json", "path to hub config file")
 	fs.Parse(args)
 
-	dbPath := filepath.Join(filepath.Dir(*cfgPath), "arfl-hub.db")
+	dbPath := resolveDBPath(*cfgPath)
 	db, err := store.Open(dbPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: open database: %v\n", err)
@@ -626,4 +627,14 @@ func parseDuration(s string) (time.Duration, error) {
 	default:
 		return 0, fmt.Errorf("unknown unit %q in %q (use d or h)", string(unit), s)
 	}
+}
+
+// resolveDBPath reads the hub config to find the database path.
+// This ensures CLI subcommands use the same DB as the running hub.
+func resolveDBPath(cfgPath string) string {
+	cfg, err := config.LoadHubConfig(cfgPath)
+	if err == nil && cfg.DBPath != "" {
+		return cfg.DBPath
+	}
+	return filepath.Join(filepath.Dir(cfgPath), "arfl.db")
 }

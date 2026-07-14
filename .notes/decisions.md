@@ -1957,3 +1957,80 @@ runners, not commercial cloud servers. Operators earn from bandwidth they
 already own (flat-rate home fiber). Added caveat to whitepaper that cloud
 hosting is explicitly not viable. Bootstrap problem (low traffic = low earnings)
 acknowledged as a growth problem, not an economics problem.
+
+---
+
+### Decision 93: Fedimint over Cashu — cross-hub interoperability requires neutral federation
+
+**Context:** Cashu (single-mint ecash) is simpler and matches v1 trust model where
+the hub is already trusted. However, Meyer's design requires that tokens minted by
+Hub A are redeemable by nodes serving Hub B's traffic — any hub can compensate nodes
+regardless of where the bundle was purchased.
+
+**Decision:** Fedimint stays as the settlement layer. A shared federation independent
+of any single hub is the only architecture that enables cross-hub token portability.
+Cashu single-mint tokens are only valid at the issuing mint — breaks interop entirely.
+This makes filling guardian seats critical infrastructure, not just governance theatre.
+
+---
+
+### Decision 94: NIP-44 encrypted DMs for e-cash handoff to nodes
+
+**Context:** Client needs to deliver e-cash shares to entry/exit nodes without hub
+seeing the payment split. Nodes already have Nostr keypairs (used for announcements).
+
+**Decision:** Client sends each node its e-cash share as a NIP-44-encrypted Nostr DM
+directly to the node's pubkey. Hub's wgctrl peer provisioning runs in parallel, never
+sees the payment flow. Zero additional infrastructure required.
+
+---
+
+### Decision 95: Web client runs under hub-mediated trust model only
+
+**Context:** hub.arfl.us serves JS from the hub itself — the hub's own code is the
+client. This means the hub could theoretically inject code to observe session setup.
+
+**Decision:** Web client explicitly does NOT qualify for the unlinkability guarantee.
+It operates under the hub-mediated trust model (user trusts the hub). The Chaumian
+ecash unlinkability guarantee applies only to native apps where the client code is
+independently verifiable.
+
+---
+
+### Decision 96: DB path resolved from hub config, not hardcoded
+
+**Context:** CLI subcommands (attest, revoke, renew, list-nodes) hardcoded
+`arfl-hub.db` as the database path. The running hub service reads `db_path` from
+its config file (resolving to `arfl.db`). Leases stored in the wrong DB caused
+nodes to get 403 on attestation refresh.
+
+**Decision:** All CLI subcommands now use `resolveDBPath(cfgPath)` which reads the
+hub config JSON and returns the same `db_path` the server uses. Single source of
+truth for database location.
+
+---
+
+### Decision 97: Direct HTTP announce fallback for Nostr relay failures
+
+**Context:** Public Nostr relays (relay.damus.io, nos.lol) rate-limit/reject events
+after sustained high-frequency publishing. Nodes that can't announce go invisible.
+
+**Decision:** Added `POST /announce` endpoint on the hub. Nodes try Nostr relays
+first, fall back to direct HTTP POST of their signed event to the hub. The hub's
+`ProcessEvent()` already validates signatures and attestations, so security is
+identical. Nodes stay visible even when relays are down.
+
+---
+
+### Decision 98: CGO required for Linux cross-compilation (go-sqlite3)
+
+**Context:** go-sqlite3 requires CGO. Cross-compiling from macOS to Linux with
+`GOOS=linux GOARCH=amd64` and `CGO_ENABLED=0` produces a binary that crashes
+on startup with "go-sqlite3 requires cgo to work."
+
+**Decision:** Use `musl-cross` toolchain (`x86_64-linux-musl-gcc`) with static
+linking for production Linux builds from macOS:
+```
+CGO_ENABLED=1 CC=x86_64-linux-musl-gcc GOOS=linux GOARCH=amd64 \
+  go build -ldflags '-linkmode external -extldflags "-static"' -o arfl-hub-linux ./cmd/arfl-hub/
+```

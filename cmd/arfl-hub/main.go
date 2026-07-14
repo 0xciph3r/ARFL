@@ -88,13 +88,18 @@ func main() {
 
 	// Process incoming announcements in a goroutine.
 	go func() {
+		rejectionCount := make(map[string]int)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case event := <-eventCh:
 				if err := idx.ProcessEvent(event); err != nil {
-					log.Printf("[hub] rejected announcement: %v", err)
+					key := event.Pubkey + ":" + err.Error()
+					rejectionCount[key]++
+					if rejectionCount[key] <= 3 {
+						log.Printf("[hub] rejected announcement from %s: %v", event.Pubkey[:16], err)
+					}
 				}
 			}
 		}

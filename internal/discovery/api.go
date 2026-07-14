@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Radi-Labs/ARFL/internal/nostr"
 	"github.com/Radi-Labs/ARFL/pkg/types"
 )
 
@@ -20,6 +21,8 @@ import (
 // The hub CANNOT manipulate the list without being detected.
 type DiscoveryAPI struct {
 	index *NodeIndex
+	hubKP *nostr.KeyPair
+	store LeaseChecker
 	mux   *http.ServeMux
 
 	// Rate limiting: map[IP][]timestamp of recent requests.
@@ -27,6 +30,11 @@ type DiscoveryAPI struct {
 	rateMu      sync.Mutex
 	maxRequests int
 	rateWindow  time.Duration
+}
+
+// LeaseChecker is the interface needed to verify node leases.
+type LeaseChecker interface {
+	IsLeaseActive(nodePubkey string) (bool, error)
 }
 
 // DiscoveryResponse is what the client receives.
@@ -52,6 +60,13 @@ func NewDiscoveryAPI(index *NodeIndex) *DiscoveryAPI {
 	api.mux.HandleFunc("/health", api.handleHealth)
 
 	return api
+}
+
+// SetHubKeyPair enables the /attest/refresh endpoint.
+func (api *DiscoveryAPI) SetHubKeyPair(kp *nostr.KeyPair, leaseStore LeaseChecker) {
+	api.hubKP = kp
+	api.store = leaseStore
+	api.mux.HandleFunc("/attest/refresh", api.handleAttestRefresh)
 }
 
 // Handler returns the HTTP handler for use with http.Server.
@@ -144,4 +159,84 @@ func (api *DiscoveryAPI) checkRateLimit(clientIP string) bool {
 
 	api.rateLimit[clientIP] = append(fresh, now)
 	return true
+}
+
+// handleAttestRefresh handles POST /attest/refresh.
+// A node presents its current attestation + a Schnorr signature proving
+// it owns the Nostr key. The hub verifies the signature, checks the
+// attestation was originally issued by itself, and returns a fresh one.
+func (api *DiscoveryAPI) handleAttestRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if api.hubKP == nil {
+		http.Error(w, "attestation refresh not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req AttestRefreshRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 8192)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Decode the current attestation.
+	att, err := nostr.DecodeAttestation(req.Attestation)
+	if err != nil {
+		http.Error(w, "invalid attestation: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// The attestation must have been issued by THIS hub.
+	// Verify the hub's Schnorr signature (proves it wasn't forged).
+	// We skip expiry check — the whole point is to refresh expired attestations.
+	if err := att.VerifySignature(api.hubKP.PubkeyHex()); err != nil {
+		http.Error(w, "attestation verification failed: "+err.Error(), http.StatusForbidden)
+		return
+	}
+
+	// Verify the node's signature on the refresh request.
+	if err := nostr.VerifyRefreshRequest(att.NodePubkey, req.Attestation, req.Timestamp, req.Signature); err != nil {
+		http.Error(w, "invalid signature: "+err.Error(), http.StatusForbidden)
+		return
+	}
+
+	// Check if the node has an active lease.
+	if api.store != nil {
+		active, err := api.store.IsLeaseActive(att.NodePubkey)
+		if err != nil {
+			log.Printf("[attest-refresh] lease check error for %s: %v", att.NodePubkey[:16], err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if !active {
+			log.Printf("[attest-refresh] denied: node %s has no active lease", att.NodePubkey[:16]+"...")
+			http.Error(w, "lease expired or revoked", http.StatusForbidden)
+			return
+		}
+	}
+
+	// Issue a fresh attestation with the same parameters.
+	newAtt, err := nostr.CreateAttestation(api.hubKP, att.NodePubkey, att.NodeWGPubkey, att.OperatorID, att.AllowedRoles)
+	if err != nil {
+		log.Printf("[attest-refresh] create attestation error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	encoded, err := newAtt.Encode()
+	if err != nil {
+		log.Printf("[attest-refresh] encode attestation error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[attest-refresh] refreshed attestation for node %s (role=%v, expires=%s)",
+		att.NodePubkey[:16]+"...", att.AllowedRoles, time.Unix(newAtt.ExpiresAt, 0).Format(time.RFC3339))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(AttestRefreshResponse{Attestation: encoded})
 }

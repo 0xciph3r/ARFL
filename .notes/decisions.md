@@ -1866,3 +1866,94 @@ and double-spend detection. Four tests cover:
 2. Multi-client independence (entitlement isolation)
 3. Key persistence round-trip (tokens survive key save/load)
 4. Unlinkability proof (blinded ≠ secret, mathematically)
+
+---
+
+### Decision 87: Attestation auto-refresh with 6-hour TTL
+
+**Context:** Attestations had a 6-hour TTL. When they expired, nodes silently
+dropped off the network. We initially changed to 30-day TTL but reverted because
+short TTLs are a security feature — a compromised key can only be used for hours,
+not months.
+
+**Decision:** Keep 6-hour TTL. Nodes auto-refresh by calling `POST /attest/refresh`
+on the hub when ≤1 hour remains. The node signs `SHA256(attestation_json + timestamp)`
+with its Nostr key. The hub verifies both the node's request signature AND its own
+original Schnorr signature on the attestation before re-issuing. 5-minute replay
+window on timestamps. Check runs every 60 seconds in the announcer loop.
+
+---
+
+### Decision 88: Attestation refresh security fix — verify hub's own signature
+
+**Context:** The initial refresh handler verified the node's request signature
+and checked the content hash, but did NOT verify the hub's BIP-340 Schnorr
+signature on the attestation itself. This meant an attacker could craft a fake
+attestation (claiming to be any node with any role) and get the hub to sign a
+real one — a critical signature forgery vulnerability.
+
+**Decision:** Added `VerifySignature()` method that checks everything except
+expiry (since we're about to extend it). The refresh handler now calls
+`VerifySignature()` before re-issuing. This ensures only attestations originally
+signed by this hub can be refreshed.
+
+---
+
+### Decision 89: Node lease system — time-bounded authorization
+
+**Context:** Auto-refresh solved the uptime problem but introduced a revocation
+gap: a compromised or misbehaving node could refresh indefinitely. We needed
+a mechanism to control which nodes are authorized to refresh.
+
+**Decision:** `node_leases` table in SQLite tracks authorization windows per node.
+Fields: node_pubkey (PK), operator_id, wg_pubkey, allowed_roles, lease_start,
+lease_end, revoked flag. The refresh endpoint checks `IsLeaseActive()` before
+re-issuing — rejects if revoked or expired. CLI subcommands:
+- `arfl-hub attest --lease 90d` creates attestation AND stores lease
+- `arfl-hub revoke --node-pubkey <hex>` sets revoked=1
+- `arfl-hub renew --node-pubkey <hex> --lease 90d` extends lease
+- `arfl-hub list-nodes` shows all leases with status
+
+The lease window (default 90 days) is intentionally much longer than the
+attestation TTL (6 hours). Attestations are the "session key" that rotates
+frequently; leases are the "access policy" that governs who can refresh.
+
+---
+
+### Decision 90: Production deployment — 3 Vultr VPS with Caddy
+
+**Context:** PoC needed live demo for stakeholder review.
+
+**Decision:** Three Vultr VPS (Ubuntu 26.04):
+- Hub: 209.250.238.223 (hub.arfl.us)
+- Entry: 64.176.43.74 (entry.arfl.us)
+- Exit: 155.138.136.155 (exit.arfl.us)
+
+Caddy v2 for auto HTTPS (Let's Encrypt) + reverse proxy. Systemd services
+for process management. DNS on OVH (arfl.us domain). Mainnet Lightning
+via Voltage LND (arfl-node.m.voltageapp.io:8080).
+
+---
+
+### Decision 91: Web client — static SPA at hub.arfl.us
+
+**Context:** Need a demo interface for non-technical stakeholders.
+
+**Decision:** Static single-page app (HTML/JS/CSS) served by Caddy from
+`/opt/arfl/web`. Uses Hub REST API directly. Features: tier selection,
+Lightning QR code generation, payment polling, token redemption, WireGuard
+config download. WebCrypto X25519 for client-side WG keypair generation.
+Repo: `Radi-Labs/arfl-client-web`.
+
+---
+
+### Decision 92: Bandwidth economics — residential-only viability
+
+**Context:** At $5/250GB, nodes earn ~$0.008/GB each. Cloud hosting bandwidth
+costs would eat profits.
+
+**Decision:** The model is strictly for residential and unmetered passive node
+runners, not commercial cloud servers. Operators earn from bandwidth they
+already own (flat-rate home fiber). Added caveat to whitepaper that cloud
+hosting is explicitly not viable. Bootstrap problem (low traffic = low earnings)
+acknowledged as a growth problem, not an economics problem.

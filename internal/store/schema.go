@@ -327,4 +327,20 @@ BEFORE UPDATE ON redemptions
 BEGIN
     SELECT RAISE(FAIL, 'redemptions is append-only: updates are prohibited');
 END;
+
+-- ============================================================
+-- NODE LEASES: Authorization windows for node attestation refresh
+-- A node can only refresh its attestation while its lease is active.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS node_leases (
+    node_pubkey     TEXT PRIMARY KEY,
+    node_wg_pubkey  TEXT    NOT NULL,
+    operator_id     TEXT    NOT NULL,
+    allowed_roles   TEXT    NOT NULL,
+    lease_start     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    lease_end       TEXT    NOT NULL,
+    revoked         INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
 `

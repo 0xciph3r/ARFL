@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<!-- @dsCard group="UI Kit — App" name="Private-Connection Client" subtitle="Mobile VPN · connect → nodes → wallet → earn" viewport="900x900" -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARFL — Vault</title>
+<link rel="stylesheet" href="../../colors_and_type.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<style>
+  html,body{margin:0;background:#000;min-height:100vh}
+  *{box-sizing:border-box}
+  ::selection{background:var(--cyan-500);color:#0D0D0D}
+  i[data-lucide]{display:inline-block;vertical-align:middle}
+  @keyframes arflPulse { 0%,100%{ opacity:.5; transform:scale(1) } 50%{ opacity:1; transform:scale(1.04) } }
+  @keyframes arflSpin { to { transform:rotate(360deg) } }
+  @keyframes arflScan { 0%{ transform:translateY(-100%) } 100%{ transform:translateY(100%) } }
+  @keyframes arflRise { from { opacity:0; transform:translateY(10px) } to { opacity:1; transform:none } }
+  #root{min-height:100vh;display:grid;place-items:center;
+    background:radial-gradient(ellipse 60% 50% at 50% 40%, #16121c 0%, #000 75%);
+    padding:32px 16px}
+</style>
+</head>
+<body class="arfl">
+<div id="root"></div>
+<script type="text/babel" src="components.jsx?v=5"></script>
+<script type="text/babel" src="screens.jsx?v=5"></script>
+<script type="text/babel" src="app.jsx?v=5"></script>
+</body>
+</html>

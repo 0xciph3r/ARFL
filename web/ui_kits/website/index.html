@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<!-- @dsCard group="UI Kit — Website" name="Website — Landing" subtitle="VPN marketing site · hero, protocol layers, earn" viewport="1280x760" -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARFL — Privacy in the Dark Cloud</title>
+<link rel="stylesheet" href="../../colors_and_type.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<style>
+  html,body{margin:0;background:var(--bg);}
+  *{box-sizing:border-box}
+  ::selection{background:var(--cyan-500);color:#0D0D0D}
+  .arfl-grain-fixed{position:fixed;inset:0;pointer-events:none;z-index:9999;background-image:var(--grain-url);background-size:200px 200px;opacity:.28;mix-blend-mode:overlay}
+  a{color:inherit;text-decoration:none}
+  i[data-lucide]{display:inline-block;vertical-align:middle}
+  @keyframes arflRotate { from { transform: translate(-50%, -50%) rotate(0deg); } to { transform: translate(-50%, -50%) rotate(360deg); } }
+
+  /* ── Scroll entrance ── */
+  .reveal {
+    opacity: 0;
+    transform: translateY(18px);
+    transition: opacity 0.7s cubic-bezier(0.16,1,0.3,1), transform 0.7s cubic-bezier(0.16,1,0.3,1);
+  }
+  .reveal.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  /* stagger siblings automatically */
+  .reveal-group > * { opacity:0; transform:translateY(16px); transition: opacity 0.6s cubic-bezier(0.16,1,0.3,1), transform 0.6s cubic-bezier(0.16,1,0.3,1); }
+  .reveal-group.visible > *:nth-child(1){ opacity:1; transform:none; transition-delay:0ms; }
+  .reveal-group.visible > *:nth-child(2){ opacity:1; transform:none; transition-delay:100ms; }
+  .reveal-group.visible > *:nth-child(3){ opacity:1; transform:none; transition-delay:200ms; }
+  .reveal-group.visible > *:nth-child(4){ opacity:1; transform:none; transition-delay:300ms; }
+
+  /* ── Nav scroll state ── */
+  .nav-scrolled {
+    background: rgba(13,13,13,0.88) !important;
+    box-shadow: 0 1px 0 rgba(157,123,176,0.18);
+  }
+
+  /* ── Stat count pulse ── */
+  @keyframes arflCountPulse { 0%,100%{opacity:.5;transform:scale(.96)} 50%{opacity:1;transform:scale(1)} }
+  .stat-number { animation: arflCountPulse 3s ease-in-out infinite; }
+
+  /* ── Signal dot pulse ── */
+  @keyframes arflSignalPulse { 0%,100%{box-shadow:0 0 0 0 rgba(0,229,255,.6)} 50%{box-shadow:0 0 0 5px rgba(0,229,255,0)} }
+  .signal-dot { animation: arflSignalPulse 2.4s ease-out infinite; }
+</style>
+</head>
+<body class="arfl" style="font-family: &quot;IBM Plex Sans&quot;">
+<div id="root"></div>
+<div class="arfl-grain-fixed"></div>
+<script type="text/babel" src="../../tweaks-panel.jsx"></script>
+<script type="text/babel" src="components.jsx?v=12"></script>
+<script type="text/babel" src="app.jsx?v=28"></script>
+</body>
+</html>

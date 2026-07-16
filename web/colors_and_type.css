@@ -1,0 +1,273 @@
+/* ============================================================
+   ARFL DESIGN SYSTEM — colors_and_type.css
+   "Privacy in the Dark Cloud" — a decentralised privacy protocol.
+   Single source of truth for color + type tokens.
+   ============================================================ */
+
+/* ---- Fonts ----
+   DISPLAY = KARIXBY (Fachmy Casofa / ENXYCLO Studio) — a chunky, angular,
+     cut-corner cyberpunk mecha face. COMMERCIAL: drop the licensed files into
+     fonts/ (see fonts/README.md) and they load automatically via @font-face
+     below. Until then the stack falls back to Chakra Petch (same chamfered
+     cut-corner techno DNA) — a FLAGGED substitute, see README.
+   UI       = Space Grotesk — technical headline / UI sans
+   BODY     = IBM Plex Sans — long-form body
+   MONO     = Space Mono — addresses, hashes, keys, throughput, code ---- */
+@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap');
+
+/* KARIXBY — real licensed face. KARIXBY-Demo.otf (Regular) is the uploaded
+   cut; Slant/Outline styles fall back to it (+ Chakra Petch for outline)
+   until those files are supplied. */
+/* Only KARIXBY-Demo.otf exists. Slant/Outline fall back to it until
+   the licensed cut files are dropped into fonts/ (see fonts/README.md). */
+@font-face {
+  font-family: 'KARIXBY';
+  src: url('fonts/KARIXBY-Demo.otf') format('opentype');
+  font-weight: 400 900; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'KARIXBY';
+  src: url('fonts/KARIXBY-Demo.otf') format('opentype');
+  font-weight: 400 900; font-style: italic; font-display: swap;
+}
+@font-face {
+  font-family: 'KARIXBY Outline';
+  src: url('fonts/KARIXBY-Demo.otf') format('opentype');
+  font-weight: 400 900; font-style: normal; font-display: swap;
+}
+
+:root {
+  /* ========== COLOUR HIERARCHY (three-tier signal system) ==========
+     CYAN   → LEADS   · primary actions, connection status, protocol.
+                        Default CTA, focus rings, live indicators.
+     GOLD   → ACCENTS · value, Bitcoin, earnings, Lightning, sats amounts.
+                        Never for navigation or status.
+     RED    → WARNS   · danger, public-exposure, destructive actions only.
+                        NEVER decorative in UI. Exception: the עֲרָפֶל cultural
+                        accent and full-bleed manifesto/poster backgrounds
+                        are brand motifs, not UI signals.
+     LAVEN. → DEFAULT · text, wordmark, borders, icon tint, neutral states.
+     ================================================================== */
+  --pitch-black:        #0D0D0D;  /* Canvas */
+  --midnight-charcoal:  #1A1A24;  /* Depth */
+  --blood-red:          #B30F0F;  /* Power. Impact. Warning. */
+  --cosmic-gold:        #E6B800;  /* Value. Bitcoin. Light. */
+  --neon-cyan:          #00E5FF;  /* Technology. Lightning. Signal. */
+  --muted-lavender:     #9D7BB0;  /* Text. Subtlety. Calm. */
+
+  /* ========== EXTENDED RAMP (derived, oklch-harmonised) ========== */
+  --black-900: #080808;  /* deepest void / behind canvas */
+  --black-800: #0D0D0D;  /* canvas */
+  --black-700: #141420;  /* raised surface */
+  --char-600:  #1A1A24;  /* card / panel */
+  --char-500:  #23232f;  /* elevated card */
+  --char-400:  #2e2e3c;  /* hairline-on-dark / inset */
+  --char-300:  #3a3a4a;  /* border strong */
+
+  --red-700:   #7d0a0a;  /* pressed / deep */
+  --red-600:   #B30F0F;  /* blood red base */
+  --red-500:   #d11616;  /* hover */
+  --red-glow:  #ff2a2a;  /* emphasis glow */
+
+  --gold-600:  #c79e00;  /* pressed */
+  --gold-500:  #E6B800;  /* cosmic gold base */
+  --gold-400:  #f5cf2e;  /* hover / light */
+
+  --cyan-600:  #00b8cc;  /* pressed */
+  --cyan-500:  #00E5FF;  /* neon cyan base */
+  --cyan-400:  #5cf0ff;  /* hover / light */
+
+  --lav-600:   #7d5f91;  /* muted / disabled text */
+  --lav-500:   #9D7BB0;  /* lavender base — default body text */
+  --lav-400:   #c0a6cf;  /* bright text / headings on dark */
+  --lav-300:   #e2d5ea;  /* near-white reading text */
+
+  /* ========== SEMANTIC: SURFACES ========== */
+  --bg:            var(--black-800);   /* page canvas */
+  --bg-sunken:     var(--black-900);
+  --surface:       var(--char-600);    /* default card */
+  --surface-2:     var(--char-500);    /* raised card / menu */
+  --surface-3:     var(--char-400);    /* inset / track */
+
+  /* ========== SEMANTIC: TEXT (on dark) ========== */
+  --fg1: var(--lav-300);   /* primary reading text (near-white lavender) */
+  --fg2: var(--lav-500);   /* secondary / muted body */
+  --fg3: var(--lav-600);   /* tertiary / captions / disabled */
+  --fg-on-color: #0D0D0D;  /* text sitting on gold/cyan fills */
+  --fg-on-red:   #f7e3e3;  /* text on blood-red fills */
+
+  /* ========== SEMANTIC: BORDERS ========== */
+  --border:        rgba(157,123,176,0.16);  /* lavender hairline */
+  --border-strong: rgba(157,123,176,0.30);
+  --border-cyan:   rgba(0,229,255,0.40);
+  --border-gold:   rgba(230,184,0,0.40);
+
+  /* ========== SEMANTIC: STATUS ========== */
+  --signal:  var(--cyan-500);   /* live / connected / lightning */
+  --value:   var(--gold-500);   /* balance / value / bitcoin */
+  --danger:  var(--red-600);    /* warning / destructive */
+  --calm:    var(--lav-500);    /* neutral / idle */
+  --success: #2fbf71;           /* confirmed (derived, used sparingly) */
+
+  /* ========== TYPE FAMILIES ========== */
+  --font-display:         'KARIXBY', 'Chakra Petch', 'Space Grotesk', sans-serif; /* cyberpunk display */
+  --font-wordmark:        'KARIXBY', 'Chakra Petch', 'Space Grotesk', sans-serif; /* ARFL wordmark */
+  --font-display-outline: 'KARIXBY Outline', 'KARIXBY', 'Chakra Petch', sans-serif; /* outline style */
+  --font-ui:      'Space Grotesk', 'Segoe UI', sans-serif; /* UI / headings */
+  --font-body:    'IBM Plex Sans', system-ui, sans-serif;  /* long-form body */
+  --font-mono:    'Space Mono', ui-monospace, monospace;   /* hashes / keys / code */
+
+  /* ========== TYPE SCALE (1.25 major-third, 16px base) ========== */
+  --text-xs:   12px;
+  --text-sm:   14px;
+  --text-base: 16px;
+  --text-md:   18px;
+  --text-lg:   22px;
+  --text-xl:   28px;
+  --text-2xl:  36px;
+  --text-3xl:  48px;
+  --text-4xl:  64px;
+  --text-5xl:  84px;
+
+  --leading-tight: 1.05;
+  --leading-snug:  1.25;
+  --leading-body:  1.6;
+
+  --tracking-display: 0.005em;
+  --tracking-ui:     -0.01em;   /* Space Grotesk tightens nicely */
+  --tracking-caps:    0.18em;   /* eyebrow / label uppercase */
+
+  /* ========== SHAPE LANGUAGE — Variant B asymmetric chamfer ========== */
+  /* Top-right + bottom-left corners cut. Echoes KARIXBY's letterforms.  */
+  --chamfer:    16px; /* @kind other */
+  --chamfer-sm: 10px; /* @kind other */
+  --chamfer-xs:  6px; /* @kind other */
+
+  /* ========== RADII (kept for non-chamfered contexts e.g. phone bezel) ========== */
+  --r-xs:  4px;
+  --r-sm:  8px;
+  --r-md:  12px;
+  --r-lg:  18px;
+  --r-xl:  28px;
+  --r-pill: 999px;
+
+  /* ========== ELEVATION (shadows + glows) ========== */
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.6);
+  --shadow-2: 0 6px 24px rgba(0,0,0,0.55);
+  --shadow-3: 0 20px 60px rgba(0,0,0,0.65);
+  --glow-cyan: 0 0 0 1px rgba(0,229,255,0.5), 0 0 24px rgba(0,229,255,0.35);
+  --glow-gold: 0 0 0 1px rgba(230,184,0,0.5), 0 0 24px rgba(230,184,0,0.30);
+  --glow-red:  0 0 0 1px rgba(255,42,42,0.5), 0 0 28px rgba(179,15,15,0.45);
+
+  /* ========== SPACING (4px base) ========== */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
+  --s-5: 24px; --s-6: 32px; --s-7: 48px; --s-8: 64px; --s-9: 96px;
+
+  /* ========== MOTION ========== */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); /* @kind other */
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1); /* @kind other */
+  --dur-fast: 120ms; /* @kind other */
+  --dur: 220ms; /* @kind other */
+  --dur-slow: 420ms; /* @kind other */
+}
+
+/* ============================================================
+   SEMANTIC ELEMENT DEFAULTS — opt in by adding .arfl to a root.
+   ============================================================ */
+.arfl {
+  background: var(--bg);
+  color: var(--fg1);
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  line-height: var(--leading-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+.arfl h1, .arfl .h1 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--text-5xl);
+  line-height: 0.92;
+  letter-spacing: var(--tracking-display);
+  text-transform: uppercase;
+  color: var(--lav-300);
+  text-wrap: balance;
+}
+/* Wordmark — KARIXBY (the one place the cut-corner display face is used). */
+.arfl .wordmark {
+  font-family: var(--font-wordmark);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--lav-300);
+}
+/* Katakana micro-accent — the recurring עֲרָפֶל mark. */
+.arfl .kana {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--blood-red);
+}
+.arfl h2, .arfl .h2 {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: var(--text-2xl);
+  line-height: var(--leading-snug);
+  letter-spacing: var(--tracking-ui);
+  color: var(--lav-300);
+}
+.arfl h3, .arfl .h3 {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: var(--text-lg);
+  line-height: var(--leading-snug);
+  letter-spacing: var(--tracking-ui);
+  color: var(--lav-300);
+}
+.arfl p, .arfl .p {
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  line-height: var(--leading-body);
+  color: var(--fg2);
+  text-wrap: pretty;
+}
+.arfl .eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  color: var(--cyan-500);
+}
+.arfl code, .arfl .mono {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--cyan-400);
+}
+
+/* ============================================================
+   TEXTURE — procedural grain + halftone. Layer over anything.
+   <div class="arfl-grain"></div> absolutely positioned, or use
+   the .grain-over utility on a positioned container.
+   ============================================================ */
+.grain-over { position: relative; }
+.grain-over::after {
+  content: "";
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background-image: var(--grain-url);
+  background-size: 220px 220px;
+  opacity: 0.5;
+  mix-blend-mode: overlay;
+  z-index: 50;
+}
+/* feTurbulence grain encoded as a data URL token (set per-page if needed).
+   Default fallback uses a faint repeating noise via background-blend. */
+:root {
+  --grain-url: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/></svg>"); /* @kind other */
+}
+
+/* Halftone dot field — for headers / poster blocks. */
+.halftone {
+  background-image: radial-gradient(var(--dot, rgba(179,15,15,0.85)) 1.4px, transparent 1.5px);
+  background-size: 8px 8px;
+}

@@ -10,8 +10,8 @@
 	/* Color — replaces the DeepPCB light palette */
 	--clr-void: #0a0a0d;
 	--clr-surgical: #f2f3f0;
-	--clr-signal: #ff5a1f;
-	--clr-signal-dim: #c2430f;
+	--clr-signal: #d0142c; /* blood/oxblood red — colder and more aggressive than DeepPCB's orange */
+	--clr-signal-dim: #7d0e1c;
 	--clr-cyan: #23e5d1;
 	--clr-line: #2a2b30;
 	--clr-mist: #9a9ba3;

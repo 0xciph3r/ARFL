@@ -26,12 +26,17 @@ and component structure are inherited wholesale from DeepPCB and re-skinned.
 
 ## Color
 
+The accent started as DeepPCB's orange pushed neon, then moved to a blood/oxblood
+red — colder and more aggressive, closer to NULLCITY's "digital rebellion" tone
+than to DeepPCB's SaaS warmth. It still occupies the same single-accent slot
+structurally; only the hue changed.
+
 | Token | Value | Heritage | Use |
 |---|---|---|---|
 | `--clr-void` | `#0a0a0d` | NULLCITY (Obsidian Black) | Base surface — the site is committed to dark, not theme-toggled |
 | `--clr-surgical` | `#f2f3f0` | NULLCITY (Surgical White) | Primary text, hairlines on hover |
-| `--clr-signal` | `#ff5a1f` | DeepPCB primary, pushed to neon | The one accent: CTAs, active tags, focus ring |
-| `--clr-signal-dim` | `#c2430f` | — | Signal hover/active |
+| `--clr-signal` | `#d0142c` | DeepPCB's accent slot, recast as blood/oxblood red | The one accent: CTAs, active tags, focus ring |
+| `--clr-signal-dim` | `#7d0e1c` | — | Signal hover/active |
 | `--clr-cyan` | `#23e5d1` | NULLCITY moodboard signage | Secondary accent — used once or twice, never paired with signal as a gradient |
 | `--clr-line` | `#2a2b30` | blend | Hairline borders on dark |
 | `--clr-mist` | `#9a9ba3` | blend | Secondary text on dark |

@@ -1,0 +1,143 @@
+/*
+ * DeepPCB design tokens
+ * Scraped from https://deeppcb.ai/blog/ (theme stylesheet blog.DdgfnAZi.css).
+ * Values are verbatim from the source CSS custom properties; fluid tokens
+ * keep their clamp() definitions so the responsive behavior is preserved.
+ */
+
+@font-face {
+	font-family: Geist;
+	src: url(../fonts/Geist/Geist-VariableFont_wght.ttf) format("truetype");
+	font-weight: 400 700;
+	font-display: swap;
+	font-style: normal;
+}
+@font-face {
+	font-family: Space_Grotesk;
+	src: url(../fonts/Space_Grotesk/SpaceGrotesk-Regular.woff2) format("woff2");
+	font-weight: 400;
+	font-display: swap;
+	font-style: normal;
+}
+@font-face {
+	font-family: Space_Grotesk;
+	src: url(../fonts/Space_Grotesk/SpaceGrotesk-Medium.woff2) format("woff2");
+	font-weight: 500;
+	font-display: swap;
+	font-style: normal;
+}
+@font-face {
+	font-family: Space_Grotesk;
+	src: url(../fonts/Space_Grotesk/SpaceGrotesk-Bold.woff2) format("woff2");
+	font-weight: 700;
+	font-display: swap;
+	font-style: normal;
+}
+@font-face {
+	font-family: Space_Mono;
+	src: url(../fonts/Space_Mono/SpaceMono-Regular.woff2) format("woff2");
+	font-weight: 400;
+	font-display: swap;
+	font-style: normal;
+}
+
+:root {
+	/* Color */
+	--clr-primary: #f4741b;
+	--clr-primary-darker: #e55a11;
+	--clr-muted: #f9fafb;
+	--clr-muted-500: #7f828d;
+	--clr-light: #fff;
+	--clr-dark: #1f2937;
+	--clr-Gray-100: #f3f4f6;
+	--clr-Gray-200: #e5e7eb;
+	--clr-Gray-300: #d1d5db;
+	--clr-Gray-400: #9ca3af;
+	--clr-Gray-500: #6b7280;
+	--clr-Gray-600: #4b5563;
+	--clr-Gray-700: #374151;
+	--clr-Gray-800: #1f2937;
+	--clr-Gray-900: #02050c;
+	--clr-border-hairline: #232831;
+
+	/* Typography */
+	--ff-Heading: "Space_Grotesk", "Arial", sans-serif;
+	--ff-body: "Geist", "Arial", sans-serif;
+	--ff-mono: Space_Mono, monospace;
+
+	/* Fixed spacing scale */
+	--px-4: .25rem;
+	--px-8: .5rem;
+	--px-12: .75rem;
+	--px-14: .875rem;
+	--px-16: 1rem;
+	--px-24: 1.5rem;
+	--px-32: 2rem;
+	--px-40: 2.5rem;
+	--px-48: 3rem;
+	--px-64: 4rem;
+	--px-72: 4.5rem;
+	--px-80: 5rem;
+	--px-104: 6.5rem;
+	--px-120: 7rem;
+	--px-144: 9rem;
+
+	/* Fluid spacing / type scale (clamp: mobile -> desktop) */
+	--px0-px80: clamp(0rem, -1.2868rem + 5.239vw, 5rem);
+	--px8-px16: clamp(.5rem, .3713rem + .5239vw, 1rem);
+	--px16-px24: clamp(1rem, .7426rem + 1.0478vw, 1.5rem);
+	--px16-px32: clamp(1rem, .7426rem + 1.0478vw, 2rem);
+	--px16-px64: clamp(1rem, .2279rem + 3.1434vw, 4rem);
+	--px24-px32: clamp(1.5rem, 1.2426rem + 1.0478vw, 2rem);
+	--px24-px40: clamp(1.5rem, 1.2426rem + 1.0478vw, 2.5rem);
+	--px24-px48: clamp(1.5rem, 1.1139rem + 1.5717vw, 3rem);
+	--px24-px64: clamp(1.5rem, .8566rem + 2.6195vw, 4rem);
+	--px24-px80: clamp(1.5rem, -4.3333rem + 7.7778vw, 5rem);
+	--px32-px40: clamp(2rem, 1.8713rem + .5239vw, 2.5rem);
+	--px32-px48: clamp(2rem, .3333rem + 2.2222vw, 3rem);
+	--px32-px64: clamp(2rem, 1.2308rem + 3.0769vw, 4rem);
+	--px48-px64: clamp(3rem, 2.7426rem + 1.0478vw, 4rem);
+	--px-48-80-400: clamp(3rem, 2.2308rem + 3.0769vw, 5rem);
+	--px64-px72: clamp(4rem, 3.8713rem + .5239vw, 4.5rem);
+	--px-56-88: clamp(3.5rem, 3.0194rem + 2.0672vw, 5.5rem);
+	--px-324-768: clamp(20.25rem, 13.5814rem + 28.6822vw, 48rem);
+	--px-8-12: clamp(.5rem, .4038rem + .3846vw, .75rem);
+	--px-8-16: clamp(.5rem, .3077rem + .7692vw, 1rem);
+	--px-8-24: clamp(.5rem, .1154rem + 1.5385vw, 1.5rem);
+	--px-16-24: clamp(1rem, .8077rem + .7692vw, 1.5rem);
+	--px-24-32: clamp(1.5rem, 1.3077rem + .7692vw, 2rem);
+	--px-8-40: clamp(.5rem, -.3rem + 3.2vw, 2.5rem);
+	--px-16-40: clamp(1rem, .4231rem + 2.3077vw, 2.5rem);
+	--px-24-40: clamp(1.5rem, 1.1154rem + 1.5385vw, 2.5rem);
+	--px-24-48: clamp(1.5rem, .9231rem + 2.3077vw, 3rem);
+	--px-32-64: clamp(2rem, 1.2308rem + 3.0769vw, 4rem);
+	--px-40-64: clamp(2.5rem, 1.9231rem + 2.3077vw, 4rem);
+	--px-48-80: clamp(3rem, 2.2308rem + 3.0769vw, 5rem);
+	--px-64-80: clamp(4rem, 3.6154rem + 1.5385vw, 5rem);
+	--px-64-128: clamp(4rem, 2.4615rem + 6.1538vw, 8rem);
+	--px-64-120: clamp(4rem, 2.6538rem + 5.3846vw, 7.5rem);
+	--px-48-80-600: clamp(3rem, 1.5714rem + 3.8095vw, 5rem);
+	--px-56-160: clamp(3.5rem, 1rem + 10vw, 10rem);
+	--px-48-64: clamp(3rem, 2.7352rem + 1.054vw, 4rem);
+	--px-24-140: clamp(1.5rem, -4.0441rem + 22.7451vw, 8.75rem);
+
+	/* Layout grid */
+	--content-max-width: 1400px;
+	--breakout-max-width: 1600px;
+	--padding-inline: clamp(1rem, -3.0132rem + 16.0526vw, 16.25rem);
+
+	/* Radius */
+	--radius-btn: var(--px-8);       /* 8px */
+	--radius-card: 12px;
+	--radius-featured-card: var(--px-24); /* 24px */
+	--radius-media: var(--px-16);    /* 16px */
+	--radius-pill: 99px;
+
+	/* Elevation */
+	--shadow-header-scrolled: 0 2px 10px rgba(0, 0, 0, .1);
+}
+
+/* Gradient text presets (background-clip: text) */
+.gradient-title       { background: linear-gradient(90deg, #25150e, #4d2711, #25150e); }
+.gradient-title--light { background: linear-gradient(90deg, #fff, #ddc2b0); }
+.gradient-title--primary { background: linear-gradient(90deg, #f4741b, #bd5b18); }

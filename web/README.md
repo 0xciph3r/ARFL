@@ -73,6 +73,12 @@ Colour hierarchy is three strict tiers: **Leads** (cyan — primary CTAs, live s
 
 ---
 
+## Brand mark
+
+ARFL has no separate symbol — the mark is the wordmark itself, framed by four cyan reticle/viewfinder corner brackets (`BrandFrame` in each kit's `components.jsx`). Used in both kits' nav/header and the website footer.
+
+Note: the source project's `design/logo.html` explores an earlier direction (an empty lavender chamfered square next to the wordmark). The reticle-bracket treatment here is the confirmed, correct mark — if `design/logo.html` is ever consulted directly, treat it as superseded.
+
 ## Shape language
 
 **Variant B asymmetric chamfer** — top-right + bottom-left corners cut via CSS `clip-path: polygon(...)`, implemented by the `cc()` helper (website kit) and `appCC()` helper (app kit). Applied to buttons, cards, and containers throughout both kits.

@@ -15,6 +15,20 @@ function AppChamfer({ cut=14, bg='var(--surface)', border='var(--border)', paddi
 const Icon = ({ name, size = 22, color = 'currentColor', style }) =>
   <i data-lucide={name} style={{ width: size, height: size, color, ...style }}></i>;
 
+/* ── Brand mark: reticle/viewfinder corner brackets around the wordmark. ── */
+function BrandFrame({ children, padding = 6, arm = 8, stroke = 1.5, color = 'var(--cyan-500)', style = {} }) {
+  const base = { position: 'absolute', width: arm, height: arm };
+  return (
+    <div style={{ position: 'relative', display: 'inline-flex', padding, ...style }}>
+      <span style={{ ...base, top: 0, left: 0, borderTop: `${stroke}px solid ${color}`, borderLeft: `${stroke}px solid ${color}` }} />
+      <span style={{ ...base, top: 0, right: 0, borderTop: `${stroke}px solid ${color}`, borderRight: `${stroke}px solid ${color}` }} />
+      <span style={{ ...base, bottom: 0, left: 0, borderBottom: `${stroke}px solid ${color}`, borderLeft: `${stroke}px solid ${color}` }} />
+      <span style={{ ...base, bottom: 0, right: 0, borderBottom: `${stroke}px solid ${color}`, borderRight: `${stroke}px solid ${color}` }} />
+      {children}
+    </div>
+  );
+}
+
 function useLucide() {
   React.useEffect(() => { if (window.lucide) window.lucide.createIcons({ attrs: { 'stroke-width': 1.75 } }); });
 }
@@ -113,4 +127,4 @@ function Screen({ children, pad = true, scroll = true }) {
   </div>;
 }
 
-Object.assign(window, { Icon, useLucide, PhoneFrame, TabBar, AppButton, AppChamfer, appCC, Screen, W, H });
+Object.assign(window, { Icon, useLucide, PhoneFrame, TabBar, AppButton, AppChamfer, BrandFrame, appCC, Screen, W, H });

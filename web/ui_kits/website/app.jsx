@@ -235,12 +235,9 @@ function Footer() {
       <div style={{ display: 'flex', gap: 60, flexWrap: 'wrap' }}>
         <div style={{ flex: '1 1 280px' }}>
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-            <div style={{ width:34, height:34, clipPath:'polygon(0% 0%, calc(100% - 8px) 0%, 100% 8px, 100% 100%, 8px 100%, 0% calc(100% - 8px))', background:'var(--lav-500)', padding:1 }}>
-              <div style={{ clipPath:'polygon(0% 0%, calc(100% - 8px) 0%, 100% 8px, 100% 100%, 8px 100%, 0% calc(100% - 8px))', background:'var(--pitch-black)', width:'100%', height:'100%', display:'grid', placeItems:'center' }}>
-
-              </div>
-            </div>
-            <div style={{ fontFamily:'var(--font-wordmark)', fontWeight:700, fontSize:32, letterSpacing:'.05em', color:'var(--lav-300)', textTransform:'uppercase', lineHeight:1 }}>ARFL</div>
+            <BrandFrame padding={9} arm={12} stroke={2}>
+              <div style={{ fontFamily:'var(--font-wordmark)', fontWeight:700, fontSize:32, letterSpacing:'.05em', color:'var(--lav-300)', textTransform:'uppercase', lineHeight:1 }}>ARFL</div>
+            </BrandFrame>
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:10, marginTop:12 }}>
             <span style={{ fontFamily:'var(--font-ui)', fontWeight:600, color:'var(--blood-red)', fontSize:12, letterSpacing:'.1em' }}>עֲרָפֶל</span>

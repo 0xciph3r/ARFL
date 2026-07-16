@@ -50,12 +50,9 @@ function ConnectScreen({ status, node, sessUp, sessDown, sessSats, onToggle, onP
       {/* header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <div style={{ width:24, height:24, clipPath:'polygon(0% 0%, calc(100% - 5px) 0%, 100% 5px, 100% 100%, 5px 100%, 0% calc(100% - 5px))', background:'var(--lav-500)', padding:1 }}>
-            <div style={{ clipPath:'polygon(0% 0%, calc(100% - 5px) 0%, 100% 5px, 100% 100%, 5px 100%, 0% calc(100% - 5px))', background:'var(--pitch-black)', width:'100%', height:'100%', display:'grid', placeItems:'center' }}>
-
-            </div>
-          </div>
-          <span style={{ fontFamily: 'var(--font-wordmark)', fontWeight: 700, fontSize: 22, color: 'var(--lav-300)', textTransform: 'uppercase', letterSpacing: '.04em' }}>ARFL</span>
+          <BrandFrame padding={5} arm={7} stroke={1.5}>
+            <span style={{ fontFamily: 'var(--font-wordmark)', fontWeight: 700, fontSize: 22, color: 'var(--lav-300)', textTransform: 'uppercase', letterSpacing: '.04em' }}>ARFL</span>
+          </BrandFrame>
         </div>
         <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '.08em', color: connected ? 'var(--cyan-400)' : 'var(--fg3)' }}>
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: connected ? 'var(--cyan-500)' : 'var(--char-300)', boxShadow: connected ? '0 0 6px var(--cyan-500)' : 'none' }}></span>

@@ -17,6 +17,21 @@ function Chamfer({ cut=16, bg='var(--surface)', border='var(--border)', padding=
 const Icon = ({ name, size = 20, color = 'currentColor', stroke = 1.75, style }) =>
   <i data-lucide={name} style={{ width: size, height: size, color, strokeWidth: stroke, ...style }}></i>;
 
+/* ── Brand mark: reticle/viewfinder corner brackets around the wordmark.
+   Cyan brackets frame ARFL — the mark is the frame, not a separate glyph. ── */
+function BrandFrame({ children, padding = 10, arm = 11, stroke = 2, color = 'var(--cyan-500)', style = {} }) {
+  const base = { position: 'absolute', width: arm, height: arm };
+  return (
+    <div style={{ position: 'relative', display: 'inline-flex', padding, ...style }}>
+      <span style={{ ...base, top: 0, left: 0, borderTop: `${stroke}px solid ${color}`, borderLeft: `${stroke}px solid ${color}` }} />
+      <span style={{ ...base, top: 0, right: 0, borderTop: `${stroke}px solid ${color}`, borderRight: `${stroke}px solid ${color}` }} />
+      <span style={{ ...base, bottom: 0, left: 0, borderBottom: `${stroke}px solid ${color}`, borderLeft: `${stroke}px solid ${color}` }} />
+      <span style={{ ...base, bottom: 0, right: 0, borderBottom: `${stroke}px solid ${color}`, borderRight: `${stroke}px solid ${color}` }} />
+      {children}
+    </div>
+  );
+}
+
 /* ── useReveal hook — adds .visible to .reveal / .reveal-group when in view ── */
 function useReveal() {
   React.useEffect(() => {
@@ -65,11 +80,9 @@ function Nav() {
   return (
     <nav style={navStyles.bar}>
       <div style={navStyles.brand}>
-        {/* A2 chamfer mark — lavender border */}
-        <div style={{ width:30, height:30, clipPath:'polygon(0% 0%, calc(100% - 7px) 0%, 100% 7px, 100% 100%, 7px 100%, 0% calc(100% - 7px))', background:'var(--lav-500)', padding:1, flexShrink:0 }}>
-          <div style={{ clipPath:'polygon(0% 0%, calc(100% - 7px) 0%, 100% 7px, 100% 100%, 7px 100%, 0% calc(100% - 7px))', background:'var(--pitch-black)', width:'100%', height:'100%' }}></div>
-        </div>
-        <span style={navStyles.word}>ARFL</span>
+        <BrandFrame padding={7} arm={9} stroke={1.5}>
+          <span style={navStyles.word}>ARFL</span>
+        </BrandFrame>
         <span className="kana" style={{ fontFamily: 'var(--font-ui)', fontWeight: 600, color: 'var(--blood-red)', fontSize: 11, letterSpacing: '.08em' }}>עֲרָפֶל</span>
       </div>
       <div style={navStyles.links}>
@@ -118,4 +131,4 @@ function Button({ children, variant = 'gold', small, glow, onClick, icon }) {
 const Eyebrow = ({ children, color = 'var(--cyan-500)' }) =>
   <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, letterSpacing: '.2em', textTransform: 'uppercase', color }}>{children}</div>;
 
-Object.assign(window, { Icon, useLucide, useReveal, useNavScroll, Nav, Button, Eyebrow, Chamfer, cc });
+Object.assign(window, { Icon, useLucide, useReveal, useNavScroll, Nav, Button, Eyebrow, Chamfer, BrandFrame, cc });

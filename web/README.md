@@ -66,7 +66,7 @@ Colour hierarchy is three strict tiers: **Leads** (cyan — primary CTAs, live s
 
 ## Type
 
-- **Display — KARIXBY** (substitute: Chakra Petch). Chunky, angular, cut-corner, blocky, all-caps. Headlines + wordmark.
+- **Display — KARIXBY** (substitute: Chakra Petch). Chunky, angular, cut-corner, blocky, all-caps. Headlines + wordmark. **The checked-in `KARIXBY-Demo.otf` is corrupted and fails browser font sanitization (see `fonts/README.md`) — every render currently falls back to Chakra Petch, not the real face.**
 - **UI — Space Grotesk.** Technical grotesque, tight tracking.
 - **Body — IBM Plex Sans.** Neutral, legible.
 - **Mono — Space Mono.** Addresses, hashes, node IDs, throughput.
@@ -99,7 +99,7 @@ The files at those paths in this repo are **honest placeholders** — plain dark
 
 To replace them with the real assets, pull the originals from the source Claude Design project at `https://claude.ai/design/p/6bf8b225-2d60-4fae-a177-4f8fbec932d5` (paths above) and drop them in at the same relative paths — no code changes needed.
 
-All other files in this directory (CSS, JSX, HTML, the KARIXBY demo font) were transferred in full.
+All other files in this directory (CSS, JSX, HTML) were transferred in full. The KARIXBY demo font was also transferred in full byte-for-byte, but the source file itself is corrupted — see `fonts/README.md` for the diagnosis.
 
 ---
 

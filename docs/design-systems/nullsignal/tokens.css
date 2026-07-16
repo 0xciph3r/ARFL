@@ -1,0 +1,121 @@
+/*
+ * NULLSIGNAL tokens — DeepPCB (structure) x NULLCITY (surface) hybrid.
+ * Layout/spacing tokens are inherited from ../deeppcb/tokens.css verbatim;
+ * only color, radius, and type-register tokens are redefined here.
+ */
+
+@import url("../deeppcb/tokens.css");
+
+:root {
+	/* Color — replaces the DeepPCB light palette */
+	--clr-void: #0a0a0d;
+	--clr-surgical: #f2f3f0;
+	--clr-signal: #ff5a1f;
+	--clr-signal-dim: #c2430f;
+	--clr-cyan: #23e5d1;
+	--clr-line: #2a2b30;
+	--clr-mist: #9a9ba3;
+	--clr-ash: #56575e;
+
+	/* Radius — near-square, replaces DeepPCB's soft rounding */
+	--radius-btn: 2px;
+	--radius-card: 2px;
+	--radius-featured-card: 2px;
+	--radius-media: 2px;
+	--radius-pill: 2px; /* bracket tags are not pills here */
+
+	/* Elevation — none; borders only */
+	--shadow-header-scrolled: none;
+
+	/* Type register */
+	--ff-display: var(--ff-Heading); /* Space Grotesk, used bold + uppercase */
+	--ff-technical: var(--ff-mono);  /* Space Mono, promoted to primary technical voice */
+}
+
+body {
+	background: var(--clr-void);
+	color: var(--clr-surgical);
+}
+
+/* Bracket tag — replaces .badge / .category-badge */
+.tag-bracket {
+	font-family: var(--ff-technical);
+	font-size: 0.78rem;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	padding: var(--px-4) var(--px-8);
+	border-radius: var(--radius-pill);
+}
+.tag-bracket--solid {
+	background: var(--clr-signal);
+	color: var(--clr-void);
+}
+.tag-bracket--outline {
+	border: 1px solid var(--clr-line);
+	color: var(--clr-mist);
+}
+.tag-bracket--solid::before, .tag-bracket--solid::after,
+.tag-bracket--outline::before, .tag-bracket--outline::after {
+	content: none;
+}
+
+/* Barcode rule — CSS-generated, no hand-authored SVG */
+.barcode-rule {
+	height: 14px;
+	background: repeating-linear-gradient(
+		90deg,
+		var(--clr-surgical) 0 2px,
+		transparent 2px 5px,
+		var(--clr-surgical) 5px 6px,
+		transparent 6px 11px
+	);
+	opacity: 0.6;
+}
+
+/* Crosshair corner ticks for cards */
+.crosshair-card {
+	position: relative;
+	background: var(--clr-void);
+	border: 1px solid var(--clr-line);
+	border-radius: var(--radius-card);
+}
+.crosshair-card::before, .crosshair-card::after {
+	content: "";
+	position: absolute;
+	width: 10px;
+	height: 10px;
+	border-top: 1px solid var(--clr-signal);
+	border-left: 1px solid var(--clr-signal);
+	top: -1px;
+	left: -1px;
+}
+.crosshair-card::after {
+	top: auto;
+	left: auto;
+	bottom: -1px;
+	right: -1px;
+	border-top: none;
+	border-left: none;
+	border-bottom: 1px solid var(--clr-signal);
+	border-right: 1px solid var(--clr-signal);
+}
+
+/* Signal button */
+.btn-signal {
+	font-family: var(--ff-technical);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	border-radius: var(--radius-btn);
+	background: var(--clr-signal);
+	color: var(--clr-void);
+	border: none;
+	padding: var(--px-8) var(--px-14);
+}
+.btn-signal:hover { background: var(--clr-signal-dim); }
+.btn-signal--ghost {
+	background: transparent;
+	border: 1px solid var(--clr-surgical);
+	color: var(--clr-surgical);
+	opacity: 0.85;
+}
+.btn-signal--ghost:hover { opacity: 1; background: rgba(242,243,240,0.06); }

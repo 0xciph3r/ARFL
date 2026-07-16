@@ -3,13 +3,16 @@
 A "baby" system born from two parents:
 
 - **DeepPCB** (`../deeppcb/`) — the structural parent. Contributes the content-grid
-  layout system, the fluid `clamp()` spacing/type scale, and the Space Grotesk /
-  Geist / Space Mono type stack.
+  layout system, the fluid `clamp()` spacing/type scale, and the Geist / Space
+  Mono half of the type stack.
 - **NULLCITY** (Behance: *NULLCITY — Cyberpunk Brand Identity* by Al Mahin &
   Mohammad Babu, plus the two cyberpunk moodboard references supplied) — the
   visual parent. Contributes the obsidian/surgical monochrome base, a single
   neon accent, and a technical/UI vocabulary (bracket tags, index numbers,
   barcode motifs, crosshair corner marks).
+- **Claude's brand type system** — a later, narrower third influence: Styrene A
+  replaces Space Grotesk in the display/wordmark role. See "Third influence"
+  under Typography.
 
 Nothing here is templated cyberpunk-by-numbers: no purple-to-blue gradient
 hero, no Orbitron/sci-fi display font, no rounded-everything. The accent is
@@ -44,15 +47,30 @@ structurally; only the hue changed.
 
 ## Typography
 
-Same stack as DeepPCB, different register:
+Two parents plus a third influence for type specifically:
 
-- **Space Grotesk**, weight 700, tight tracking, upper-case for display —
-  reads as "bold futuristic typography" without reaching for a stereotypical
-  sci-fi face.
-- **Geist** for body copy — unchanged.
+- **Styrene A** (Commercial Type) — display/wordmark, weight 700, tight
+  tracking, upper-case. Replaces DeepPCB's Space Grotesk in that role at the
+  user's request, to bring Anthropic/Claude's own brand display face into the
+  system. Styrene is a licensed commercial font and isn't bundled in this
+  repo — `--ff-display` falls back to system sans (`-apple-system`, `Segoe UI`,
+  Arial) wherever it isn't installed, so treat the rendered artifact as an
+  approximation, not the real face.
+- **Geist** for body copy — unchanged, inherited from DeepPCB.
 - **Space Mono** promoted from an accent-only role to the voice of every
   technical element: index numbers (`[ 01 ]`), tag brackets (`[ PCB-ROUTING ]`),
-  timestamps, barcode labels.
+  timestamps, barcode labels. Unchanged, inherited from DeepPCB.
+
+### Third influence — Claude's brand type system
+
+Asked to bring in "the ARFL logo font," and clarified that the intent was
+Claude's own design system rather than an ARFL-specific asset (ARFL has no
+logo file or brand typeface documented anywhere in this repo — confirmed by
+search). Anthropic's public brand pairing is **Styrene A/B** (display) and
+**Tiempos** (editorial serif, used for long-form reading). Only Styrene was
+pulled in here, for the wordmark/display role — Tiempos' serif warmth doesn't
+fit NullSignal's terse, technical, mono-heavy register, so body copy stays on
+Geist rather than forcing in a font that fights the rest of the system.
 
 ## Layout
 

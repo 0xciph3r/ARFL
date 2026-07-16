@@ -30,7 +30,13 @@
 	--shadow-header-scrolled: none;
 
 	/* Type register */
-	--ff-display: var(--ff-Heading); /* Space Grotesk, used bold + uppercase */
+	--ff-display: "Styrene A", "Styrene B", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+	/* Third influence: Anthropic/Claude's own brand display face (Commercial
+	   Type's Styrene A), used bold + uppercase for the wordmark and headings —
+	   swapped in for DeepPCB's Space Grotesk at the user's request to bring
+	   Claude's own type identity into the system. Styrene is licensed, not
+	   bundled here; the stack falls back to system sans wherever it isn't
+	   installed. See README "Third influence" for the rationale. */
 	--ff-technical: var(--ff-mono);  /* Space Mono, promoted to primary technical voice */
 }
 

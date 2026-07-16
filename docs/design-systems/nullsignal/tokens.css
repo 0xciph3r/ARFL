@@ -16,6 +16,8 @@
 	--clr-line: #2a2b30;
 	--clr-mist: #9a9ba3;
 	--clr-ash: #56575e;
+	--clr-gold: #d9a62e; /* ticker / id-chip accent, pulled from the referenced UI mock */
+	--clr-teal: #2de2c8; /* neon signage glow, pulled from the referenced cityscape */
 
 	/* Radius — near-square, replaces DeepPCB's soft rounding */
 	--radius-btn: 2px;
@@ -119,3 +121,73 @@ body {
 	opacity: 0.85;
 }
 .btn-signal--ghost:hover { opacity: 1; background: rgba(242,243,240,0.06); }
+
+/* Grain texture — subtle scuffed-print overlay, pulled from the referenced
+   dark UI mock. Layer this as a background-image, never as a separate
+   animated element. */
+.grain-surface {
+	background-image:
+		repeating-linear-gradient(0deg, rgba(242,243,240,0.015) 0px, rgba(242,243,240,0.015) 1px, transparent 1px, transparent 3px);
+	background-color: var(--clr-void);
+}
+
+/* Wordmark + katakana gloss — "WORD [ グロス ]" pattern lifted directly from
+   the referenced mock's "CYBER [コマース]" treatment. */
+.wordmark-gloss { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.wordmark-gloss .word { font-family: var(--ff-display); font-weight: 700; text-transform: uppercase; letter-spacing: -0.01em; }
+.wordmark-gloss .gloss { font-family: var(--ff-technical); color: var(--clr-mist); font-size: 0.9rem; }
+
+/* Ticker / marquee band — repeated label with dash separators, gold accent,
+   lifted directly from the referenced mock. Static by default; the
+   `.ticker--scroll` modifier adds one slow, reduced-motion-respecting pass. */
+.ticker {
+	font-family: var(--ff-technical);
+	color: var(--clr-gold);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	font-size: 0.82rem;
+	white-space: nowrap;
+	overflow: hidden;
+	border-top: 1px solid var(--clr-line);
+	border-bottom: 1px solid var(--clr-line);
+	padding: 0.6rem 0;
+}
+.ticker--scroll .ticker-track { display: inline-block; animation: nullsignal-ticker 40s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .ticker--scroll .ticker-track { animation: none; } }
+@keyframes nullsignal-ticker { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+/* ID chip — small rounded dark tag overlaid on media, lifted directly from
+   the referenced mock's "407" / "80-A45" product tags. Distinct from
+   .tag-bracket: rounded, overlaid on imagery, not inline with text. */
+.id-chip {
+	position: absolute;
+	font-family: var(--ff-technical);
+	font-size: 0.7rem;
+	background: var(--clr-void);
+	color: var(--clr-surgical);
+	border: 1px solid var(--clr-line);
+	border-radius: 6px;
+	padding: 0.25rem 0.55rem;
+}
+
+/* Signage strip — vertical glowing label, teal, meaningful short Japanese
+   word rather than decorative filler (e.g. 信号 "signal", 回路 "circuit",
+   経路 "route") — a nod to the referenced cityscape's kanji signage. */
+.signage-strip {
+	writing-mode: vertical-rl;
+	font-family: var(--ff-technical);
+	color: var(--clr-teal, #2de2c8);
+	text-shadow: 0 0 8px rgba(45,226,200,0.5);
+	letter-spacing: 0.15em;
+	font-size: 0.9rem;
+}
+
+/* Rotated corner tag — "SCROLL [ スクロール ]" style rotated label */
+.rotated-tag {
+	writing-mode: vertical-rl;
+	font-family: var(--ff-technical);
+	font-size: 0.68rem;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--clr-mist);
+}

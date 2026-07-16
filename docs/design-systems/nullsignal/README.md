@@ -58,6 +58,25 @@ skin: radius drops to `2px` everywhere, borders replace shadows entirely, and
 every card gets a small mono index number and crosshair corner ticks (a
 direct nod to NULLCITY's crosshair/barcode UI elements).
 
+## Literal pulls from the two reference images
+
+Two images were supplied directly as inspiration alongside the NULLCITY
+Behance write-up: a cyberpunk cityscape (neon kanji/katakana signage, warm
+sunset gradient, teal neon glow) and a dark UI mock for a "CYBER" apparel
+storefront. Rather than paraphrase them into abstract mood words, specific
+devices were lifted and rebuilt as components:
+
+| Reference device | Source image | Component |
+|---|---|---|
+| Bold wordmark + bracketed katakana gloss (`CYBER [コマース]`) | UI mock | `.wordmark-gloss` — `NULLSIGNAL [ヌルシグナル]` |
+| Scrolling ticker band of a repeated word, gold/mustard | UI mock | `.ticker` (static by default; `.ticker--scroll` adds one slow pass, `prefers-reduced-motion`-safe) |
+| Small rounded dark ID tags overlaid on product photos (`407`, `80-A45`) | UI mock | `.id-chip` |
+| Scuffed print-texture background | UI mock | `.grain-surface` |
+| Rotated vertical corner label (`SCROLL [スクロール]`) | UI mock | `.rotated-tag` |
+| Glowing vertical kanji/katakana signage strips | Cityscape | `.signage-strip` — set to *meaningful* short words (信号 "signal", 回路 "circuit", 経路 "route") rather than decorative filler, since the source images use real signage text, not noise |
+| Warm sunset gradient (orange → magenta → violet) | Cityscape | Reserved for a hero background only, never as a generic button/card gradient — see artifact hero |
+| Teal neon glow | Cityscape | `--clr-teal`, used only on `.signage-strip` |
+
 ## Components (new/changed from DeepPCB)
 
 - **Bracket tag** — `[ LABEL ]` in Space Mono, replaces the pill `.badge` /

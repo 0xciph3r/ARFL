@@ -9,9 +9,9 @@ const sx = {
   },
   heroArt: {
     position: 'absolute', inset: 0, zIndex: 0,
-    backgroundImage: "url('" + ((window.__resources && window.__resources.heroBg) || '../../assets/imagery/cyber-portrait.png') + "')",
-    backgroundSize: 'cover', backgroundPosition: 'center 18%',
-    opacity: 0.4, filter: 'saturate(0.9) contrast(1.05) brightness(0.78)',
+    backgroundImage: "url('" + ((window.__resources && window.__resources.heroBg) || '../../assets/imagery/samurai-alliance.png') + "')",
+    backgroundRepeat: 'no-repeat', backgroundSize: 'auto 340%', backgroundPosition: 'center 0%',
+    opacity: 0.45, filter: 'saturate(0.9) contrast(1.05) brightness(0.85)',
   },
   heroVignette: {
     position: 'absolute', inset: 0, zIndex: 1,
@@ -55,6 +55,7 @@ function Globe({ size = 320, opacity = 0.5 }) {
 function Hero() {
   return (
     <header style={sx.hero}>
+      <div style={sx.heroArt}></div>
       <div className="halftone" style={{ position: 'absolute', inset: 0, zIndex: 0, opacity: 0.05, '--dot': 'rgba(0,229,255,.7)' }}></div>
       <div style={{
         position: 'absolute', top: '50%', left: '50%', width: 'min(820px, 98vw)', aspectRatio: '1408 / 768',

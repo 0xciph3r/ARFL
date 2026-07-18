@@ -3,9 +3,13 @@ module github.com/Radi-Labs/ARFL
 go 1.26.3
 
 require (
+	github.com/btcsuite/btcd v0.24.2
 	github.com/btcsuite/btcd/btcec/v2 v2.5.0
+	github.com/btcsuite/btcd/btcutil v1.1.5
 	github.com/cryptoballot/fdh v0.0.0-20170924224734-5eb31ce2010c
 	github.com/cryptoballot/rsablind v0.0.0-20170925165423-14f9913880b7
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
+	github.com/elnosh/gonuts v0.4.2
 	github.com/mattn/go-sqlite3 v1.14.45
 	golang.org/x/crypto v0.54.0
 	golang.org/x/term v0.45.0
@@ -14,14 +18,16 @@ require (
 )
 
 require (
+	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0 // indirect
 	github.com/btcsuite/btcd/chainhash/v2 v2.0.0 // indirect
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
-	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
+	github.com/fxamacker/cbor/v2 v2.7.0 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/josharian/native v1.1.0 // indirect
 	github.com/mdlayher/genetlink v1.3.2 // indirect
 	github.com/mdlayher/netlink v1.7.2 // indirect
 	github.com/mdlayher/socket v0.5.1 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.10.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect

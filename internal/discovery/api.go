@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/credentials"
+	"github.com/Radi-Labs/ARFL/internal/ecash"
 	"github.com/Radi-Labs/ARFL/internal/lightning"
 	"github.com/Radi-Labs/ARFL/internal/nostr"
 	"github.com/Radi-Labs/ARFL/internal/store"
@@ -24,13 +25,16 @@ import (
 // not just NodeInfo. This lets the client verify signatures independently.
 // The hub CANNOT manipulate the list without being detected.
 type DiscoveryAPI struct {
-	index    *NodeIndex
-	hubKP    *nostr.KeyPair
-	store    LeaseChecker
-	earnings EarningsStore
-	hubInfo  *HubInfo
-	lnc      lightning.Client
-	mux      *http.ServeMux
+	index      *NodeIndex
+	hubKP      *nostr.KeyPair
+	store      LeaseChecker
+	earnings   EarningsStore
+	hubInfo    *HubInfo
+	lnc        lightning.Client
+	mint       *ecash.Mint
+	mintStore  ecash.Store
+	cryptoPool *ecash.WorkerPool
+	mux        *http.ServeMux
 
 	// Rate limiting: map[IP][]timestamp of recent requests.
 	rateLimit   map[string][]time.Time

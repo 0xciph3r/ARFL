@@ -5,10 +5,13 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/Radi-Labs/ARFL/internal/credentials"
 	"github.com/Radi-Labs/ARFL/internal/nostr"
+	"github.com/Radi-Labs/ARFL/internal/store"
 	"github.com/Radi-Labs/ARFL/pkg/types"
 )
 
@@ -20,10 +23,12 @@ import (
 // not just NodeInfo. This lets the client verify signatures independently.
 // The hub CANNOT manipulate the list without being detected.
 type DiscoveryAPI struct {
-	index *NodeIndex
-	hubKP *nostr.KeyPair
-	store LeaseChecker
-	mux   *http.ServeMux
+	index       *NodeIndex
+	hubKP       *nostr.KeyPair
+	store       LeaseChecker
+	earnings    EarningsStore
+	hubInfo     *HubInfo
+	mux         *http.ServeMux
 
 	// Rate limiting: map[IP][]timestamp of recent requests.
 	rateLimit   map[string][]time.Time
@@ -35,6 +40,20 @@ type DiscoveryAPI struct {
 // LeaseChecker is the interface needed to verify node leases.
 type LeaseChecker interface {
 	IsLeaseActive(nodePubkey string) (bool, error)
+}
+
+// EarningsStore is the interface for querying node earnings.
+type EarningsStore interface {
+	GetNodeEarnings(nodePubkey string) (*store.NodeEarnings, error)
+}
+
+// HubInfo is metadata about this hub, exposed via GET /info for extensions.
+type HubInfo struct {
+	Name         string                    `json:"name"`
+	Version      string                    `json:"version"`
+	NodeCount    int                       `json:"node_count"`
+	HubMarginPct int                       `json:"hub_margin_pct"`
+	Tiers        map[string]credentials.Tier `json:"tiers"`
 }
 
 // DiscoveryResponse is what the client receives.
@@ -59,6 +78,8 @@ func NewDiscoveryAPI(index *NodeIndex) *DiscoveryAPI {
 	api.mux.HandleFunc("/nodes", api.handleNodes)
 	api.mux.HandleFunc("/health", api.handleHealth)
 	api.mux.HandleFunc("/announce", api.handleAnnounce)
+	api.mux.HandleFunc("/info", api.handleInfo)
+	api.mux.HandleFunc("/node/", api.handleNodeEarnings)
 
 	return api
 }
@@ -73,6 +94,73 @@ func (api *DiscoveryAPI) SetHubKeyPair(kp *nostr.KeyPair, leaseStore LeaseChecke
 // Handler returns the HTTP handler for use with http.Server.
 func (api *DiscoveryAPI) Handler() http.Handler {
 	return api.mux
+}
+
+// SetHubInfo sets the hub metadata returned by GET /info.
+func (api *DiscoveryAPI) SetHubInfo(info *HubInfo) {
+	api.hubInfo = info
+}
+
+// SetEarningsStore enables the /node/{pubkey}/earnings endpoint.
+func (api *DiscoveryAPI) SetEarningsStore(es EarningsStore) {
+	api.earnings = es
+}
+
+// handleInfo returns hub metadata for extension builders (LNbits, Layerz).
+func (api *DiscoveryAPI) handleInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	info := api.hubInfo
+	if info == nil {
+		info = &HubInfo{
+			Name:         "ARFL Hub",
+			Version:      "0.1.0",
+			HubMarginPct: 20,
+			Tiers:        credentials.DefaultTiers,
+		}
+	}
+	// Always reflect live node count.
+	_, online := api.index.NodeCount()
+	info.NodeCount = online
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(info)
+}
+
+// handleNodeEarnings returns earnings for a specific node.
+// GET /node/{pubkey}/earnings
+func (api *DiscoveryAPI) handleNodeEarnings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse: /node/{pubkey}/earnings
+	path := strings.TrimPrefix(r.URL.Path, "/node/")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) != 2 || parts[1] != "earnings" || len(parts[0]) != 64 {
+		http.Error(w, "expected /node/{64-char-pubkey}/earnings", http.StatusBadRequest)
+		return
+	}
+	pubkey := parts[0]
+
+	if api.earnings == nil {
+		http.Error(w, "earnings not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	earnings, err := api.earnings.GetNodeEarnings(pubkey)
+	if err != nil {
+		log.Printf("[api] earnings query for %s: %v", pubkey[:16], err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(earnings)
 }
 
 // handleNodes returns the list of online, verified nodes.

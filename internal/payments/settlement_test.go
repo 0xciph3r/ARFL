@@ -40,6 +40,7 @@ func setupSettlementEnv(t *testing.T) *settlementEnv {
 	mock := lightning.NewMockClient()
 	engine := NewSettlementEngine(s, mock)
 	engine.SetMinPayout(0) // no minimum for tests
+	engine.SetHubMargin(0) // no hub margin in legacy tests
 
 	return &settlementEnv{store: s, mock: mock, engine: engine}
 }
@@ -164,13 +165,12 @@ func TestSettlement_BillableIsMin(t *testing.T) {
 
 	env.engine.RunSettlement(context.Background(), start, end)
 
-	// Check the payout amounts. 50MB billable, each node gets half = 25MB worth.
-	// 25MB at 500 sats/GB = 25_000_000 * 500 / 1_000_000_000 = 12 sats per node.
+	// Check the payout amounts. 50MB billable.
+	// Total sats = 50M * 500 / 1B = 25 sats. Hub margin = 0% (test default).
+	// Entry = 25/2 = 12. Exit = 25 - 12 = 13. Total = 25.
 	totalPaid, _ := env.store.TotalPaidOutSats()
-	// Each node gets floor(25_000_000 * 500 / 1_000_000_000) = floor(12.5) = 12 sats.
-	// Total = 24 sats (2 × 12).
-	if totalPaid != 24 {
-		t.Errorf("expected 24 total sats paid, got %d", totalPaid)
+	if totalPaid != 25 {
+		t.Errorf("expected 25 total sats paid, got %d", totalPaid)
 	}
 }
 
@@ -923,5 +923,41 @@ func TestSTRIDE_ExitMismatchedTicket_Rejected(t *testing.T) {
 	// Session should be rejected — entry ticket-a ≠ exit ticket-b.
 	if result.SessionsSettled != 0 {
 		t.Errorf("expected 0 sessions (mismatched tickets), got %d", result.SessionsSettled)
+	}
+}
+
+// --- Hub margin tests ---
+
+func TestSettlement_HubMargin_20Percent(t *testing.T) {
+	env := setupSettlementEnv(t)
+	env.engine.SetHubMargin(20)
+	start, end := periodBounds()
+
+	// 100MB billable at 1gb rate (500 sats / 1GB).
+	// Total sats = 100M * 500 / 1B = 50 sats.
+	// Hub keeps 20% = 10 sats. Node pool = 40 sats. Each node = 20 sats.
+	env.seedSession(t, "sess-1", "ticket-1", 100_000_000, 100_000_000)
+
+	env.engine.RunSettlement(context.Background(), start, end)
+
+	totalPaid, _ := env.store.TotalPaidOutSats()
+	if totalPaid != 40 {
+		t.Errorf("expected 40 total sats (hub keeps 20%%), got %d", totalPaid)
+	}
+}
+
+func TestSettlement_HubMargin_ZeroPercent(t *testing.T) {
+	env := setupSettlementEnv(t)
+	env.engine.SetHubMargin(0)
+	start, end := periodBounds()
+
+	// 100MB billable. Total sats = 50. Hub keeps 0%. Each node = 25 sats.
+	env.seedSession(t, "sess-1", "ticket-1", 100_000_000, 100_000_000)
+
+	env.engine.RunSettlement(context.Background(), start, end)
+
+	totalPaid, _ := env.store.TotalPaidOutSats()
+	if totalPaid != 50 {
+		t.Errorf("expected 50 total sats (0%% margin), got %d", totalPaid)
 	}
 }

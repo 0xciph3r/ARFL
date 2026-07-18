@@ -737,6 +737,47 @@ FROM redemptions WHERE nonce = ?`, nonce)
 	return &r, nil
 }
 
+// --- Node Earnings queries ---
+
+// NodeEarnings summarises a node's financial activity.
+type NodeEarnings struct {
+	TotalEarnedSats  int64 `json:"total_earned_sats"`
+	PendingSats      int64 `json:"pending_sats"`
+	PaidSats         int64 `json:"paid_sats"`
+	SessionCount     int   `json:"session_count"`
+	SettlementCount  int   `json:"settlement_count"`
+}
+
+// GetNodeEarnings returns aggregate earnings for a node across all settlement periods.
+func (s *Store) GetNodeEarnings(nodePubkey string) (*NodeEarnings, error) {
+	e := &NodeEarnings{}
+
+	// Total from settlement entries (what the node has earned).
+	err := s.db.QueryRow(`
+		SELECT COALESCE(SUM(amount_sats), 0), COALESCE(SUM(tickets_redeemed), 0), COUNT(*)
+		FROM settlement_entries WHERE node_pubkey = ?
+	`, nodePubkey).Scan(&e.TotalEarnedSats, &e.SessionCount, &e.SettlementCount)
+	if err != nil {
+		return nil, fmt.Errorf("query settlement entries: %w", err)
+	}
+
+	// Paid out so far.
+	err = s.db.QueryRow(`
+		SELECT COALESCE(SUM(amount_sats), 0) FROM payouts
+		WHERE node_pubkey = ? AND status = 'paid'
+	`, nodePubkey).Scan(&e.PaidSats)
+	if err != nil {
+		return nil, fmt.Errorf("query paid payouts: %w", err)
+	}
+
+	e.PendingSats = e.TotalEarnedSats - e.PaidSats
+	if e.PendingSats < 0 {
+		e.PendingSats = 0
+	}
+
+	return e, nil
+}
+
 // --- Node Lease operations ---
 
 // NodeLease represents an authorization window for a node.

@@ -59,6 +59,11 @@ type HubConfig struct {
 	SettlementHours int    `json:"settlement_hours"` // Settlement interval in hours (default: 6)
 	MinPayoutSats   int64  `json:"min_payout_sats"`  // Minimum payout threshold (default: 1000)
 
+	// Hub revenue: percentage of bundle price retained by the hub.
+	// Remaining (100 - HubMarginPct)% is split evenly between entry/exit nodes.
+	// Default: 20 (hub keeps 20%, nodes split 80%).
+	HubMarginPct int `json:"hub_margin_pct"`
+
 	// Phase 4: Blind signatures
 	BlindKeyDir string `json:"blind_key_dir"` // Directory for RSA denomination keys (default: "keys/")
 
@@ -105,6 +110,14 @@ func LoadHubConfig(path string) (*HubConfig, error) {
 // ApplyEnv overrides config fields with environment variables when set.
 // Priority: env var > JSON config file. This keeps secrets out of config files.
 func (c *HubConfig) ApplyEnv() {
+	// Apply defaults for zero-value fields.
+	if c.HubMarginPct == 0 {
+		c.HubMarginPct = 20
+	}
+	if c.HubMarginPct < 0 || c.HubMarginPct > 50 {
+		c.HubMarginPct = 20
+	}
+
 	if v := os.Getenv(EnvLNDHost); v != "" {
 		c.LNDHost = v
 	}
@@ -141,6 +154,12 @@ func LoadClientConfig(path string) (*ClientConfig, error) {
 
 func LoadSessionFile(path string) (*SessionFile, error) {
 	return loadJSON[SessionFile](path)
+}
+
+// NodeSharePct returns the percentage of the bundle price that goes to nodes
+// (split evenly between entry and exit). E.g., margin=20 → nodes get 80% total (40% each).
+func (c *HubConfig) NodeSharePct() int {
+	return 100 - c.HubMarginPct
 }
 
 func loadJSON[T any](path string) (*T, error) {

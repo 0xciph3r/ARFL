@@ -12,6 +12,7 @@ import (
 	"github.com/Radi-Labs/ARFL/internal/client"
 	"github.com/Radi-Labs/ARFL/internal/credentials"
 	"github.com/Radi-Labs/ARFL/internal/lightning"
+	"github.com/Radi-Labs/ARFL/internal/node"
 	"github.com/Radi-Labs/ARFL/internal/payments"
 	"github.com/Radi-Labs/ARFL/internal/quota"
 	"github.com/Radi-Labs/ARFL/internal/store"
@@ -68,7 +69,7 @@ func setupConnectEnv(t *testing.T) *connectEnv {
 	nodeVerifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
 		credentials.ExportPublicKey(denomKey),
 	})
-	gate := client.NewTokenGate(nodeVerifier, hubServer.URL, "test-node-pubkey")
+	gate := node.NewTokenGate(nodeVerifier, hubServer.URL, "test-node-pubkey")
 	srv.EnableTokenGate(gate, "test-node-wg-pubkey", "10.100.0")
 
 	return &connectEnv{

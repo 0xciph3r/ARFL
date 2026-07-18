@@ -1925,17 +1925,17 @@ frequently; leases are the "access policy" that governs who can refresh.
 **Context:** PoC needed live demo for stakeholder review.
 
 **Decision:** Three Vultr VPS (Ubuntu 26.04):
-- Hub: 209.250.238.223 (hub.arfl.us)
-- Entry: 64.176.43.74 (entry.arfl.us)
-- Exit: 155.138.136.155 (exit.arfl.us)
+- Hub: [hub-ip] (hub.[domain])
+- Entry: [entry-ip] (entry.[domain])
+- Exit: [exit-ip] (exit.[domain])
 
 Caddy v2 for auto HTTPS (Let's Encrypt) + reverse proxy. Systemd services
-for process management. DNS on OVH (arfl.us domain). Mainnet Lightning
+for process management. DNS on OVH. Mainnet Lightning
 via Voltage LND (arfl-node.m.voltageapp.io:8080).
 
 ---
 
-### Decision 91: Web client — static SPA at hub.arfl.us
+### Decision 91: Web client — static SPA at hub.[domain]
 
 **Context:** Need a demo interface for non-technical stakeholders.
 
@@ -1987,7 +1987,7 @@ sees the payment flow. Zero additional infrastructure required.
 
 ### Decision 95: Web client runs under hub-mediated trust model only
 
-**Context:** hub.arfl.us serves JS from the hub itself — the hub's own code is the
+**Context:** The web client serves JS from the hub itself — the hub's own code is the
 client. This means the hub could theoretically inject code to observe session setup.
 
 **Decision:** Web client explicitly does NOT qualify for the unlinkability guarantee.

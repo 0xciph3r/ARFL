@@ -343,4 +343,33 @@ CREATE TABLE IF NOT EXISTS node_leases (
     created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
+
+-- ============================================================
+-- NODE WALLETS: Payout destinations for node operators
+-- Nodes register a Lightning address for receiving earnings.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS node_wallets (
+    node_pubkey     TEXT PRIMARY KEY,
+    ln_address      TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- ============================================================
+-- WITHDRAWALS: Track node operator withdrawal requests
+-- ============================================================
+CREATE TABLE IF NOT EXISTS withdrawals (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_pubkey     TEXT    NOT NULL,
+    amount_sats     INTEGER NOT NULL CHECK (amount_sats > 0),
+    status          TEXT    NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'paid', 'failed')),
+    payment_hash    TEXT,
+    last_error      TEXT,
+    created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_withdrawals_node ON withdrawals(node_pubkey);
+CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status);
 `

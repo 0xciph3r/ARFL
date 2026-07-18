@@ -225,6 +225,7 @@ func main() {
 	discoveryAPI := discovery.NewDiscoveryAPI(idx)
 	discoveryAPI.SetHubKeyPair(hubKP, db)
 	discoveryAPI.SetEarningsStore(db)
+	discoveryAPI.SetLightningClient(lnc)
 	discoveryAPI.SetHubInfo(&discovery.HubInfo{
 		Name:         "ARFL Hub",
 		Version:      "0.1.0",

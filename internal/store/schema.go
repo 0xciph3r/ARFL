@@ -372,4 +372,70 @@ CREATE TABLE IF NOT EXISTS withdrawals (
 
 CREATE INDEX IF NOT EXISTS idx_withdrawals_node ON withdrawals(node_pubkey);
 CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status);
+
+-- ============================================================
+-- CASHU ECASH: Keysets, mint quotes, and spent proofs
+-- Implements NUT-01 through NUT-07 for blind token issuance.
+-- ============================================================
+
+-- MINT KEYSETS: Signing key metadata (keys derived from seed at runtime)
+CREATE TABLE IF NOT EXISTS mint_keysets (
+    id                  TEXT    PRIMARY KEY,
+    unit                TEXT    NOT NULL DEFAULT 'sat',
+    active              INTEGER NOT NULL DEFAULT 1,
+    derivation_path_idx INTEGER NOT NULL,
+    input_fee_ppk       INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- MINT QUOTES: Lightning invoices for minting ecash (NUT-04)
+CREATE TABLE IF NOT EXISTS mint_quotes (
+    id              TEXT    PRIMARY KEY,
+    amount          INTEGER NOT NULL CHECK (amount > 0),
+    payment_request TEXT    NOT NULL,
+    payment_hash    TEXT    NOT NULL,
+    state           TEXT    NOT NULL DEFAULT 'UNPAID'
+                    CHECK (state IN ('UNPAID', 'PAID', 'ISSUED', 'EXPIRED')),
+    expiry          INTEGER NOT NULL,
+    created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_mint_quotes_state ON mint_quotes(state);
+CREATE INDEX IF NOT EXISTS idx_mint_quotes_payment_hash ON mint_quotes(payment_hash);
+
+-- Mint quotes: only state may transition forward.
+CREATE TRIGGER IF NOT EXISTS mint_quotes_immutable_fields
+BEFORE UPDATE ON mint_quotes
+WHEN OLD.amount != NEW.amount
+  OR OLD.payment_hash != NEW.payment_hash
+  OR OLD.payment_request != NEW.payment_request
+BEGIN
+    SELECT RAISE(FAIL, 'mint quote financial fields are immutable');
+END;
+
+-- SPENT PROOFS: Double-spend prevention for Cashu proofs (NUT-07)
+-- Y = HashToCurve(secret) is the unique identifier per proof.
+CREATE TABLE IF NOT EXISTS cashu_spent_proofs (
+    y               TEXT    PRIMARY KEY,
+    keyset_id       TEXT    NOT NULL,
+    amount          INTEGER NOT NULL,
+    secret          TEXT    NOT NULL,
+    c               TEXT    NOT NULL,
+    spent_at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_cashu_spent_keyset ON cashu_spent_proofs(keyset_id);
+
+-- Spent proofs are never deleted or modified.
+CREATE TRIGGER IF NOT EXISTS cashu_spent_proofs_no_delete
+BEFORE DELETE ON cashu_spent_proofs
+BEGIN
+    SELECT RAISE(FAIL, 'cashu_spent_proofs is append-only: deletions are prohibited');
+END;
+
+CREATE TRIGGER IF NOT EXISTS cashu_spent_proofs_no_update
+BEFORE UPDATE ON cashu_spent_proofs
+BEGIN
+    SELECT RAISE(FAIL, 'cashu_spent_proofs is append-only: updates are prohibited');
+END;
 `

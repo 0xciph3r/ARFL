@@ -11,12 +11,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/config"
 	"github.com/Radi-Labs/ARFL/internal/credentials"
 	"github.com/Radi-Labs/ARFL/internal/discovery"
+	"github.com/Radi-Labs/ARFL/internal/ecash"
 	"github.com/Radi-Labs/ARFL/internal/lightning"
 	"github.com/Radi-Labs/ARFL/internal/nostr"
 	"github.com/Radi-Labs/ARFL/internal/payments"
@@ -232,6 +234,23 @@ func main() {
 		HubMarginPct: cfg.HubMarginPct,
 		Tiers:        credentials.DefaultTiers,
 	})
+
+	// --- Cashu Ecash Mint ---
+	cashuSeedDir := cfg.BlindKeyDir
+	if cashuSeedDir == "" {
+		cashuSeedDir = "keys"
+	}
+	cashuSeed, err := loadOrGenerateCashuSeed(cashuSeedDir)
+	if err != nil {
+		log.Fatalf("cashu seed: %v", err)
+	}
+	cashuMint, err := ecash.NewMint(db, cashuSeed)
+	if err != nil {
+		log.Fatalf("cashu mint: %v", err)
+	}
+	discoveryAPI.SetMint(cashuMint, db)
+	log.Printf("[hub] cashu mint enabled (keyset=%s)", cashuMint.ActiveKeysetID())
+
 	mux.Handle("/nodes", discoveryAPI.Handler())
 	mux.Handle("/health", discoveryAPI.Handler())
 	mux.Handle("/announce", discoveryAPI.Handler())
@@ -247,6 +266,13 @@ func main() {
 	// Blind signature endpoints (Phase 4).
 	mux.Handle("/redeem", purchaseAPI.Handler())
 	mux.Handle("/spend", purchaseAPI.Handler())
+
+	// Cashu ecash endpoints (NUT-01 through NUT-07).
+	mux.Handle("/v1/keys", discoveryAPI.Handler())
+	mux.Handle("/v1/keysets", discoveryAPI.Handler())
+	mux.Handle("/v1/mint/", discoveryAPI.Handler())
+	mux.Handle("/v1/swap", discoveryAPI.Handler())
+	mux.Handle("/v1/checkstate", discoveryAPI.Handler())
 
 	server := &http.Server{
 		Addr:    cfg.ListenAddr,
@@ -653,4 +679,38 @@ func resolveDBPath(cfgPath string) string {
 		return cfg.DBPath
 	}
 	return filepath.Join(filepath.Dir(cfgPath), "arfl.db")
+}
+
+// loadOrGenerateCashuSeed loads the Cashu mint seed from disk,
+// or generates and saves a new one on first run.
+func loadOrGenerateCashuSeed(keyDir string) ([]byte, error) {
+	seedPath := filepath.Join(keyDir, "cashu-seed.key")
+
+	// Try to load existing seed.
+	data, err := os.ReadFile(seedPath)
+	if err == nil && len(data) >= 32 {
+		seed, err := hex.DecodeString(strings.TrimSpace(string(data)))
+		if err != nil {
+			return nil, fmt.Errorf("invalid seed hex in %s: %w", seedPath, err)
+		}
+		return seed, nil
+	}
+
+	// Generate new seed.
+	seed, err := ecash.GenerateSeed()
+	if err != nil {
+		return nil, err
+	}
+
+	// Ensure directory exists.
+	if err := os.MkdirAll(keyDir, 0700); err != nil {
+		return nil, fmt.Errorf("creating key directory: %w", err)
+	}
+
+	// Save seed (hex-encoded, restrictive permissions).
+	if err := os.WriteFile(seedPath, []byte(hex.EncodeToString(seed)), 0600); err != nil {
+		return nil, fmt.Errorf("saving seed: %w", err)
+	}
+	log.Printf("[hub] cashu seed generated and saved to %s", seedPath)
+	return seed, nil
 }

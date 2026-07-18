@@ -50,6 +50,8 @@ func (api *DiscoveryAPI) SetMint(mint *ecash.Mint, mintStore ecash.Store) {
 	api.mux.HandleFunc("/v1/swap", api.handleSwap)
 	// NUT-07: Token state check
 	api.mux.HandleFunc("/v1/checkstate", api.handleCheckState)
+	// ARFL-specific: Token redemption (nodes verify + burn client tokens)
+	api.mux.HandleFunc("/v1/redeem", api.handleRedeem)
 }
 
 // cashuRateCheck applies rate limiting and returns the client IP.
@@ -463,4 +465,93 @@ func writeError(w http.ResponseWriter, status int, detail string) {
 		"detail": detail,
 		"code":   status,
 	})
+}
+
+// handleRedeem verifies and burns Cashu proofs presented by nodes on behalf
+// of clients. This is the ARFL-specific token redemption endpoint.
+//
+// Flow: Client gives proof to node → node calls POST /v1/redeem → hub verifies
+// proof, marks it spent, returns bytes_allowed. Node then grants WG access.
+//
+// The hub sees which proofs were redeemed but CANNOT link them to the original
+// buyer (Cashu blind signature property).
+func (api *DiscoveryAPI) handleRedeem(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if api.cashuRateCheck(w, r) == "" {
+		return
+	}
+
+	var req struct {
+		Proofs     cashu.Proofs `json:"proofs"`
+		NodePubkey string       `json:"node_pubkey"`
+	}
+	if err := json.NewDecoder(limitedBody(r)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.Proofs) == 0 {
+		writeError(w, http.StatusBadRequest, "proofs required")
+		return
+	}
+	if len(req.Proofs) > maxSwapInputs {
+		writeError(w, http.StatusBadRequest, "too many proofs (max 64)")
+		return
+	}
+	if req.NodePubkey == "" {
+		writeError(w, http.StatusBadRequest, "node_pubkey required")
+		return
+	}
+
+	// Use worker pool for crypto verification.
+	ctx, cancel := context.WithTimeout(r.Context(), cryptoTimeout)
+	defer cancel()
+
+	spentProofs, err := api.cryptoPool.VerifyProofs(ctx, req.Proofs)
+	if err != nil {
+		switch err {
+		case ecash.ErrInvalidProof:
+			writeError(w, http.StatusBadRequest, "invalid proof")
+		case ecash.ErrProofAlreadySpent:
+			writeError(w, http.StatusConflict, "proof already spent")
+		case ecash.ErrDuplicateProofs:
+			writeError(w, http.StatusBadRequest, "duplicate proofs")
+		case ecash.ErrUnknownKeyset:
+			writeError(w, http.StatusBadRequest, "unknown keyset")
+		default:
+			log.Printf("[ecash] redeem verify error: %v", err)
+			writeError(w, http.StatusInternalServerError, "verification failed")
+		}
+		return
+	}
+
+	// Mark proofs as spent.
+	if err := api.mintStore.SaveSpentProofs(spentProofs); err != nil {
+		log.Printf("[ecash] redeem save spent error: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to record redemption")
+		return
+	}
+
+	// Calculate total sats redeemed → convert to bytes allowed.
+	// 1 sat = 1 MB for MVP (simple, adjustable later via config).
+	var totalSats uint64
+	for _, p := range req.Proofs {
+		totalSats += p.Amount
+	}
+	bytesAllowed := int64(totalSats) * 1_000_000 // 1 sat = 1 MB
+
+	resp := struct {
+		OK           bool   `json:"ok"`
+		BytesAllowed int64  `json:"bytes_allowed"`
+		SatsRedeemed uint64 `json:"sats_redeemed"`
+	}{
+		OK:           true,
+		BytesAllowed: bytesAllowed,
+		SatsRedeemed: totalSats,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }

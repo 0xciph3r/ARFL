@@ -1,12 +1,11 @@
-// Package client provides both the bandwidth purchase SDK (BandwidthClient)
-// and the node-side token verification SDK (TokenGate).
+// Package node provides the node-side SDK for ARFL node operators.
 //
-// TokenGate is used by arfl-node to verify and spend BlindTokens presented
-// by clients. It verifies the RSA blind signature locally, then calls the
-// Hub's /spend endpoint for double-spend prevention.
+// TokenGate verifies and spends BlindTokens presented by VPN clients.
+// It verifies the RSA blind signature locally, then calls the Hub's
+// /spend endpoint for double-spend prevention.
 //
 // The node never needs the Hub's private key — only the public key.
-package client
+package node
 
 import (
 	"bytes"
@@ -14,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -126,4 +126,18 @@ func (g *TokenGate) VerifyOnly(token *credentials.BlindToken) (*SpendResult, err
 		FirstSpend:    true, // assumed — no Hub check
 		BytesPerToken: denom,
 	}, nil
+}
+
+// readAPIError extracts an error message from a non-200 hub response.
+func readAPIError(resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
+		return fmt.Errorf("hub API error (%d): %s", resp.StatusCode, errResp.Error)
+	}
+
+	return fmt.Errorf("hub API error (%d): %s", resp.StatusCode, string(body))
 }

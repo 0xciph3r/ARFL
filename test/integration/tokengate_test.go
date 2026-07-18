@@ -1,28 +1,31 @@
-package client
+package integration
 
 import (
 	"context"
 	"testing"
 	"time"
 
+	"github.com/Radi-Labs/ARFL/internal/client"
 	"github.com/Radi-Labs/ARFL/internal/credentials"
+	"github.com/Radi-Labs/ARFL/internal/node"
+	"github.com/Radi-Labs/ARFL/test/testutil"
 )
 
 func TestTokenGate_VerifyAndSpend_ValidToken(t *testing.T) {
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	// Create a node-side verifier with the hub's public key.
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
-	gate := NewTokenGate(verifier, hub.server.URL, "test-node-1")
+	gate := node.NewTokenGate(verifier, hub.Server.URL, "test-node-1")
 
 	// Get a valid token through the full flow.
-	bwClient := NewBandwidthClient(hub.server.URL, hub.denomKey.PublicKey, "key-100mb")
+	bwClient := client.NewBandwidthClient(hub.Server.URL, hub.DenomKey.PublicKey, "key-100mb")
 	purchase, _ := bwClient.Purchase(context.Background(), "1gb")
-	hub.mock.SimulateSettlement(purchase.PaymentHash)
+	hub.Mock.SimulateSettlement(purchase.PaymentHash)
 	time.Sleep(200 * time.Millisecond)
-	preimage := hub.mock.GetPreimage(purchase.PaymentHash)
+	preimage := hub.Mock.GetPreimage(purchase.PaymentHash)
 
 	result, err := bwClient.RedeemTokens(context.Background(), preimage, 1, "nonce-gate-test")
 	if err != nil {
@@ -47,18 +50,18 @@ func TestTokenGate_VerifyAndSpend_ValidToken(t *testing.T) {
 }
 
 func TestTokenGate_VerifyAndSpend_DoubleSpend(t *testing.T) {
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
-	gate := NewTokenGate(verifier, hub.server.URL, "test-node-1")
+	gate := node.NewTokenGate(verifier, hub.Server.URL, "test-node-1")
 
-	bwClient := NewBandwidthClient(hub.server.URL, hub.denomKey.PublicKey, "key-100mb")
+	bwClient := client.NewBandwidthClient(hub.Server.URL, hub.DenomKey.PublicKey, "key-100mb")
 	purchase, _ := bwClient.Purchase(context.Background(), "1gb")
-	hub.mock.SimulateSettlement(purchase.PaymentHash)
+	hub.Mock.SimulateSettlement(purchase.PaymentHash)
 	time.Sleep(200 * time.Millisecond)
-	preimage := hub.mock.GetPreimage(purchase.PaymentHash)
+	preimage := hub.Mock.GetPreimage(purchase.PaymentHash)
 
 	result, _ := bwClient.RedeemTokens(context.Background(), preimage, 1, "nonce-double")
 
@@ -83,12 +86,12 @@ func TestTokenGate_VerifyAndSpend_DoubleSpend(t *testing.T) {
 }
 
 func TestTokenGate_VerifyAndSpend_InvalidSignature(t *testing.T) {
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
-	gate := NewTokenGate(verifier, hub.server.URL, "test-node-1")
+	gate := node.NewTokenGate(verifier, hub.Server.URL, "test-node-1")
 
 	// Craft a token with a bogus signature.
 	secret, _ := credentials.GenerateTokenSecret()
@@ -110,19 +113,19 @@ func TestTokenGate_VerifyAndSpend_InvalidSignature(t *testing.T) {
 }
 
 func TestTokenGate_VerifyOnly_ValidToken(t *testing.T) {
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
-	gate := NewTokenGate(verifier, hub.server.URL, "test-node-1")
+	gate := node.NewTokenGate(verifier, hub.Server.URL, "test-node-1")
 
 	// Get a valid token.
-	bwClient := NewBandwidthClient(hub.server.URL, hub.denomKey.PublicKey, "key-100mb")
+	bwClient := client.NewBandwidthClient(hub.Server.URL, hub.DenomKey.PublicKey, "key-100mb")
 	purchase, _ := bwClient.Purchase(context.Background(), "1gb")
-	hub.mock.SimulateSettlement(purchase.PaymentHash)
+	hub.Mock.SimulateSettlement(purchase.PaymentHash)
 	time.Sleep(200 * time.Millisecond)
-	preimage := hub.mock.GetPreimage(purchase.PaymentHash)
+	preimage := hub.Mock.GetPreimage(purchase.PaymentHash)
 
 	result, _ := bwClient.RedeemTokens(context.Background(), preimage, 1, "nonce-verify-only")
 
@@ -144,12 +147,12 @@ func TestTokenGate_VerifyOnly_ValidToken(t *testing.T) {
 }
 
 func TestTokenGate_VerifyOnly_InvalidSignature(t *testing.T) {
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
-	gate := NewTokenGate(verifier, hub.server.URL, "test-node-1")
+	gate := node.NewTokenGate(verifier, hub.Server.URL, "test-node-1")
 
 	fakeToken := &credentials.BlindToken{
 		Version:     credentials.BlindTokenVersion,
@@ -168,14 +171,14 @@ func TestTokenGate_VerifyOnly_InvalidSignature(t *testing.T) {
 }
 
 func TestTokenGate_FullFlow_PurchaseRedeemSpend(t *testing.T) {
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	// Client side: purchase and redeem.
-	bwClient := NewBandwidthClient(hub.server.URL, hub.denomKey.PublicKey, "key-100mb")
+	bwClient := client.NewBandwidthClient(hub.Server.URL, hub.DenomKey.PublicKey, "key-100mb")
 	purchase, _ := bwClient.Purchase(context.Background(), "1gb")
-	hub.mock.SimulateSettlement(purchase.PaymentHash)
+	hub.Mock.SimulateSettlement(purchase.PaymentHash)
 	time.Sleep(200 * time.Millisecond)
-	preimage := hub.mock.GetPreimage(purchase.PaymentHash)
+	preimage := hub.Mock.GetPreimage(purchase.PaymentHash)
 
 	redeemResult, err := bwClient.RedeemTokens(context.Background(), preimage, 3, "nonce-full-gate")
 	if err != nil {
@@ -184,9 +187,9 @@ func TestTokenGate_FullFlow_PurchaseRedeemSpend(t *testing.T) {
 
 	// Node side: verify and spend each token.
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
-	gate := NewTokenGate(verifier, hub.server.URL, "node-1")
+	gate := node.NewTokenGate(verifier, hub.Server.URL, "node-1")
 
 	for i, token := range redeemResult.Tokens {
 		spend, err := gate.VerifyAndSpend(context.Background(), token)

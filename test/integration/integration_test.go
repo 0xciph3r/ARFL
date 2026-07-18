@@ -21,6 +21,7 @@ import (
 	"github.com/Radi-Labs/ARFL/internal/control"
 	"github.com/Radi-Labs/ARFL/internal/credentials"
 	"github.com/Radi-Labs/ARFL/internal/lightning"
+	"github.com/Radi-Labs/ARFL/internal/node"
 	"github.com/Radi-Labs/ARFL/internal/payments"
 	"github.com/Radi-Labs/ARFL/internal/quota"
 	"github.com/Radi-Labs/ARFL/internal/store"
@@ -118,7 +119,7 @@ func TestFullProtocol_PurchaseRedeemSpend(t *testing.T) {
 	nodeVerifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
 		credentials.ExportPublicKey(denomKey),
 	})
-	gate := client.NewTokenGate(nodeVerifier, server.URL, "node-entry-1")
+	gate := node.NewTokenGate(nodeVerifier, server.URL, "node-entry-1")
 
 	for i, token := range result.Tokens {
 		spend, err := gate.VerifyAndSpend(context.Background(), token)
@@ -144,7 +145,7 @@ func TestFullProtocol_PurchaseRedeemSpend(t *testing.T) {
 	// If a malicious client replays the same token at another node,
 	// the Hub detects it.
 	t.Log("Testing double-spend detection...")
-	secondGate := client.NewTokenGate(nodeVerifier, server.URL, "node-exit-2")
+	secondGate := node.NewTokenGate(nodeVerifier, server.URL, "node-exit-2")
 
 	doubleSpend, err := secondGate.VerifyAndSpend(context.Background(), result.Tokens[0])
 	if err != nil {
@@ -237,7 +238,7 @@ func TestMultipleClients_IndependentEntitlements(t *testing.T) {
 	}
 
 	// All tokens from both clients should be independently valid.
-	gate := client.NewTokenGate(
+	gate := node.NewTokenGate(
 		credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
 			credentials.ExportPublicKey(denomKey),
 		}),
@@ -407,7 +408,7 @@ func TestFullFlow_PurchaseConnectTunnel(t *testing.T) {
 	nodeVerifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
 		credentials.ExportPublicKey(denomKey),
 	})
-	entryGate := client.NewTokenGate(nodeVerifier, hubServer.URL, "entryNodePub")
+	entryGate := node.NewTokenGate(nodeVerifier, hubServer.URL, "entryNodePub")
 	entryServer.EnableTokenGate(entryGate, "entryNodePub", "10.100.0")
 
 	entryHTTP := httptest.NewServer(http.HandlerFunc(entryServer.HandleConnect))
@@ -422,7 +423,7 @@ func TestFullFlow_PurchaseConnectTunnel(t *testing.T) {
 	exitQuota := quota.NewNoopEnforcer()
 	exitServer := control.NewServer(exitWG, exitQuota, "wg-exit")
 
-	exitGate := client.NewTokenGate(nodeVerifier, hubServer.URL, "exitNodePub")
+	exitGate := node.NewTokenGate(nodeVerifier, hubServer.URL, "exitNodePub")
 	exitServer.EnableTokenGate(exitGate, "exitNodePub", "10.200.0")
 
 	exitHTTP := httptest.NewServer(http.HandlerFunc(exitServer.HandleConnect))

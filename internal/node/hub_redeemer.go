@@ -1,11 +1,9 @@
+// Package node provides the node-side SDK for ARFL node operators.
+//
 // HubRedeemer is an HTTP client that nodes use to call the hub's
 // POST /v1/redeem endpoint to verify and burn Cashu proofs presented
-// by connecting clients.
-//
-// The node receives Cashu proofs from a client, forwards them to the
-// hub for verification + spend-marking, and gets back the bandwidth
-// allowance if the proofs are valid.
-package client
+// by connecting VPN clients.
+package node
 
 import (
 	"bytes"

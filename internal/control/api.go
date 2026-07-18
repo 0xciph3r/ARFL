@@ -11,8 +11,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Radi-Labs/ARFL/internal/client"
 	"github.com/Radi-Labs/ARFL/internal/credentials"
+	"github.com/Radi-Labs/ARFL/internal/node"
 	"github.com/Radi-Labs/ARFL/internal/quota"
 	"github.com/Radi-Labs/ARFL/internal/wg"
 	"github.com/elnosh/gonuts/cashu"
@@ -32,12 +32,12 @@ type Server struct {
 	mux      *http.ServeMux
 
 	// Token gate (optional — set via EnableTokenGate).
-	gate     *client.TokenGate
+	gate     *node.TokenGate
 	ipPool   *tunnelIPPool
 	wgPubkey string // This node's WireGuard public key (returned to clients).
 
 	// Cashu gate (optional — set via EnableCashuGate).
-	redeemer *client.HubRedeemer
+	redeemer *node.HubRedeemer
 }
 
 // NewServer creates a new admin API server.
@@ -172,7 +172,7 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 // WireGuard access. wgPubkey is this node's WireGuard public key
 // (base64), returned to clients so they can configure their tunnel.
 // subnet is the tunnel subnet (e.g. "10.100.0") from which IPs are assigned.
-func (s *Server) EnableTokenGate(gate *client.TokenGate, wgPubkey, subnet string) {
+func (s *Server) EnableTokenGate(gate *node.TokenGate, wgPubkey, subnet string) {
 	s.gate = gate
 	s.wgPubkey = wgPubkey
 	s.ipPool = newTunnelIPPool(subnet)
@@ -384,7 +384,7 @@ type CashuConnectRequest struct {
 // WireGuard access. The node forwards proofs to the hub for verification.
 //
 // Both gates (RSA and Cashu) can coexist — they register on different paths.
-func (s *Server) EnableCashuGate(redeemer *client.HubRedeemer, wgPubkey, subnet string) {
+func (s *Server) EnableCashuGate(redeemer *node.HubRedeemer, wgPubkey, subnet string) {
 	s.redeemer = redeemer
 	s.wgPubkey = wgPubkey
 	if s.ipPool == nil {
@@ -429,13 +429,13 @@ func (s *Server) handleCashuConnect(w http.ResponseWriter, r *http.Request) {
 	result, err := s.redeemer.Redeem(r.Context(), req.Proofs)
 	if err != nil {
 		switch {
-		case errors.Is(err, client.ErrRedeemAlreadySpent):
+		case errors.Is(err, node.ErrRedeemAlreadySpent):
 			writeError(w, http.StatusConflict, "proofs already spent")
-		case errors.Is(err, client.ErrRedeemInvalidProof):
+		case errors.Is(err, node.ErrRedeemInvalidProof):
 			writeError(w, http.StatusUnauthorized, "invalid proofs")
-		case errors.Is(err, client.ErrRedeemRateLimited):
+		case errors.Is(err, node.ErrRedeemRateLimited):
 			writeError(w, http.StatusTooManyRequests, "hub rate-limited — try later")
-		case errors.Is(err, client.ErrRedeemCircuitOpen):
+		case errors.Is(err, node.ErrRedeemCircuitOpen):
 			writeError(w, http.StatusServiceUnavailable, "hub payment system temporarily down")
 		default:
 			log.Printf("[cashu-connect] hub redeem error: %v", err)

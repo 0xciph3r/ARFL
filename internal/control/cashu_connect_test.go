@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/Radi-Labs/ARFL/internal/client"
+	"github.com/Radi-Labs/ARFL/internal/node"
 	"github.com/Radi-Labs/ARFL/internal/quota"
 	"github.com/Radi-Labs/ARFL/internal/wg"
 	"github.com/elnosh/gonuts/cashu"
@@ -37,7 +37,7 @@ func setupCashuEnv(t *testing.T, hubHandler http.HandlerFunc) (*Server, *wg.Mock
 	srv := NewServer(mockWG, mockQuota, "wg-test")
 
 	hub := mockHubRedeem(t, hubHandler)
-	redeemer := client.NewHubRedeemer(hub.URL, "test-node-pubkey")
+	redeemer := node.NewHubRedeemer(hub.URL, "test-node-pubkey")
 	srv.EnableCashuGate(redeemer, "fakeNodePubkey==", "10.100.0")
 
 	return srv, mockWG
@@ -186,7 +186,7 @@ func TestCashuConnect_HubDown(t *testing.T) {
 	srv := NewServer(mockWG, mockQuota, "wg-test")
 
 	// Point redeemer at a non-existent URL.
-	redeemer := client.NewHubRedeemer("http://127.0.0.1:1", "node-pk")
+	redeemer := node.NewHubRedeemer("http://127.0.0.1:1", "node-pk")
 	srv.EnableCashuGate(redeemer, "nodePub==", "10.100.0")
 
 	reqBody, _ := json.Marshal(CashuConnectRequest{

@@ -16,11 +16,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Radi-Labs/ARFL/internal/client"
 	"github.com/Radi-Labs/ARFL/internal/config"
 	"github.com/Radi-Labs/ARFL/internal/control"
 	"github.com/Radi-Labs/ARFL/internal/credentials"
 	"github.com/Radi-Labs/ARFL/internal/discovery"
+	"github.com/Radi-Labs/ARFL/internal/node"
 	"github.com/Radi-Labs/ARFL/internal/nostr"
 	"github.com/Radi-Labs/ARFL/internal/quota"
 	"github.com/Radi-Labs/ARFL/internal/routing"
@@ -132,7 +132,7 @@ func main() {
 		log.Printf("[node] loaded hub public key: %s (%d bytes/token)", pubKey.KeyID, pubKey.BytesPerToken)
 
 		verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{pubKey})
-		gate := client.NewTokenGate(verifier, cfg.HubURL, wgPubKeyB64)
+		gate := node.NewTokenGate(verifier, cfg.HubURL, wgPubKeyB64)
 
 		subnet := deriveTunnelSubnet(cfg.TunnelIP)
 		adminServer.EnableTokenGate(gate, wgPubKeyB64, subnet)
@@ -146,7 +146,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("parse nostr key for cashu gate: %v", err)
 		}
-		redeemer := client.NewHubRedeemer(cfg.HubURL, nodeKPForCashu.PubkeyHex())
+		redeemer := node.NewHubRedeemer(cfg.HubURL, nodeKPForCashu.PubkeyHex())
 		subnet := deriveTunnelSubnet(cfg.TunnelIP)
 		adminServer.EnableCashuGate(redeemer, wgPubKeyB64, subnet)
 	} else {

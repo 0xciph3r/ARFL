@@ -1,4 +1,4 @@
-package client
+package integration
 
 import (
 	"context"
@@ -18,7 +18,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Radi-Labs/ARFL/internal/client"
 	"github.com/Radi-Labs/ARFL/internal/credentials"
+	"github.com/Radi-Labs/ARFL/internal/node"
+	"github.com/Radi-Labs/ARFL/test/testutil"
 )
 
 // Phase 5 STRIDE tests for the client-side attack surfaces:
@@ -37,7 +40,7 @@ import (
 func TestSTRIDE_TokenGate_WrongDenomKey(t *testing.T) {
 	// THREAT: Attacker runs a rogue hub that signs tokens with a different
 	// key. Nodes must reject tokens signed by keys they don't trust.
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	// Generate a completely separate key (rogue hub).
 	rogueKey, _ := credentials.GenerateDenominationKey("key-100mb", 100_000_000)
@@ -58,9 +61,9 @@ func TestSTRIDE_TokenGate_WrongDenomKey(t *testing.T) {
 
 	// Node trusts only the real hub's key.
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
-	gate := NewTokenGate(verifier, hub.server.URL, "node-1")
+	gate := node.NewTokenGate(verifier, hub.Server.URL, "node-1")
 
 	spend, err := gate.VerifyAndSpend(context.Background(), rogueToken)
 	if err != nil {
@@ -74,19 +77,19 @@ func TestSTRIDE_TokenGate_WrongDenomKey(t *testing.T) {
 func TestSTRIDE_TokenGate_VersionMismatch(t *testing.T) {
 	// THREAT: Attacker forges a token with a future version number to
 	// bypass version-specific checks.
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
-	gate := NewTokenGate(verifier, hub.server.URL, "node-1")
+	gate := node.NewTokenGate(verifier, hub.Server.URL, "node-1")
 
 	// Get a legitimately signed token, then change its version.
-	bwClient := NewBandwidthClient(hub.server.URL, hub.denomKey.PublicKey, "key-100mb")
+	bwClient := client.NewBandwidthClient(hub.Server.URL, hub.DenomKey.PublicKey, "key-100mb")
 	purchase, _ := bwClient.Purchase(context.Background(), "1gb")
-	hub.mock.SimulateSettlement(purchase.PaymentHash)
+	hub.Mock.SimulateSettlement(purchase.PaymentHash)
 	time.Sleep(200 * time.Millisecond)
-	preimage := hub.mock.GetPreimage(purchase.PaymentHash)
+	preimage := hub.Mock.GetPreimage(purchase.PaymentHash)
 
 	result, _ := bwClient.RedeemTokens(context.Background(), preimage, 1, "nonce-version")
 	token := result.Tokens[0]
@@ -146,7 +149,7 @@ func TestSTRIDE_Client_RogueHubSignatures(t *testing.T) {
 
 	// Client talks to rogue hub but verifies against real key.
 	realKey, _ := credentials.GenerateDenominationKey("key-100mb", 100_000_000)
-	bwClient := NewBandwidthClient(rogue.URL, rogueKey.PublicKey, "key-100mb")
+	bwClient := client.NewBandwidthClient(rogue.URL, rogueKey.PublicKey, "key-100mb")
 
 	result, err := bwClient.RedeemTokens(context.Background(), "deadbeef", 2, "nonce-rogue")
 	if err != nil {
@@ -157,7 +160,7 @@ func TestSTRIDE_Client_RogueHubSignatures(t *testing.T) {
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
 		credentials.ExportPublicKey(realKey),
 	})
-	gate := NewTokenGate(verifier, "http://irrelevant", "node-1")
+	gate := node.NewTokenGate(verifier, "http://irrelevant", "node-1")
 
 	for i, token := range result.Tokens {
 		spend, _ := gate.VerifyOnly(token)
@@ -174,18 +177,18 @@ func TestSTRIDE_Client_RogueHubSignatures(t *testing.T) {
 func TestSTRIDE_TokenGate_TamperedSecret(t *testing.T) {
 	// THREAT: Man-in-the-middle tampers with the token secret after
 	// the client receives valid tokens but before presenting to node.
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
-	gate := NewTokenGate(verifier, hub.server.URL, "node-1")
+	gate := node.NewTokenGate(verifier, hub.Server.URL, "node-1")
 
-	bwClient := NewBandwidthClient(hub.server.URL, hub.denomKey.PublicKey, "key-100mb")
+	bwClient := client.NewBandwidthClient(hub.Server.URL, hub.DenomKey.PublicKey, "key-100mb")
 	purchase, _ := bwClient.Purchase(context.Background(), "1gb")
-	hub.mock.SimulateSettlement(purchase.PaymentHash)
+	hub.Mock.SimulateSettlement(purchase.PaymentHash)
 	time.Sleep(200 * time.Millisecond)
-	preimage := hub.mock.GetPreimage(purchase.PaymentHash)
+	preimage := hub.Mock.GetPreimage(purchase.PaymentHash)
 
 	result, _ := bwClient.RedeemTokens(context.Background(), preimage, 1, "nonce-tamper")
 	token := result.Tokens[0]
@@ -208,18 +211,18 @@ func TestSTRIDE_TokenGate_TamperedSecret(t *testing.T) {
 func TestSTRIDE_TokenGate_TamperedSignature(t *testing.T) {
 	// THREAT: Attacker modifies the signature bytes to try an
 	// existential forgery.
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
-	gate := NewTokenGate(verifier, hub.server.URL, "node-1")
+	gate := node.NewTokenGate(verifier, hub.Server.URL, "node-1")
 
-	bwClient := NewBandwidthClient(hub.server.URL, hub.denomKey.PublicKey, "key-100mb")
+	bwClient := client.NewBandwidthClient(hub.Server.URL, hub.DenomKey.PublicKey, "key-100mb")
 	purchase, _ := bwClient.Purchase(context.Background(), "1gb")
-	hub.mock.SimulateSettlement(purchase.PaymentHash)
+	hub.Mock.SimulateSettlement(purchase.PaymentHash)
 	time.Sleep(200 * time.Millisecond)
-	preimage := hub.mock.GetPreimage(purchase.PaymentHash)
+	preimage := hub.Mock.GetPreimage(purchase.PaymentHash)
 
 	result, _ := bwClient.RedeemTokens(context.Background(), preimage, 1, "nonce-sig-tamper")
 	token := result.Tokens[0]
@@ -351,28 +354,28 @@ func TestSTRIDE_TokenFile_TamperedOnDisk(t *testing.T) {
 func TestSTRIDE_TokenGate_SpendCreatesDurableRecord(t *testing.T) {
 	// REQUIREMENT: After a node spends a token, the Hub has a durable
 	// record. A second spend of the same token must return first_spend=false.
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
 
-	bwClient := NewBandwidthClient(hub.server.URL, hub.denomKey.PublicKey, "key-100mb")
+	bwClient := client.NewBandwidthClient(hub.Server.URL, hub.DenomKey.PublicKey, "key-100mb")
 	purchase, _ := bwClient.Purchase(context.Background(), "1gb")
-	hub.mock.SimulateSettlement(purchase.PaymentHash)
+	hub.Mock.SimulateSettlement(purchase.PaymentHash)
 	time.Sleep(200 * time.Millisecond)
-	preimage := hub.mock.GetPreimage(purchase.PaymentHash)
+	preimage := hub.Mock.GetPreimage(purchase.PaymentHash)
 	result, _ := bwClient.RedeemTokens(context.Background(), preimage, 1, "nonce-repudiation")
 
 	// Spend from node A.
-	gateA := NewTokenGate(verifier, hub.server.URL, "node-A")
+	gateA := node.NewTokenGate(verifier, hub.Server.URL, "node-A")
 	spendA, _ := gateA.VerifyAndSpend(context.Background(), result.Tokens[0])
 	if !spendA.FirstSpend {
 		t.Fatal("first spend should be true")
 	}
 
 	// Spend same token from node B — Hub proves the token was already spent.
-	gateB := NewTokenGate(verifier, hub.server.URL, "node-B")
+	gateB := node.NewTokenGate(verifier, hub.Server.URL, "node-B")
 	spendB, _ := gateB.VerifyAndSpend(context.Background(), result.Tokens[0])
 	if spendB.FirstSpend {
 		t.Fatal("Hub must record spend durably — replay detected")
@@ -386,8 +389,8 @@ func TestSTRIDE_TokenGate_SpendCreatesDurableRecord(t *testing.T) {
 func TestSTRIDE_Client_HubErrorDoesNotLeakPreimage(t *testing.T) {
 	// THREAT: Hub returns error messages that include the preimage or
 	// payment hash in cleartext. SDK errors must not propagate these.
-	hub := setupTestHub(t)
-	bwClient := NewBandwidthClient(hub.server.URL, hub.denomKey.PublicKey, "key-100mb")
+	hub := testutil.SetupTestHub(t)
+	bwClient := client.NewBandwidthClient(hub.Server.URL, hub.DenomKey.PublicKey, "key-100mb")
 
 	// Try to redeem with a fake preimage that doesn't exist.
 	fakePreimage := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
@@ -444,18 +447,18 @@ func TestSTRIDE_Keystore_PublicKeyNoPrivateMaterial(t *testing.T) {
 func TestSTRIDE_TokenGate_SpendDoesNotLeakTokenSecret(t *testing.T) {
 	// REQUIREMENT: When the Hub receives /spend, the response should
 	// not echo the token_secret back. We verify via the SDK's result.
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
-	gate := NewTokenGate(verifier, hub.server.URL, "node-1")
+	gate := node.NewTokenGate(verifier, hub.Server.URL, "node-1")
 
-	bwClient := NewBandwidthClient(hub.server.URL, hub.denomKey.PublicKey, "key-100mb")
+	bwClient := client.NewBandwidthClient(hub.Server.URL, hub.DenomKey.PublicKey, "key-100mb")
 	purchase, _ := bwClient.Purchase(context.Background(), "1gb")
-	hub.mock.SimulateSettlement(purchase.PaymentHash)
+	hub.Mock.SimulateSettlement(purchase.PaymentHash)
 	time.Sleep(200 * time.Millisecond)
-	preimage := hub.mock.GetPreimage(purchase.PaymentHash)
+	preimage := hub.Mock.GetPreimage(purchase.PaymentHash)
 	result, _ := bwClient.RedeemTokens(context.Background(), preimage, 1, "nonce-no-echo")
 
 	spend, err := gate.VerifyAndSpend(context.Background(), result.Tokens[0])
@@ -478,8 +481,8 @@ func TestSTRIDE_TokenGate_SpendDoesNotLeakTokenSecret(t *testing.T) {
 
 func TestSTRIDE_Client_RedeemZeroTokens(t *testing.T) {
 	// THREAT: Client requests zero or negative token count.
-	hub := setupTestHub(t)
-	bwClient := NewBandwidthClient(hub.server.URL, hub.denomKey.PublicKey, "key-100mb")
+	hub := testutil.SetupTestHub(t)
+	bwClient := client.NewBandwidthClient(hub.Server.URL, hub.DenomKey.PublicKey, "key-100mb")
 
 	_, err := bwClient.RedeemTokens(context.Background(), "somepreimage", 0, "nonce-zero")
 	if err == nil {
@@ -494,12 +497,12 @@ func TestSTRIDE_Client_RedeemZeroTokens(t *testing.T) {
 
 func TestSTRIDE_TokenGate_EmptyToken(t *testing.T) {
 	// THREAT: Node receives completely empty or zero-value token fields.
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
-	gate := NewTokenGate(verifier, hub.server.URL, "node-1")
+	gate := node.NewTokenGate(verifier, hub.Server.URL, "node-1")
 
 	cases := []struct {
 		name  string
@@ -539,25 +542,25 @@ func TestSTRIDE_TokenGate_EmptyToken(t *testing.T) {
 func TestSTRIDE_TokenGate_HubUnreachable(t *testing.T) {
 	// THREAT: Hub goes down. VerifyAndSpend should return an error
 	// (not silently pass), so the node can fall back to VerifyOnly.
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
 
 	// Get a valid token.
-	bwClient := NewBandwidthClient(hub.server.URL, hub.denomKey.PublicKey, "key-100mb")
+	bwClient := client.NewBandwidthClient(hub.Server.URL, hub.DenomKey.PublicKey, "key-100mb")
 	purchase, _ := bwClient.Purchase(context.Background(), "1gb")
-	hub.mock.SimulateSettlement(purchase.PaymentHash)
+	hub.Mock.SimulateSettlement(purchase.PaymentHash)
 	time.Sleep(200 * time.Millisecond)
-	preimage := hub.mock.GetPreimage(purchase.PaymentHash)
+	preimage := hub.Mock.GetPreimage(purchase.PaymentHash)
 	result, _ := bwClient.RedeemTokens(context.Background(), preimage, 1, "nonce-unreachable")
 
 	// Shut down the hub.
-	hub.server.Close()
+	hub.Server.Close()
 
 	// Point gate at the now-dead hub.
-	gate := NewTokenGate(verifier, hub.server.URL, "node-1")
+	gate := node.NewTokenGate(verifier, hub.Server.URL, "node-1")
 
 	_, err := gate.VerifyAndSpend(context.Background(), result.Tokens[0])
 	if err == nil {
@@ -582,23 +585,23 @@ func TestSTRIDE_VerifyOnly_DoubleSpendBypasses(t *testing.T) {
 	// THREAT: Attacker presents the same token to multiple nodes using
 	// VerifyOnly (offline mode). Each node accepts it. This is the
 	// bounded risk of grace period mode — it must be documented.
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
 
-	bwClient := NewBandwidthClient(hub.server.URL, hub.denomKey.PublicKey, "key-100mb")
+	bwClient := client.NewBandwidthClient(hub.Server.URL, hub.DenomKey.PublicKey, "key-100mb")
 	purchase, _ := bwClient.Purchase(context.Background(), "1gb")
-	hub.mock.SimulateSettlement(purchase.PaymentHash)
+	hub.Mock.SimulateSettlement(purchase.PaymentHash)
 	time.Sleep(200 * time.Millisecond)
-	preimage := hub.mock.GetPreimage(purchase.PaymentHash)
+	preimage := hub.Mock.GetPreimage(purchase.PaymentHash)
 	result, _ := bwClient.RedeemTokens(context.Background(), preimage, 1, "nonce-grace")
 
 	// Same token verified at 3 different nodes in offline mode.
 	// ALL should pass — this is the documented risk.
 	for i := 0; i < 3; i++ {
-		gate := NewTokenGate(verifier, hub.server.URL, fmt.Sprintf("node-%d", i))
+		gate := node.NewTokenGate(verifier, hub.Server.URL, fmt.Sprintf("node-%d", i))
 		spend, err := gate.VerifyOnly(result.Tokens[0])
 		if err != nil {
 			t.Fatalf("node %d: VerifyOnly: %v", i, err)
@@ -609,13 +612,13 @@ func TestSTRIDE_VerifyOnly_DoubleSpendBypasses(t *testing.T) {
 	}
 
 	// But VerifyAndSpend (online) catches the double-spend after first use.
-	gateOnline := NewTokenGate(verifier, hub.server.URL, "node-online-1")
+	gateOnline := node.NewTokenGate(verifier, hub.Server.URL, "node-online-1")
 	spend1, _ := gateOnline.VerifyAndSpend(context.Background(), result.Tokens[0])
 	if !spend1.FirstSpend {
 		t.Fatal("first online spend should succeed")
 	}
 
-	gateOnline2 := NewTokenGate(verifier, hub.server.URL, "node-online-2")
+	gateOnline2 := node.NewTokenGate(verifier, hub.Server.URL, "node-online-2")
 	spend2, _ := gateOnline2.VerifyAndSpend(context.Background(), result.Tokens[0])
 	if spend2.FirstSpend {
 		t.Fatal("second online spend must be detected as double-spend")
@@ -626,13 +629,13 @@ func TestSTRIDE_Client_CrossKeyRedeem(t *testing.T) {
 	// THREAT: Client redeems tokens for key_id "key-1gb" but presents
 	// them claiming key_id "key-100mb" to get more bandwidth per token.
 	// The signature won't verify because it was signed under a different key.
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
-	bwClient := NewBandwidthClient(hub.server.URL, hub.denomKey.PublicKey, "key-100mb")
+	bwClient := client.NewBandwidthClient(hub.Server.URL, hub.DenomKey.PublicKey, "key-100mb")
 	purchase, _ := bwClient.Purchase(context.Background(), "1gb")
-	hub.mock.SimulateSettlement(purchase.PaymentHash)
+	hub.Mock.SimulateSettlement(purchase.PaymentHash)
 	time.Sleep(200 * time.Millisecond)
-	preimage := hub.mock.GetPreimage(purchase.PaymentHash)
+	preimage := hub.Mock.GetPreimage(purchase.PaymentHash)
 
 	result, _ := bwClient.RedeemTokens(context.Background(), preimage, 1, "nonce-cross-key")
 
@@ -641,9 +644,9 @@ func TestSTRIDE_Client_CrossKeyRedeem(t *testing.T) {
 	token.KeyID = "key-1gb" // pretend it's a bigger denomination
 
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
-	gate := NewTokenGate(verifier, hub.server.URL, "node-1")
+	gate := node.NewTokenGate(verifier, hub.Server.URL, "node-1")
 
 	spend, err := gate.VerifyAndSpend(context.Background(), token)
 	if err != nil {
@@ -662,17 +665,17 @@ func TestSTRIDE_Client_CrossKeyRedeem(t *testing.T) {
 func TestSTRIDE_ConcurrentSpend_SameTokenMultipleNodes(t *testing.T) {
 	// THREAT: Multiple nodes race to spend the same token concurrently.
 	// Exactly one must get first_spend=true.
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{
-		credentials.ExportPublicKey(hub.denomKey),
+		credentials.ExportPublicKey(hub.DenomKey),
 	})
 
-	bwClient := NewBandwidthClient(hub.server.URL, hub.denomKey.PublicKey, "key-100mb")
+	bwClient := client.NewBandwidthClient(hub.Server.URL, hub.DenomKey.PublicKey, "key-100mb")
 	purchase, _ := bwClient.Purchase(context.Background(), "1gb")
-	hub.mock.SimulateSettlement(purchase.PaymentHash)
+	hub.Mock.SimulateSettlement(purchase.PaymentHash)
 	time.Sleep(200 * time.Millisecond)
-	preimage := hub.mock.GetPreimage(purchase.PaymentHash)
+	preimage := hub.Mock.GetPreimage(purchase.PaymentHash)
 	result, _ := bwClient.RedeemTokens(context.Background(), preimage, 1, "nonce-race")
 
 	var wg sync.WaitGroup
@@ -684,7 +687,7 @@ func TestSTRIDE_ConcurrentSpend_SameTokenMultipleNodes(t *testing.T) {
 		wg.Add(1)
 		go func(nodeID int) {
 			defer wg.Done()
-			gate := NewTokenGate(verifier, hub.server.URL, fmt.Sprintf("node-%d", nodeID))
+			gate := node.NewTokenGate(verifier, hub.Server.URL, fmt.Sprintf("node-%d", nodeID))
 			spend, err := gate.VerifyAndSpend(context.Background(), result.Tokens[0])
 			if err != nil {
 				atomic.AddInt32(&errorCount, 1)
@@ -709,7 +712,7 @@ func TestSTRIDE_ConcurrentSpend_SameTokenMultipleNodes(t *testing.T) {
 func TestSTRIDE_ConcurrentRedeem_IndependentEntitlements(t *testing.T) {
 	// THREAT: Multiple clients redeem concurrently from different
 	// entitlements. Ensure no cross-contamination.
-	hub := setupTestHub(t)
+	hub := testutil.SetupTestHub(t)
 
 	var wg sync.WaitGroup
 	var successCount int32
@@ -719,15 +722,15 @@ func TestSTRIDE_ConcurrentRedeem_IndependentEntitlements(t *testing.T) {
 		go func(clientID int) {
 			defer wg.Done()
 
-			bwClient := NewBandwidthClient(hub.server.URL, hub.denomKey.PublicKey, "key-100mb")
+			bwClient := client.NewBandwidthClient(hub.Server.URL, hub.DenomKey.PublicKey, "key-100mb")
 			purchase, err := bwClient.Purchase(context.Background(), "1gb")
 			if err != nil {
 				return
 			}
 
-			hub.mock.SimulateSettlement(purchase.PaymentHash)
+			hub.Mock.SimulateSettlement(purchase.PaymentHash)
 			time.Sleep(300 * time.Millisecond)
-			preimage := hub.mock.GetPreimage(purchase.PaymentHash)
+			preimage := hub.Mock.GetPreimage(purchase.PaymentHash)
 
 			result, err := bwClient.RedeemTokens(
 				context.Background(), preimage, 2,

@@ -3,7 +3,9 @@ package control
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/Radi-Labs/ARFL/internal/credentials"
 	"github.com/Radi-Labs/ARFL/internal/quota"
 	"github.com/Radi-Labs/ARFL/internal/wg"
+	"github.com/elnosh/gonuts/cashu"
 )
 
 // Server provides an HTTP admin API for the node daemon.
@@ -32,6 +35,9 @@ type Server struct {
 	gate     *client.TokenGate
 	ipPool   *tunnelIPPool
 	wgPubkey string // This node's WireGuard public key (returned to clients).
+
+	// Cashu gate (optional — set via EnableCashuGate).
+	redeemer *client.HubRedeemer
 }
 
 // NewServer creates a new admin API server.
@@ -361,4 +367,114 @@ func (p *tunnelIPPool) Count() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.allocated)
+}
+
+// --- Cashu-gated connect (Phase 10) ---
+
+const maxCashuConnectProofs = 64
+
+// CashuConnectRequest is sent by clients presenting Cashu proofs.
+type CashuConnectRequest struct {
+	Proofs   cashu.Proofs `json:"proofs"`
+	WGPubkey string       `json:"wg_pubkey"`
+}
+
+// EnableCashuGate wires Cashu proof verification into the admin server.
+// When enabled, clients can POST /cashu-connect with Cashu proofs to get
+// WireGuard access. The node forwards proofs to the hub for verification.
+//
+// Both gates (RSA and Cashu) can coexist — they register on different paths.
+func (s *Server) EnableCashuGate(redeemer *client.HubRedeemer, wgPubkey, subnet string) {
+	s.redeemer = redeemer
+	s.wgPubkey = wgPubkey
+	if s.ipPool == nil {
+		s.ipPool = newTunnelIPPool(subnet)
+	}
+	s.mux.HandleFunc("POST /cashu-connect", s.handleCashuConnect)
+	log.Printf("[admin] Cashu-gated /cashu-connect enabled (subnet=%s.0/24)", subnet)
+}
+
+// HandleCashuConnect is the exported handler, used when the connect API
+// is served on a separate public-facing port.
+func (s *Server) HandleCashuConnect(w http.ResponseWriter, r *http.Request) {
+	s.handleCashuConnect(w, r)
+}
+
+func (s *Server) handleCashuConnect(w http.ResponseWriter, r *http.Request) {
+	if s.redeemer == nil {
+		writeError(w, http.StatusServiceUnavailable, "cashu verification not configured")
+		return
+	}
+
+	var req CashuConnectRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.WGPubkey == "" {
+		writeError(w, http.StatusBadRequest, "missing wg_pubkey")
+		return
+	}
+	if len(req.Proofs) == 0 {
+		writeError(w, http.StatusBadRequest, "no proofs provided")
+		return
+	}
+	if len(req.Proofs) > maxCashuConnectProofs {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many proofs (max %d)", maxCashuConnectProofs))
+		return
+	}
+
+	// Forward proofs to hub for verification + spend-marking.
+	result, err := s.redeemer.Redeem(r.Context(), req.Proofs)
+	if err != nil {
+		switch {
+		case errors.Is(err, client.ErrRedeemAlreadySpent):
+			writeError(w, http.StatusConflict, "proofs already spent")
+		case errors.Is(err, client.ErrRedeemInvalidProof):
+			writeError(w, http.StatusUnauthorized, "invalid proofs")
+		case errors.Is(err, client.ErrRedeemRateLimited):
+			writeError(w, http.StatusTooManyRequests, "hub rate-limited — try later")
+		case errors.Is(err, client.ErrRedeemCircuitOpen):
+			writeError(w, http.StatusServiceUnavailable, "hub payment system temporarily down")
+		default:
+			log.Printf("[cashu-connect] hub redeem error: %v", err)
+			writeError(w, http.StatusBadGateway, "hub verification failed")
+		}
+		return
+	}
+
+	// Proofs verified and burned. Grant WireGuard access.
+	tunnelIP, err := s.ipPool.Allocate(req.WGPubkey)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("no IPs available: %v", err))
+		return
+	}
+
+	if err := s.wgMgr.AddPeer(s.iface, wg.PeerConfig{
+		PublicKey:  req.WGPubkey,
+		AllowedIPs: []string{tunnelIP + "/32"},
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("add peer: %v", err))
+		return
+	}
+
+	if err := s.quotaMgr.SetQuota(tunnelIP, result.BytesAllowed); err != nil {
+		log.Printf("[cashu-connect] warning: set quota for %s: %v", tunnelIP, err)
+	}
+
+	pubkeyLog := req.WGPubkey
+	if len(pubkeyLog) > 16 {
+		pubkeyLog = pubkeyLog[:16] + "..."
+	}
+	log.Printf("[cashu-connect] peer %s connected (ip=%s, bytes=%d, sats=%d)",
+		pubkeyLog, tunnelIP, result.BytesAllowed, result.SatsRedeemed)
+
+	writeJSON(w, http.StatusOK, ConnectResponse{
+		Status:       "connected",
+		TunnelIP:     tunnelIP + "/32",
+		NodeWGPubkey: s.wgPubkey,
+		BytesAllowed: result.BytesAllowed,
+		FirstSpend:   true,
+	})
 }

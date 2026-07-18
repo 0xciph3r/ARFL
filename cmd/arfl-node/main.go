@@ -123,7 +123,7 @@ func main() {
 	adminServer := control.NewServer(wgMgr, quotaMgr, cfg.Interface)
 
 	// Wire token-gated /connect if hub_url and hub_pubkey_file are configured.
-	var connectAddr string
+	connectAddr := cfg.ConnectAddr
 	if cfg.HubURL != "" && cfg.HubPubkeyFile != "" {
 		pubKey, err := credentials.LoadPublicKey(cfg.HubPubkeyFile)
 		if err != nil {
@@ -134,29 +134,41 @@ func main() {
 		verifier := credentials.NewRSABlindVerifier([]*credentials.DenominationKey{pubKey})
 		gate := client.NewTokenGate(verifier, cfg.HubURL, wgPubKeyB64)
 
-		// Derive subnet from tunnel IP (e.g. "10.100.0.1/24" → "10.100.0").
 		subnet := deriveTunnelSubnet(cfg.TunnelIP)
 		adminServer.EnableTokenGate(gate, wgPubKeyB64, subnet)
-
-		// Start public-facing /connect API on a separate port if configured.
-		// The admin API stays on localhost; the connect API is exposed to clients.
-		connectAddr = cfg.ConnectAddr
-		if connectAddr != "" {
-			connectMux := http.NewServeMux()
-			connectMux.HandleFunc("POST /connect", adminServer.HandleConnect)
-			connectMux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				w.Write([]byte(`{"status":"healthy"}`))
-			})
-			go func() {
-				log.Printf("[node] public /connect API on %s", connectAddr)
-				if err := http.ListenAndServe(connectAddr, connectMux); err != nil {
-					log.Fatalf("connect API: %v", err)
-				}
-			}()
-		}
 	} else {
-		log.Println("[node] token gate disabled (no hub_url or hub_pubkey_file configured)")
+		log.Println("[node] RSA token gate disabled (no hub_url or hub_pubkey_file)")
+	}
+
+	// Wire Cashu-gated /cashu-connect if hub_url and nostr_privkey are configured.
+	if cfg.HubURL != "" && cfg.NostrPrivkey != "" {
+		nodeKPForCashu, err := nostr.KeyPairFromPrivHex(cfg.NostrPrivkey)
+		if err != nil {
+			log.Fatalf("parse nostr key for cashu gate: %v", err)
+		}
+		redeemer := client.NewHubRedeemer(cfg.HubURL, nodeKPForCashu.PubkeyHex())
+		subnet := deriveTunnelSubnet(cfg.TunnelIP)
+		adminServer.EnableCashuGate(redeemer, wgPubKeyB64, subnet)
+	} else {
+		log.Println("[node] Cashu gate disabled (no hub_url or nostr_privkey)")
+	}
+
+	// Start public-facing connect API on a separate port if configured.
+	// Serves both /connect (RSA) and /cashu-connect (Cashu) on the same port.
+	if connectAddr != "" {
+		connectMux := http.NewServeMux()
+		connectMux.HandleFunc("POST /connect", adminServer.HandleConnect)
+		connectMux.HandleFunc("POST /cashu-connect", adminServer.HandleCashuConnect)
+		connectMux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"status":"healthy"}`))
+		})
+		go func() {
+			log.Printf("[node] public connect API on %s (/connect + /cashu-connect)", connectAddr)
+			if err := http.ListenAndServe(connectAddr, connectMux); err != nil {
+				log.Fatalf("connect API: %v", err)
+			}
+		}()
 	}
 
 	go func() {

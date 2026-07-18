@@ -280,6 +280,7 @@ func main() {
 	mux.Handle("/v1/mint/", discoveryAPI.Handler())
 	mux.Handle("/v1/swap", discoveryAPI.Handler())
 	mux.Handle("/v1/checkstate", discoveryAPI.Handler())
+	mux.Handle("/v1/redeem", discoveryAPI.Handler())
 
 	server := &http.Server{
 		Addr:    cfg.ListenAddr,

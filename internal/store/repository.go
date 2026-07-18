@@ -737,6 +737,118 @@ FROM redemptions WHERE nonce = ?`, nonce)
 	return &r, nil
 }
 
+// --- Node Earnings queries ---
+
+// NodeEarnings summarises a node's financial activity.
+type NodeEarnings struct {
+	TotalEarnedSats int64 `json:"total_earned_sats"`
+	PendingSats     int64 `json:"pending_sats"`
+	PaidSats        int64 `json:"paid_sats"`
+	SessionCount    int   `json:"session_count"`
+	SettlementCount int   `json:"settlement_count"`
+}
+
+// GetNodeEarnings returns aggregate earnings for a node across all settlement periods.
+func (s *Store) GetNodeEarnings(nodePubkey string) (*NodeEarnings, error) {
+	e := &NodeEarnings{}
+
+	// Total from settlement entries (what the node has earned).
+	err := s.db.QueryRow(`
+		SELECT COALESCE(SUM(amount_sats), 0), COALESCE(SUM(tickets_redeemed), 0), COUNT(*)
+		FROM settlement_entries WHERE node_pubkey = ?
+	`, nodePubkey).Scan(&e.TotalEarnedSats, &e.SessionCount, &e.SettlementCount)
+	if err != nil {
+		return nil, fmt.Errorf("query settlement entries: %w", err)
+	}
+
+	// Paid out so far.
+	err = s.db.QueryRow(`
+		SELECT COALESCE(SUM(amount_sats), 0) FROM payouts
+		WHERE node_pubkey = ? AND status = 'paid'
+	`, nodePubkey).Scan(&e.PaidSats)
+	if err != nil {
+		return nil, fmt.Errorf("query paid payouts: %w", err)
+	}
+
+	e.PendingSats = e.TotalEarnedSats - e.PaidSats
+	if e.PendingSats < 0 {
+		e.PendingSats = 0
+	}
+
+	return e, nil
+}
+
+// --- Node Wallet operations ---
+
+// SetNodeWallet registers or updates a node's payout Lightning address.
+func (s *Store) SetNodeWallet(nodePubkey, lnAddress string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO node_wallets (node_pubkey, ln_address)
+		VALUES (?, ?)
+		ON CONFLICT(node_pubkey) DO UPDATE SET
+			ln_address = excluded.ln_address,
+			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+	`, nodePubkey, lnAddress)
+	return err
+}
+
+// GetNodeWallet returns a node's registered Lightning address.
+func (s *Store) GetNodeWallet(nodePubkey string) (string, error) {
+	var addr string
+	err := s.db.QueryRow(`
+		SELECT ln_address FROM node_wallets WHERE node_pubkey = ?
+	`, nodePubkey).Scan(&addr)
+	if err != nil {
+		return "", err
+	}
+	return addr, nil
+}
+
+// InsertWithdrawal creates a pending withdrawal request.
+func (s *Store) InsertWithdrawal(nodePubkey string, amountSats int64) (int64, error) {
+	result, err := s.db.Exec(`
+		INSERT INTO withdrawals (node_pubkey, amount_sats)
+		VALUES (?, ?)
+	`, nodePubkey, amountSats)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+// MarkWithdrawalPaid marks a withdrawal as completed.
+func (s *Store) MarkWithdrawalPaid(id int64, paymentHash string) error {
+	_, err := s.db.Exec(`
+		UPDATE withdrawals SET status = 'paid', payment_hash = ?,
+			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE id = ? AND status = 'pending'
+	`, paymentHash, id)
+	return err
+}
+
+// MarkWithdrawalFailed marks a withdrawal as failed.
+func (s *Store) MarkWithdrawalFailed(id int64, lastError string) error {
+	_, err := s.db.Exec(`
+		UPDATE withdrawals SET status = 'failed', last_error = ?,
+			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE id = ? AND status = 'pending'
+	`, lastError, id)
+	return err
+}
+
+// TotalWithdrawnSats returns total sats withdrawn (paid) by a node.
+func (s *Store) TotalWithdrawnSats(nodePubkey string) (int64, error) {
+	var total sql.NullInt64
+	err := s.db.QueryRow(`
+		SELECT SUM(amount_sats) FROM withdrawals
+		WHERE node_pubkey = ? AND status = 'paid'
+	`, nodePubkey).Scan(&total)
+	if err != nil {
+		return 0, err
+	}
+	return total.Int64, nil
+}
+
 // --- Node Lease operations ---
 
 // NodeLease represents an authorization window for a node.

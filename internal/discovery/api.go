@@ -5,10 +5,14 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/Radi-Labs/ARFL/internal/credentials"
+	"github.com/Radi-Labs/ARFL/internal/lightning"
 	"github.com/Radi-Labs/ARFL/internal/nostr"
+	"github.com/Radi-Labs/ARFL/internal/store"
 	"github.com/Radi-Labs/ARFL/pkg/types"
 )
 
@@ -20,10 +24,13 @@ import (
 // not just NodeInfo. This lets the client verify signatures independently.
 // The hub CANNOT manipulate the list without being detected.
 type DiscoveryAPI struct {
-	index *NodeIndex
-	hubKP *nostr.KeyPair
-	store LeaseChecker
-	mux   *http.ServeMux
+	index    *NodeIndex
+	hubKP    *nostr.KeyPair
+	store    LeaseChecker
+	earnings EarningsStore
+	hubInfo  *HubInfo
+	lnc      lightning.Client
+	mux      *http.ServeMux
 
 	// Rate limiting: map[IP][]timestamp of recent requests.
 	rateLimit   map[string][]time.Time
@@ -35,6 +42,26 @@ type DiscoveryAPI struct {
 // LeaseChecker is the interface needed to verify node leases.
 type LeaseChecker interface {
 	IsLeaseActive(nodePubkey string) (bool, error)
+}
+
+// EarningsStore is the interface for querying node earnings and withdrawals.
+type EarningsStore interface {
+	GetNodeEarnings(nodePubkey string) (*store.NodeEarnings, error)
+	SetNodeWallet(nodePubkey, lnAddress string) error
+	GetNodeWallet(nodePubkey string) (string, error)
+	InsertWithdrawal(nodePubkey string, amountSats int64) (int64, error)
+	MarkWithdrawalPaid(id int64, paymentHash string) error
+	MarkWithdrawalFailed(id int64, lastError string) error
+	TotalWithdrawnSats(nodePubkey string) (int64, error)
+}
+
+// HubInfo is metadata about this hub, exposed via GET /info for extensions.
+type HubInfo struct {
+	Name         string                      `json:"name"`
+	Version      string                      `json:"version"`
+	NodeCount    int                         `json:"node_count"`
+	HubMarginPct int                         `json:"hub_margin_pct"`
+	Tiers        map[string]credentials.Tier `json:"tiers"`
 }
 
 // DiscoveryResponse is what the client receives.
@@ -59,6 +86,8 @@ func NewDiscoveryAPI(index *NodeIndex) *DiscoveryAPI {
 	api.mux.HandleFunc("/nodes", api.handleNodes)
 	api.mux.HandleFunc("/health", api.handleHealth)
 	api.mux.HandleFunc("/announce", api.handleAnnounce)
+	api.mux.HandleFunc("/info", api.handleInfo)
+	api.mux.HandleFunc("/node/", api.handleNodeEarnings)
 
 	return api
 }
@@ -73,6 +102,80 @@ func (api *DiscoveryAPI) SetHubKeyPair(kp *nostr.KeyPair, leaseStore LeaseChecke
 // Handler returns the HTTP handler for use with http.Server.
 func (api *DiscoveryAPI) Handler() http.Handler {
 	return api.mux
+}
+
+// SetHubInfo sets the hub metadata returned by GET /info.
+func (api *DiscoveryAPI) SetHubInfo(info *HubInfo) {
+	api.hubInfo = info
+}
+
+// SetEarningsStore enables the /node/{pubkey}/earnings endpoint.
+func (api *DiscoveryAPI) SetEarningsStore(es EarningsStore) {
+	api.earnings = es
+}
+
+// SetLightningClient enables withdrawal payments.
+func (api *DiscoveryAPI) SetLightningClient(lnc lightning.Client) {
+	api.lnc = lnc
+	api.mux.HandleFunc("/node/wallet", api.handleNodeWallet)
+	api.mux.HandleFunc("/node/withdraw", api.handleNodeWithdraw)
+}
+
+// handleInfo returns hub metadata for extension builders (LNbits, Layerz).
+func (api *DiscoveryAPI) handleInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	info := api.hubInfo
+	if info == nil {
+		info = &HubInfo{
+			Name:         "ARFL Hub",
+			Version:      "0.1.0",
+			HubMarginPct: 20,
+			Tiers:        credentials.DefaultTiers,
+		}
+	}
+	// Always reflect live node count.
+	_, online := api.index.NodeCount()
+	info.NodeCount = online
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(info)
+}
+
+// handleNodeEarnings returns earnings for a specific node.
+// GET /node/{pubkey}/earnings
+func (api *DiscoveryAPI) handleNodeEarnings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse: /node/{pubkey}/earnings
+	path := strings.TrimPrefix(r.URL.Path, "/node/")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) != 2 || parts[1] != "earnings" || len(parts[0]) != 64 {
+		http.Error(w, "expected /node/{64-char-pubkey}/earnings", http.StatusBadRequest)
+		return
+	}
+	pubkey := parts[0]
+
+	if api.earnings == nil {
+		http.Error(w, "earnings not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	earnings, err := api.earnings.GetNodeEarnings(pubkey)
+	if err != nil {
+		log.Printf("[api] earnings query for %s: %v", pubkey[:16], err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(earnings)
 }
 
 // handleNodes returns the list of online, verified nodes.
@@ -266,4 +369,152 @@ func (api *DiscoveryAPI) handleAttestRefresh(w http.ResponseWriter, r *http.Requ
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(AttestRefreshResponse{Attestation: encoded})
+}
+
+// handleNodeWallet registers or retrieves a node's payout Lightning address.
+// POST /node/wallet {"pubkey": "...", "ln_address": "user@wallet.com"}
+// GET  /node/wallet?pubkey=...
+func (api *DiscoveryAPI) handleNodeWallet(w http.ResponseWriter, r *http.Request) {
+	if api.earnings == nil {
+		http.Error(w, "not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPost:
+		r.Body = http.MaxBytesReader(w, r.Body, 1024)
+		var req struct {
+			Pubkey    string `json:"pubkey"`
+			LNAddress string `json:"ln_address"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+		if len(req.Pubkey) != 64 || req.LNAddress == "" {
+			http.Error(w, "pubkey (64 hex chars) and ln_address required", http.StatusBadRequest)
+			return
+		}
+		if err := api.earnings.SetNodeWallet(req.Pubkey, req.LNAddress); err != nil {
+			log.Printf("[api] set wallet for %s: %v", req.Pubkey[:16], err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+
+	case http.MethodGet:
+		pubkey := r.URL.Query().Get("pubkey")
+		if len(pubkey) != 64 {
+			http.Error(w, "pubkey query param required (64 hex chars)", http.StatusBadRequest)
+			return
+		}
+		addr, err := api.earnings.GetNodeWallet(pubkey)
+		if err != nil {
+			http.Error(w, "wallet not registered", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"ln_address": addr})
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleNodeWithdraw processes a withdrawal request from a node operator.
+// POST /node/withdraw {"pubkey": "...", "amount_sats": 1000}
+// Pays the node's registered Lightning address.
+func (api *DiscoveryAPI) handleNodeWithdraw(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if api.earnings == nil || api.lnc == nil {
+		http.Error(w, "withdrawals not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	var req struct {
+		Pubkey     string `json:"pubkey"`
+		AmountSats int64  `json:"amount_sats"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if len(req.Pubkey) != 64 || req.AmountSats <= 0 {
+		http.Error(w, "pubkey (64 hex chars) and positive amount_sats required", http.StatusBadRequest)
+		return
+	}
+
+	// Check available balance.
+	earnings, err := api.earnings.GetNodeEarnings(req.Pubkey)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Also subtract any pending (unpaid) withdrawals.
+	withdrawn, err := api.earnings.TotalWithdrawnSats(req.Pubkey)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	available := earnings.TotalEarnedSats - earnings.PaidSats - withdrawn
+	if available < 0 {
+		available = 0
+	}
+
+	if req.AmountSats > available {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusPaymentRequired)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":          "insufficient balance",
+			"available_sats": available,
+			"requested_sats": req.AmountSats,
+		})
+		return
+	}
+
+	// Get Lightning address.
+	lnAddr, err := api.earnings.GetNodeWallet(req.Pubkey)
+	if err != nil {
+		http.Error(w, "no Lightning address registered — POST /node/wallet first", http.StatusBadRequest)
+		return
+	}
+
+	// Create withdrawal record.
+	wdID, err := api.earnings.InsertWithdrawal(req.Pubkey, req.AmountSats)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Pay via keysend to the node's pubkey (for now; Lightning address invoice fetch is v2).
+	result, lnErr := api.lnc.Keysend(r.Context(), req.Pubkey, req.AmountSats)
+	if lnErr != nil {
+		api.earnings.MarkWithdrawalFailed(wdID, lnErr.Error())
+		log.Printf("[withdraw] keysend to %s failed: %v (ln_address=%s)", req.Pubkey[:16], lnErr, lnAddr)
+		http.Error(w, "payment failed: "+lnErr.Error(), http.StatusBadGateway)
+		return
+	}
+
+	if result.Status == lightning.PaymentSucceeded {
+		api.earnings.MarkWithdrawalPaid(wdID, result.PaymentHash)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":       "paid",
+			"amount_sats":  req.AmountSats,
+			"payment_hash": result.PaymentHash,
+		})
+	} else {
+		errMsg := result.Error
+		if errMsg == "" {
+			errMsg = "payment did not succeed"
+		}
+		api.earnings.MarkWithdrawalFailed(wdID, errMsg)
+		http.Error(w, "payment failed: "+errMsg, http.StatusBadGateway)
+	}
 }

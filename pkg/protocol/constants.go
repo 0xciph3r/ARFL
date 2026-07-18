@@ -43,21 +43,21 @@ const (
 	InnerTunnelSubnet = "10.200.0.0/16"
 )
 
-// Revenue split percentages — applied to the floor price.
+// Revenue split percentages — default values used when hub config doesn't specify.
+// In MVP, hub margin is configurable via hub_margin_pct in config.
+// Nodes always split the remaining share 50/50 (entry/exit).
 const (
-	EntryNodeSplitPct = 40
-	ExitNodeSplitPct  = 40
-	HubSplitPct       = 20
+	DefaultHubMarginPct = 20
 )
 
 // Nostr event kinds used by the ARFL protocol.
 const (
-	NostrKindNodeAnnouncement  = 30078
-	NostrKindHubAnnouncement   = 30079
-	NostrKindHubSubscription   = 30080
-	NostrKindFedDepositReceipt = 30081 // Phase 5: Fedimint federation deposit receipt
+	NostrKindNodeAnnouncement = 30078
+	NostrKindHubAnnouncement  = 30079
+	NostrKindHubSubscription  = 30080
 )
 
-// MinNodeDepositSats is the minimum deposit required for node attestation (Phase 5).
-// Sybil cost: 100 fake nodes = 100 * 50000 = 5,000,000 sats.
+// MinNodeDepositSats is the minimum deposit for node attestation.
+// NOT enforced in MVP (v1) to maximize node onboarding.
+// Enforced from v2 onwards as a Sybil-resistance measure.
 const MinNodeDepositSats = 50000

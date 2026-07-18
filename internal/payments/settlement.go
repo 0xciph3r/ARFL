@@ -18,29 +18,40 @@ var ErrPaymentInFlight = errors.New("payment in-flight")
 //
 // Every settlement period (default 6h), it:
 //  1. Aggregates usage reports into billable bytes per node
-//  2. Creates settlement entries (idempotent by period+node)
-//  3. Creates and executes payouts via Lightning Keysend
+//  2. Deducts the hub margin, then splits remaining sats 50/50 entry/exit
+//  3. Creates settlement entries (idempotent by period+node)
+//  4. Creates and executes payouts via Lightning Keysend
 //
 // The engine is crash-safe: all state transitions are persisted before
 // network calls, and the in_flight status marks the danger zone.
 type SettlementEngine struct {
-	store     *store.Store
-	lnc       lightning.Client
-	minPayout int64 // minimum sats before payout (default 1000)
+	store        *store.Store
+	lnc          lightning.Client
+	minPayout    int64 // minimum sats before payout (default 1000)
+	hubMarginPct int   // percentage hub retains (default 20)
 }
 
 // NewSettlementEngine creates a settlement engine.
 func NewSettlementEngine(s *store.Store, lnc lightning.Client) *SettlementEngine {
 	return &SettlementEngine{
-		store:     s,
-		lnc:       lnc,
-		minPayout: 1000,
+		store:        s,
+		lnc:          lnc,
+		minPayout:    1000,
+		hubMarginPct: 20,
 	}
 }
 
 // SetMinPayout overrides the minimum payout threshold (for testing).
 func (e *SettlementEngine) SetMinPayout(sats int64) {
 	e.minPayout = sats
+}
+
+// SetHubMargin sets the hub's revenue percentage (0-50).
+func (e *SettlementEngine) SetHubMargin(pct int) {
+	if pct < 0 || pct > 50 {
+		pct = 20
+	}
+	e.hubMarginPct = pct
 }
 
 // SettlementResult summarizes what happened in a settlement run.
@@ -111,11 +122,11 @@ func (e *SettlementEngine) RunSettlement(ctx context.Context, periodStart, perio
 		}
 
 		// Compute sats per node share using the invoice's rate (immune to tier config changes).
-		// Each node gets half the billable bytes.
-		entryShare := billable / 2
-		exitShare := billable / 2
-		entrySats := computePayoutSats(entryShare, info.AmountSats, info.BytesAllowed)
-		exitSats := computePayoutSats(exitShare, info.AmountSats, info.BytesAllowed)
+		// Deduct hub margin first, then split remaining 50/50 between entry and exit.
+		totalSats := computePayoutSats(billable, info.AmountSats, info.BytesAllowed)
+		nodePool := totalSats * int64(100-e.hubMarginPct) / 100
+		entrySats := nodePool / 2
+		exitSats := nodePool - entrySats // avoids rounding loss
 
 		// Aggregate for entry node.
 		agg := nodeAggs[s.EntryNode]
@@ -125,7 +136,7 @@ func (e *SettlementEngine) RunSettlement(ctx context.Context, periodStart, perio
 		}
 		agg.entryBytesTotal += s.EntryBytes
 		agg.exitBytesTotal += s.ExitBytes
-		agg.billableBytes += entryShare
+		agg.billableBytes += billable
 		agg.billableSats += entrySats
 		agg.ticketsRedeemed++
 
@@ -137,7 +148,7 @@ func (e *SettlementEngine) RunSettlement(ctx context.Context, periodStart, perio
 		}
 		agg2.entryBytesTotal += s.EntryBytes
 		agg2.exitBytesTotal += s.ExitBytes
-		agg2.billableBytes += exitShare
+		agg2.billableBytes += billable
 		agg2.billableSats += exitSats
 		agg2.ticketsRedeemed++
 

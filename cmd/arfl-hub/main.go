@@ -208,6 +208,7 @@ func main() {
 	if cfg.MinPayoutSats > 0 {
 		engine.SetMinPayout(cfg.MinPayoutSats)
 	}
+	engine.SetHubMargin(cfg.HubMarginPct)
 
 	// Run periodic settlement.
 	settlementInterval := 6 * time.Hour
@@ -223,9 +224,19 @@ func main() {
 	// Discovery endpoints.
 	discoveryAPI := discovery.NewDiscoveryAPI(idx)
 	discoveryAPI.SetHubKeyPair(hubKP, db)
+	discoveryAPI.SetEarningsStore(db)
+	discoveryAPI.SetLightningClient(lnc)
+	discoveryAPI.SetHubInfo(&discovery.HubInfo{
+		Name:         "ARFL Hub",
+		Version:      "0.1.0",
+		HubMarginPct: cfg.HubMarginPct,
+		Tiers:        credentials.DefaultTiers,
+	})
 	mux.Handle("/nodes", discoveryAPI.Handler())
 	mux.Handle("/health", discoveryAPI.Handler())
 	mux.Handle("/announce", discoveryAPI.Handler())
+	mux.Handle("/info", discoveryAPI.Handler())
+	mux.Handle("/node/", discoveryAPI.Handler())
 	mux.Handle("/attest/", discoveryAPI.Handler())
 
 	// Payment endpoints.

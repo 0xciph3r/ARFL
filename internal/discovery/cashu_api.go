@@ -3,7 +3,10 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -13,10 +16,28 @@ import (
 	"github.com/elnosh/gonuts/cashu"
 )
 
-// SetMint wires the Cashu mint and registers ecash API endpoints.
+const (
+	// maxCashuBodyBytes caps request body size for all ecash endpoints.
+	maxCashuBodyBytes = 64 * 1024 // 64 KB
+	// maxCheckStateYs caps the number of Y values in a checkstate request.
+	maxCheckStateYs = 100
+	// maxSwapInputs caps input proofs per swap.
+	maxSwapInputs = 64
+	// maxSwapOutputs caps outputs per swap to prevent resource exhaustion.
+	maxSwapOutputs = 64
+	// maxMintOutputs caps outputs per mint request.
+	maxMintOutputs = 64
+	// maxQuoteAmount caps the maximum sats per mint quote.
+	maxQuoteAmount = 1_000_000 // 1M sats
+	// cryptoTimeout is the max time a request will wait for a worker slot.
+	cryptoTimeout = 10 * time.Second
+)
+
+// SetMint wires the Cashu mint, worker pool, and registers ecash API endpoints.
 func (api *DiscoveryAPI) SetMint(mint *ecash.Mint, mintStore ecash.Store) {
 	api.mint = mint
 	api.mintStore = mintStore
+	api.cryptoPool = ecash.NewWorkerPool(mint, 0) // 0 = use GOMAXPROCS
 
 	// NUT-01: Mint public keys
 	api.mux.HandleFunc("/v1/keys", api.handleKeys)
@@ -31,10 +52,43 @@ func (api *DiscoveryAPI) SetMint(mint *ecash.Mint, mintStore ecash.Store) {
 	api.mux.HandleFunc("/v1/checkstate", api.handleCheckState)
 }
 
+// cashuRateCheck applies rate limiting and returns the client IP.
+// Returns "" and writes a 429 if the client is rate-limited.
+func (api *DiscoveryAPI) cashuRateCheck(w http.ResponseWriter, r *http.Request) string {
+	clientIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if clientIP == "" {
+		clientIP = r.RemoteAddr
+	}
+	if !api.checkRateLimit(clientIP) {
+		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+		return ""
+	}
+	return clientIP
+}
+
+// limitedBody returns a size-capped reader for the request body.
+func limitedBody(r *http.Request) io.Reader {
+	return io.LimitReader(r.Body, maxCashuBodyBytes)
+}
+
+// isCircuitOpen checks if a Lightning error is a circuit breaker rejection
+// and writes the appropriate 503 response.
+func isCircuitOpen(w http.ResponseWriter, err error) bool {
+	if errors.Is(err, lightning.ErrCircuitOpen) {
+		writeError(w, http.StatusServiceUnavailable,
+			"lightning temporarily unavailable — try again shortly")
+		return true
+	}
+	return false
+}
+
 // handleKeys returns the active keyset's public keys (NUT-01).
 func (api *DiscoveryAPI) handleKeys(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if api.cashuRateCheck(w, r) == "" {
 		return
 	}
 
@@ -69,6 +123,9 @@ func (api *DiscoveryAPI) handleKeysets(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if api.cashuRateCheck(w, r) == "" {
+		return
+	}
 
 	infos := api.mint.KeysetInfos()
 	resp := keysetsResponse{Keysets: infos}
@@ -97,16 +154,24 @@ func (api *DiscoveryAPI) handleMintQuote(w http.ResponseWriter, r *http.Request)
 
 // handleCreateMintQuote creates a Lightning invoice for minting ecash.
 func (api *DiscoveryAPI) handleCreateMintQuote(w http.ResponseWriter, r *http.Request) {
+	if api.cashuRateCheck(w, r) == "" {
+		return
+	}
+
 	var req struct {
 		Amount uint64 `json:"amount"`
 		Unit   string `json:"unit"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(limitedBody(r)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Amount == 0 {
 		writeError(w, http.StatusBadRequest, "amount must be > 0")
+		return
+	}
+	if req.Amount > maxQuoteAmount {
+		writeError(w, http.StatusBadRequest, "amount exceeds maximum (1M sats)")
 		return
 	}
 	if req.Unit != "" && req.Unit != "sat" {
@@ -119,13 +184,16 @@ func (api *DiscoveryAPI) handleCreateMintQuote(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Create Lightning invoice
+	// Create Lightning invoice (circuit breaker will fail fast if LND is down)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	invoice, err := api.lnc.CreateInvoice(ctx, int64(req.Amount),
 		"ARFL ecash mint", 15*time.Minute)
 	if err != nil {
+		if isCircuitOpen(w, err) {
+			return
+		}
 		log.Printf("[ecash] create invoice error: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to create invoice")
 		return
@@ -162,6 +230,10 @@ func (api *DiscoveryAPI) handleCreateMintQuote(w http.ResponseWriter, r *http.Re
 // handleGetMintQuote checks the status of a mint quote.
 // The quote ID is the last path segment: /v1/mint/quote/bolt11/{id}
 func (api *DiscoveryAPI) handleGetMintQuote(w http.ResponseWriter, r *http.Request) {
+	if api.cashuRateCheck(w, r) == "" {
+		return
+	}
+
 	// Extract quote ID from path: /v1/mint/quote/bolt11/{id}
 	path := strings.TrimPrefix(r.URL.Path, "/v1/mint/quote/bolt11/")
 	if path == "" || path == r.URL.Path {
@@ -170,13 +242,20 @@ func (api *DiscoveryAPI) handleGetMintQuote(w http.ResponseWriter, r *http.Reque
 	}
 	quoteID := path
 
+	// Reject obviously invalid quote IDs (must be hex, max 64 chars).
+	if len(quoteID) > 64 {
+		writeError(w, http.StatusBadRequest, "invalid quote ID")
+		return
+	}
+
 	quote, err := api.mintStore.GetMintQuote(quoteID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "quote not found")
 		return
 	}
 
-	// If still unpaid, check with Lightning node
+	// If still unpaid, check with Lightning node.
+	// If circuit breaker is open, skip the LN check and return cached state.
 	if quote.State == ecash.QuoteUnpaid && api.lnc != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
@@ -186,6 +265,7 @@ func (api *DiscoveryAPI) handleGetMintQuote(w http.ResponseWriter, r *http.Reque
 			_ = api.mintStore.UpdateMintQuoteState(quoteID, ecash.QuotePaid)
 			quote.State = ecash.QuotePaid
 		}
+		// If circuit open or other error, just return cached state — no 503.
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -198,12 +278,15 @@ func (api *DiscoveryAPI) handleMintTokens(w http.ResponseWriter, r *http.Request
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if api.cashuRateCheck(w, r) == "" {
+		return
+	}
 
 	var req struct {
 		Quote   string                `json:"quote"`
 		Outputs cashu.BlindedMessages `json:"outputs"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(limitedBody(r)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -215,8 +298,13 @@ func (api *DiscoveryAPI) handleMintTokens(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "outputs required")
 		return
 	}
+	if len(req.Outputs) > maxMintOutputs {
+		writeError(w, http.StatusBadRequest, "too many outputs (max 64)")
+		return
+	}
 
-	// Check quote payment status with LN node before minting
+	// Check quote payment status with LN node before minting.
+	// If circuit is open, skip — rely on cached state.
 	quote, err := api.mintStore.GetMintQuote(req.Quote)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "quote not found")
@@ -231,7 +319,11 @@ func (api *DiscoveryAPI) handleMintTokens(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	sigs, err := api.mint.MintTokens(req.Quote, req.Outputs)
+	// Use worker pool for CPU-bound blind signing.
+	ctx, cancel := context.WithTimeout(r.Context(), cryptoTimeout)
+	defer cancel()
+
+	sigs, err := api.cryptoPool.MintTokens(ctx, req.Quote, req.Outputs)
 	if err != nil {
 		switch err {
 		case ecash.ErrQuoteNotFound:
@@ -263,12 +355,15 @@ func (api *DiscoveryAPI) handleSwap(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if api.cashuRateCheck(w, r) == "" {
+		return
+	}
 
 	var req struct {
 		Inputs  cashu.Proofs          `json:"inputs"`
 		Outputs cashu.BlindedMessages `json:"outputs"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(limitedBody(r)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -280,8 +375,20 @@ func (api *DiscoveryAPI) handleSwap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "outputs required")
 		return
 	}
+	if len(req.Inputs) > maxSwapInputs {
+		writeError(w, http.StatusBadRequest, "too many inputs (max 64)")
+		return
+	}
+	if len(req.Outputs) > maxSwapOutputs {
+		writeError(w, http.StatusBadRequest, "too many outputs (max 64)")
+		return
+	}
 
-	sigs, err := api.mint.Swap(req.Inputs, req.Outputs)
+	// Use worker pool for CPU-bound verification + signing.
+	ctx, cancel := context.WithTimeout(r.Context(), cryptoTimeout)
+	defer cancel()
+
+	sigs, err := api.cryptoPool.Swap(ctx, req.Inputs, req.Outputs)
 	if err != nil {
 		switch err {
 		case ecash.ErrInvalidProof:
@@ -313,16 +420,23 @@ func (api *DiscoveryAPI) handleCheckState(w http.ResponseWriter, r *http.Request
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if api.cashuRateCheck(w, r) == "" {
+		return
+	}
 
 	var req struct {
 		Ys []string `json:"Ys"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(limitedBody(r)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if len(req.Ys) == 0 {
 		writeError(w, http.StatusBadRequest, "Ys required")
+		return
+	}
+	if len(req.Ys) > maxCheckStateYs {
+		writeError(w, http.StatusBadRequest, "too many Ys (max 100)")
 		return
 	}
 

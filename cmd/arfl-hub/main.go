@@ -146,7 +146,7 @@ func main() {
 	issuer := credentials.NewHMACIssuer("key-1", credKey)
 
 	// Initialize Lightning client.
-	var lnc lightning.Client
+	var rawLnc lightning.Client
 	if cfg.LNDHost != "" && cfg.LNDPort > 0 {
 		lndClient, err := lightning.NewLNDClient(lightning.LNDConfig{
 			Host:         cfg.LNDHost,
@@ -158,15 +158,22 @@ func main() {
 		if err != nil {
 			log.Fatalf("connect to LND: %v", err)
 		}
-		lnc = lndClient
+		rawLnc = lndClient
 		log.Printf("[hub] lightning: LND at %s:%d", cfg.LNDHost, cfg.LNDPort)
 	} else {
 		if !*devMode {
 			log.Fatalf("LND config required (lnd_host, lnd_port, lnd_tls_cert_path, lnd_macaroon_path) — use --dev for mock")
 		}
-		lnc = lightning.NewMockClient()
+		rawLnc = lightning.NewMockClient()
 		log.Printf("[hub] lightning: mock client (--dev mode)")
 	}
+
+	// Wrap Lightning client with circuit breaker for fail-fast + self-healing.
+	lnCircuitBreaker := lightning.NewCircuitBreaker(rawLnc)
+	lnc := lnCircuitBreaker
+	defer lnCircuitBreaker.Stop()
+	log.Printf("[hub] lightning circuit breaker: threshold=%d, open_timeout=%s, probe=%s",
+		3, "30s", "15s")
 
 	// Create payment API.
 	purchaseAPI := payments.NewPurchaseAPI(db, lnc, issuer)

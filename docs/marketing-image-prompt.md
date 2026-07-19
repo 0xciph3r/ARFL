@@ -71,6 +71,50 @@ aesthetic, high contrast, subtle glow, 16:9 banner composition.
 
 ---
 
+## Prompt C — Info-icon style (simple badge/glyph)
+
+For a compact icon that reads like a standard "info" (ⓘ) icon at small
+sizes — a circular badge, flat/line style, not a scene — rather than
+a wide illustrative banner.
+
+```
+A minimalist flat icon in the exact style of a standard circular
+"info" symbol: a single bold-stroke circle outline on a transparent
+background, centered inside it a small glyph replacing the usual "i" —
+a tiny Bitcoin ₿ symbol connected to two small dots on either side by
+a thin line, suggesting two peers exchanging bandwidth directly with
+no node in the middle. Two-color flat design, single stroke weight
+throughout, perfectly centered, generous padding inside the circle,
+crisp vector-icon look, no gradients, no shadow, no text, no
+background scene. Must read clearly as a small icon at 32x32px.
+Color: single warm Bitcoin-orange (#f7931a) stroke on transparent, or
+white stroke on near-black (#0a0e1a) circle for a dark-mode variant.
+--ar 1:1 --style raw --v 6
+```
+
+**Negative prompt:**
+```
+photorealistic, 3d render, illustration scene, background, gradient,
+drop shadow, text, letters, words, multiple colors, busy detail,
+padlock, shield, wifi bars, cloud shape, human figures, faces
+```
+
+**Monochrome line-only variant** (closest to a literal system info icon,
+just with the "i" swapped for the peer-exchange glyph):
+
+```
+Simple line-art icon, single continuous stroke, circle outline
+containing a tiny symbol of two dots linked by a short line with a
+small ₿ mark at the midpoint — replacing the lowercase "i" in a
+standard info icon. Pure black stroke on white background (or white
+on transparent), no fill, no shading, no gradient, perfectly
+symmetrical, flat vector icon style, optimized for small sizes like
+app icons and UI badges.
+--ar 1:1
+```
+
+---
+
 ## Style keyword bank
 
 Mix and match if you want to try variants:

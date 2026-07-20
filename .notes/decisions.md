@@ -2034,3 +2034,28 @@ linking for production Linux builds from macOS:
 CGO_ENABLED=1 CC=x86_64-linux-musl-gcc GOOS=linux GOARCH=amd64 \
   go build -ldflags '-linkmode external -extldflags "-static"' -o arfl-hub-linux ./cmd/arfl-hub/
 ```
+
+---
+
+### Decision 99: Product positioning — bandwidth marketplace, not "untraceable VPN"
+
+**Context:** The protocol's Cashu blind signatures, NIP-44 encryption, and client-side
+node selection provide strong unlinkability. This is technically accurate but carries
+legal and perception risks if marketed as the primary value prop.
+
+**Decision:** Position ARFL as a **privacy-respecting decentralised bandwidth marketplace**
+and **open protocol** — not as an "untraceable" or "invisible" VPN.
+
+- Lead grant applications with economics (passive income for node runners, sats-per-GB model)
+- Lead technical docs with protocol openness (Nostr-native, Bitcoin-native, open source)
+- Privacy is a *property* of the design, not the *headline*
+- Comparable framing: Mullvad, IVPN, Proton — all build strong privacy but lead with trust and transparency
+
+**Required before public launch:**
+1. Abuse policy for node operators (DMCA, illegal content)
+2. Legal entity structure with jurisdiction choice
+3. Governance model (Meyer's federation spec) formalised
+4. Clear "what we can and cannot see" transparency page
+
+**Defend it as:** "We built a protocol where privacy is the default, not the selling point.
+The value is that anyone can earn sats by sharing bandwidth they already own."

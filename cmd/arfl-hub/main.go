@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	_ "net/http/pprof" // registers /debug/pprof/* handlers on DefaultServeMux
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -293,6 +294,27 @@ func main() {
 			log.Fatalf("API server: %v", err)
 		}
 	}()
+
+	// Start pprof debug server on localhost only (not internet-reachable).
+	// Access via SSH tunnel: ssh -L 6060:127.0.0.1:6060 arfl-hub
+	// Then: go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+	//
+	// Disable by setting ARFL_PPROF=off in the environment.
+	pprofAddr := "127.0.0.1:6060"
+	if v := os.Getenv("ARFL_PPROF"); v == "off" {
+		log.Printf("[hub] pprof disabled (ARFL_PPROF=off)")
+	} else {
+		if v != "" {
+			pprofAddr = v
+		}
+		go func() {
+			// Uses http.DefaultServeMux which has pprof routes registered by the import.
+			log.Printf("[hub] pprof listening on %s (localhost only)", pprofAddr)
+			if err := http.ListenAndServe(pprofAddr, nil); err != nil {
+				log.Printf("[hub] pprof server error: %v", err)
+			}
+		}()
+	}
 
 	total, online := idx.NodeCount()
 	log.Printf("[hub] ready | nodes: %d total, %d online | relays: %d | settlement: every %s",

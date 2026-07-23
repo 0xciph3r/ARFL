@@ -1,4 +1,9 @@
-# ARFL Architecture — Phase 0 Spike
+---
+layout: default
+title: Architecture
+---
+
+# ARFL Architecture
 
 ## 1. Nested WireGuard Two-Hop Design
 

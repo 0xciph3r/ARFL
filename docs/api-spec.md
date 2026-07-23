@@ -1,3 +1,8 @@
+---
+layout: default
+title: API Specification
+---
+
 # ARFL Hub API Specification
 
 **Version:** 0.1.0  
@@ -347,5 +352,135 @@ MVP uses no authentication on public endpoints. Node identity is verified via:
 - Nostr event signatures (node announcements)
 - Hub-signed attestations (node authorization)
 - Schnorr signatures (usage reports)
+
+---
+
+## Cashu Ecash Mint (NUT-01 → NUT-07)
+
+The hub operates a Cashu-compatible ecash mint. These endpoints follow the [Cashu NUT specification](https://github.com/cashubtc/nuts).
+
+### GET /v1/keys
+
+Returns the mint's active public keys (NUT-01).
+
+**Response:**
+```json
+{
+  "keysets": [{
+    "id": "00eb7476a759a27e",
+    "unit": "sat",
+    "keys": {
+      "1": "02abc...",
+      "2": "03def...",
+      "4": "02fed..."
+    }
+  }]
+}
+```
+
+### GET /v1/keysets
+
+Returns all keysets with their status (NUT-02).
+
+**Response:**
+```json
+{
+  "keysets": [{
+    "id": "00eb7476a759a27e",
+    "unit": "sat",
+    "active": true,
+    "input_fee_ppk": 0
+  }]
+}
+```
+
+### POST /v1/mint/quote/bolt11
+
+Request a mint quote — returns a Lightning invoice to pay (NUT-04).
+
+**Request:**
+```json
+{
+  "amount": 64,
+  "unit": "sat"
+}
+```
+
+**Response:**
+```json
+{
+  "quote": "unique-quote-id",
+  "request": "lnbc640n1...",
+  "state": "UNPAID",
+  "expiry": 1784041000
+}
+```
+
+### POST /v1/mint/bolt11
+
+After paying the invoice, mint tokens by providing blinded messages (NUT-04).
+
+**Request:**
+```json
+{
+  "quote": "unique-quote-id",
+  "outputs": [
+    {"amount": 64, "id": "00eb7476a759a27e", "B_": "02..."}
+  ]
+}
+```
+
+**Response:**
+```json
+{
+  "signatures": [
+    {"amount": 64, "id": "00eb7476a759a27e", "C_": "03..."}
+  ]
+}
+```
+
+### POST /v1/swap
+
+Swap proofs for new blinded signatures (NUT-03). Used for splitting denominations.
+
+**Request:**
+```json
+{
+  "inputs": [{"amount": 64, "id": "...", "secret": "...", "C": "..."}],
+  "outputs": [{"amount": 32, "id": "...", "B_": "..."}, {"amount": 32, "id": "...", "B_": "..."}]
+}
+```
+
+### POST /v1/checkstate
+
+Check if proofs are spent (NUT-07).
+
+**Request:**
+```json
+{
+  "Ys": ["02abc...", "03def..."]
+}
+```
+
+### POST /v1/redeem
+
+ARFL-specific: Node presents proofs for bandwidth redemption.
+
+**Request:**
+```json
+{
+  "proofs": [{"amount": 64, "id": "00eb7476a759a27e", "secret": "...", "C": "..."}],
+  "node_pubkey": "node-nostr-pubkey-hex"
+}
+```
+
+**Response:**
+```json
+{
+  "ok": true,
+  "bytes_allowed": 64000000,
+  "sats_redeemed": 64
+}
+```
 
 Extension builders should verify node events client-side using the hub's Nostr pubkey.

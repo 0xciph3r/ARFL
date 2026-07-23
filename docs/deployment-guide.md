@@ -1,3 +1,8 @@
+---
+layout: default
+title: Deployment Guide
+---
+
 # ARFL Deployment Guide
 
 Step-by-step guide to deploy a full ARFL network: hub, entry node, exit node, and Lightning payments.

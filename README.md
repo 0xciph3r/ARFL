@@ -1,38 +1,40 @@
 # ARFL
 
-**Privacy in the Dark Cloud** — A decentralised VPN protocol powered by Bitcoin.
+**Privacy-respecting bandwidth marketplace** — A decentralised VPN protocol powered by Bitcoin.
 
-ARFL is a decentralised VPN protocol that combines WireGuard, Nostr, the Bitcoin Lightning Network, and blind signatures into a self-sustaining privacy network. No accounts. No subscriptions. No logs. No token.
+ARFL is a decentralised VPN protocol that combines WireGuard, Nostr, the Bitcoin Lightning Network, and Cashu ecash into a self-sustaining privacy network. No accounts. No subscriptions. No logs. No token.
 
-Users pay per-gigabyte via Lightning. Node operators earn passive income on bandwidth they already own. The hub coordinates sessions but **mathematically cannot link buyers to their browsing activity** thanks to Chaumian blind signatures.
+Users pay per-gigabyte via Lightning. Node operators earn passive income on bandwidth they already own. The hub coordinates sessions but **mathematically cannot link buyers to their browsing activity** thanks to Cashu blind signatures (BDHKE).
 
 [![CI](https://github.com/Radi-Labs/ARFL/actions/workflows/ci.yml/badge.svg)](https://github.com/Radi-Labs/ARFL/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Radi-Labs/ARFL)](https://github.com/Radi-Labs/ARFL/releases/latest)
 
 ## How It Works
 
 ```
 ┌──────────┐     Lightning      ┌──────────┐     Nostr relays     ┌──────────┐
 │  Client   │ ──── pay ────────► │   Hub    │ ◄── announcements ── │  Nodes   │
-│           │ ◄── blind tokens ─ │          │                      │          │
+│           │ ◄── Cashu tokens ─ │  (mint)  │                      │          │
 └─────┬─────┘                    └──────────┘                      └────┬─────┘
       │                                                                 │
-      │  present token                                                  │
+      │  NIP-44 encrypted token                                         │
       └────────────────── WireGuard tunnel ────────────────────────────►│
                           (entry → exit → internet)
 ```
 
 1. **Client** pays a Lightning invoice for bandwidth (e.g., 500 sats for 1 GB)
-2. **Hub** issues blind-signed tokens — it signs without seeing the token secrets
-3. **Client** presents a token to a **Node** via `POST /connect`
-4. **Node** verifies the RSA signature locally, then checks with the Hub for double-spend
-5. **Node** grants WireGuard access with a bandwidth quota matching the token
+2. **Hub** mints Cashu ecash tokens — blind-signed via BDHKE (Blind Diffie-Hellman Key Exchange)
+3. **Client** unblinds tokens locally — Hub mathematically cannot link tokens to the buyer
+4. **Client** encrypts tokens with NIP-44 and delivers to **Node** via Nostr relay
+5. **Node** decrypts, verifies proofs with the Hub's `/v1/redeem`, grants WireGuard access
 6. Traffic flows through a **nested two-hop WireGuard tunnel** (entry → exit → internet)
 
 ### Privacy Properties
 
 | Property | How |
 |---|---|
-| **Buyer-session unlinkability** | Blind signatures — Hub signs blinded messages, cannot link tokens to buyers |
+| **Buyer-session unlinkability** | Cashu BDHKE — Hub signs blinded messages, cannot link tokens to buyers |
+| **Token delivery privacy** | NIP-44 encryption — Hub cannot read token contents in transit |
 | **Entry node can't see destinations** | Inner WireGuard tunnel encrypts traffic end-to-end to the exit |
 | **Exit node can't see client IP** | Only sees the entry node's IP (NAT'd) |
 | **No accounts or identity** | Lightning payments require no personal information |
@@ -40,12 +42,12 @@ Users pay per-gigabyte via Lightning. Node operators earn passive income on band
 
 ### Honest Threat Model
 
-ARFL is an **online bounded-risk authorization system for bandwidth** — not offline ecash. Key caveats:
+ARFL is a **privacy-respecting bandwidth marketplace** — not an untraceable VPN. Key caveats:
 
-- The Hub is the real-time arbiter for double-spend detection. Nodes must contact it for `/spend` checks.
-- During a Hub outage, nodes fall back to offline verification (`VerifyOnly`). Risk is bounded: a replayed token can steal at most 100 MB × N_offline_nodes.
+- The Hub is the real-time arbiter for double-spend detection. Nodes must contact it for `/v1/redeem` checks.
 - The residential node economics model works for flat-rate fiber operators. Commercial cloud hosting is explicitly not viable at current pricing.
-- Fedimint federation custody (v1) runs 5 nodes operated by the protocol team. Concrete decentralisation timeline is a known gap.
+- Two-hop routing means every GB costs 2x bandwidth. At $5/250GB, nodes clear ~$0.008/GB each — viable for unmetered pipes, not cloud servers.
+- The hub cannot link buyers to sessions, but a compromised hub could potentially correlate timing. Future work: client-side node pairing from the Nostr relay index.
 
 ## Installation
 
@@ -240,29 +242,32 @@ Uses distroless base images for minimal attack surface. The hub image has zero s
 
 ```
 cmd/
-  arfl-hub/          Hub binary — discovery, payments, blind signing
-  arfl-node/         Node binary — WireGuard tunnels, token-gated /connect
+  arfl-hub/          Hub binary — discovery, payments, Cashu mint
+  arfl-node/         Node binary — WireGuard tunnels, Cashu-gated /cashu-connect
   arfl-client/       Client binary — purchase flow, tunnel management
 internal/
-  client/            Bandwidth SDK + TokenGate (node-side verifier)
+  client/            Bandwidth SDK + CashuConnector (node-side verifier)
   config/            JSON config loader for all components
-  control/           Node admin API (POST /connect, /peers, /quota)
-  credentials/       Blind signatures (RSA mint/verifier), HMAC tickets, key persistence
-  discovery/         Nostr-based node discovery + attestation
-  lightning/         Lightning client interface (LND REST adapter + mock)
-  nostr/             Nostr relay pool, keypairs, event handling
-  payments/          Purchase API, settlement engine, blind sig endpoints
+  control/           Node admin API (POST /cashu-connect, /peers, /quota)
+  credentials/       RSA blind signatures, HMAC tickets, key persistence
+  discovery/         Nostr-based node discovery + attestation + Cashu API
+  ecash/             Cashu ecash mint (BDHKE, NUT-01→07, worker pool)
+  lightning/         Lightning client interface (LND REST adapter + circuit breaker)
+  nostr/             Nostr relay pool, NIP-44 encryption, keypairs, events
+  payments/          Purchase API, settlement engine, node payouts
   quota/             Kernel-level bandwidth enforcement (nftables)
   routing/           IP forwarding + NAT setup
-  store/             SQLite storage (invoices, tickets, entitlements, spent tokens)
+  store/             SQLite storage (invoices, proofs, keysets, quotes, settlements)
   wg/                WireGuard interface management (wgctrl)
 pkg/
   protocol/          Protocol constants (MTU, ports, intervals)
   types/             Shared types (NodeInfo, NodeRole)
+test/
+  integration/       E2E tests (full Cashu privacy flow)
+  loadtest/          Performance load tests (/v1/redeem throughput)
 deployments/         systemd units, nftables rules, setup scripts
 deploy/              Docker Compose testnet (hub + nodes + relay)
-test/integration/    End-to-end integration tests
-.notes/              Architecture decisions (87 documented decisions)
+docs/                Architecture, API spec, deployment guide
 ```
 
 See [docs/architecture.md](./docs/architecture.md) for the nested WireGuard two-hop design, encryption layers, and routing rules.
@@ -310,16 +315,17 @@ Covers: purchase → pay → redeem → verify → spend → double-spend detect
 ```
  Client                          Hub                           Node
    │                              │                              │
-   │  POST /purchase {tier}       │                              │
+   │  POST /v1/mint/quote/bolt11  │                              │
+   │  {amount: 500, unit: "sat"}  │                              │
    │ ────────────────────────────►│                              │
    │  ◄─── Lightning invoice ─── │                              │
    │                              │                              │
    │  [pays invoice externally]   │                              │
    │                              │  settlement listener         │
-   │                              │  creates entitlement         │
+   │                              │  marks quote as PAID         │
    │                              │                              │
-   │  POST /redeem                │                              │
-   │  {preimage, blinded_msgs}    │                              │
+   │  POST /v1/mint/bolt11        │                              │
+   │  {quote, blinded_messages}   │                              │
    │ ────────────────────────────►│                              │
    │  ◄─── blind_signatures ──── │                              │
    │                              │                              │
@@ -327,14 +333,16 @@ Covers: purchase → pay → redeem → verify → spend → double-spend detect
    │   locally — Hub never        │                              │
    │   sees token secrets]        │                              │
    │                              │                              │
-   │  POST /connect               │                              │
-   │  {token, wg_pubkey}          │                              │
-   │ ─────────────────────────────────────────────────────────► │
-   │                              │  POST /spend {token}         │
-   │                              │ ◄──────────────────────────  │
-   │                              │  ──── first_spend: true ──► │
+   │  NIP-44 encrypted event      │                              │
+   │  {proofs, wg_pubkey, role}   │                              │
+   │ ─────────────────── via Nostr relay ──────────────────────►│
    │                              │                              │
-   │  ◄──── {tunnel_ip, pubkey, bytes_allowed} ──────────────── │
+   │                              │  POST /v1/redeem             │
+   │                              │  {proofs, node_pubkey}       │
+   │                              │ ◄──────────────────────────  │
+   │                              │  ── {ok, bytes_allowed} ──► │
+   │                              │                              │
+   │  ◄──── {tunnel_ip, pubkey, endpoint} ───────────────────── │
    │                              │                              │
    │  [WireGuard tunnel established]                             │
    │ ═══════════════ encrypted traffic ════════════════════════► │
@@ -373,15 +381,34 @@ go vet ./...
 - [x] **Phase 4** — Blind signatures (RSA mint, Chaumian tokens, STRIDE)
 - [x] **Phase 5** — Client integration (SDK, TokenGate, binary wiring)
 - [x] **Phase 6** — Token→connect flow, LND adapter, Docker testnet
-- [ ] **Phase 7** — Fedimint federation deposits
-- [ ] **Phase 8** — Mobile app (gomobile bindings)
-- [ ] **Phase 9** — Multi-hop routing (>2 hops)
+- [x] **Phase 9** — Client-side node selection + Cashu token redemption
+- [x] **Phase 10** — Node-side Cashu gate + hub redeemer
+- [x] **Phase 11** — NIP-44 encrypted token delivery via Nostr
+- [x] **Phase 12** — E2E integration test (full privacy chain)
+- [x] **Phase 13** — VPS deployment (3 servers, systemd)
+- [x] **Phase 14** — Performance engineering (benchmarks, pprof, load test, optimization)
+- [ ] **Phase 15** — LNbits extension (wallet integration)
+- [ ] **Phase 16** — Mobile app (gomobile bindings)
+- [ ] **Phase 17** — Multi-hop routing (>2 hops)
+
+## Performance
+
+Benchmarked on Apple M1 Pro (single core):
+
+| Operation | Throughput | Latency |
+|-----------|-----------|---------|
+| Token redeem (hub) | 15,000/sec | p50: 862µs |
+| VerifyProofs (single) | 6,000/sec | 167µs |
+| NIP-44 Encrypt | 360,000/sec | 2.8µs |
+| ECDH (per session) | 7,300/sec | 137µs |
 
 ## Links
 
 - [Whitepaper (PDF)](./ARFL_Whitepaper.pdf)
 - [Architecture](./docs/architecture.md)
-- [Decision Log](./.notes/decisions.md)
+- [API Specification](./docs/api-spec.md)
+- [Deployment Guide](./docs/deployment-guide.md)
+- [Releases](https://github.com/Radi-Labs/ARFL/releases)
 
 ## License
 

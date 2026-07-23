@@ -125,6 +125,13 @@ func (api *DiscoveryAPI) SetLightningClient(lnc lightning.Client) {
 	api.mux.HandleFunc("/node/withdraw", api.handleNodeWithdraw)
 }
 
+// SetRateLimit overrides the default rate limit parameters.
+// Use maxRequests=0 to disable rate limiting (for load tests).
+func (api *DiscoveryAPI) SetRateLimit(maxRequests int, window time.Duration) {
+	api.maxRequests = maxRequests
+	api.rateWindow = window
+}
+
 // handleInfo returns hub metadata for extension builders (LNbits, Layerz).
 func (api *DiscoveryAPI) handleInfo(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -270,6 +277,9 @@ func (api *DiscoveryAPI) handleAnnounce(w http.ResponseWriter, r *http.Request) 
 // checkRateLimit implements a sliding window rate limiter.
 // Returns true if the request is allowed.
 func (api *DiscoveryAPI) checkRateLimit(clientIP string) bool {
+	if api.maxRequests <= 0 {
+		return true // rate limiting disabled
+	}
 	api.rateMu.Lock()
 	defer api.rateMu.Unlock()
 

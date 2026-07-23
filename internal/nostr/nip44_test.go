@@ -1,6 +1,7 @@
 package nostr
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"strings"
 	"testing"
@@ -78,9 +79,17 @@ func TestNIP44_TamperedPayload(t *testing.T) {
 		t.Fatalf("Encrypt: %v", err)
 	}
 
-	// Flip a character in the middle of the base64.
-	mid := len(encrypted) / 2
-	tampered := encrypted[:mid] + "X" + encrypted[mid+1:]
+	// Decode, flip a byte in the ciphertext region, re-encode.
+	// This guarantees HMAC verification will fail regardless of position.
+	raw, err := base64.StdEncoding.DecodeString(encrypted)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// Flip a byte in the ciphertext (after version + nonce = 33 bytes, before MAC = last 32 bytes).
+	if len(raw) > 65 {
+		raw[40] ^= 0xFF
+	}
+	tampered := base64.StdEncoding.EncodeToString(raw)
 
 	_, err = Decrypt(tampered, convKey)
 	if err == nil {

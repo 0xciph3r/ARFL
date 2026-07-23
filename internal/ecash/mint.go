@@ -281,6 +281,9 @@ func (m *Mint) VerifyProofs(proofs cashu.Proofs) ([]SpentProof, error) {
 		return nil, ErrDuplicateProofs
 	}
 
+	// Pre-allocate a reusable buffer for hex decoding compressed pubkeys (33 bytes).
+	var cBuf [33]byte
+
 	spent := make([]SpentProof, 0, len(proofs))
 	for _, proof := range proofs {
 		ks, ok := m.keysets[proof.Id]
@@ -293,21 +296,34 @@ func (m *Mint) VerifyProofs(proofs cashu.Proofs) ([]SpentProof, error) {
 			return nil, fmt.Errorf("no key for amount %d in keyset %s", proof.Amount, proof.Id)
 		}
 
-		// Verify the proof: k * HashToCurve(secret) == C
-		C, err := parsePublicKey(proof.C)
+		// Decode C from hex into the reusable buffer (avoids allocation per proof).
+		n, err := hex.Decode(cBuf[:], []byte(proof.C))
+		if err != nil || n != 33 {
+			return nil, fmt.Errorf("invalid C in proof: %w", err)
+		}
+		C, err := secp256k1.ParsePubKey(cBuf[:n])
 		if err != nil {
 			return nil, fmt.Errorf("invalid C in proof: %w", err)
 		}
 
-		if !gcrypto.Verify(proof.Secret, kp.PrivateKey, C) {
-			return nil, ErrInvalidProof
-		}
-
-		// Compute Y = HashToCurve(secret) for spent tracking
+		// Compute Y = HashToCurve(secret) ONCE — used for both verification and spent tracking.
+		// Previously we called gcrypto.Verify (which hashes internally) then HashToCurve again.
 		Y, err := gcrypto.HashToCurve([]byte(proof.Secret))
 		if err != nil {
 			return nil, fmt.Errorf("hashing secret to curve: %w", err)
 		}
+
+		// Inline verification: k * Y == C (same as gcrypto.verify but avoids double HashToCurve).
+		var yPoint, result secp256k1.JacobianPoint
+		Y.AsJacobian(&yPoint)
+		secp256k1.ScalarMultNonConst(&kp.PrivateKey.Key, &yPoint, &result)
+		result.ToAffine()
+		computed := secp256k1.NewPublicKey(&result.X, &result.Y)
+		if !C.IsEqual(computed) {
+			return nil, ErrInvalidProof
+		}
+
+		// Y is already computed — encode for spent tracking.
 		yHex := hex.EncodeToString(Y.SerializeCompressed())
 
 		// Check double-spend

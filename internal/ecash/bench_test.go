@@ -261,4 +261,3 @@ func BenchmarkUnblindSignature(b *testing.B) {
 		_ = gcrypto.UnblindSignature(C_, r, K)
 	}
 }
-

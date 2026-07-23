@@ -173,7 +173,7 @@ func BenchmarkNIP44_SealTokenEnvelope(b *testing.B) {
 	recipientHex := recipientKP.PubkeyHex()
 
 	payload := &TokenPayload{
-		Proofs: fakeCashuProofs(2),
+		Proofs:   fakeCashuProofs(2),
 		WGPubkey: "clientWGPubkeyBase64==",
 		Role:     "entry",
 		Version:  1,
@@ -236,7 +236,7 @@ func fakeCashuProofs(count int) cashu.Proofs {
 		proofs[i] = cashu.Proof{
 			Amount: 64,
 			Id:     "00eb7476a759a27e",
-			Secret: strings.Repeat("a", 64), // 64-char hex secret
+			Secret: strings.Repeat("a", 64),        // 64-char hex secret
 			C:      "02" + strings.Repeat("b", 64), // compressed pubkey
 		}
 	}

@@ -232,14 +232,16 @@ func (cb *CircuitBreaker) recordResult(err error) {
 }
 
 // startProbe launches the background self-remediation goroutine.
+// Must be called with cb.mu held.
 func (cb *CircuitBreaker) startProbe() {
 	cb.probeOnce.Do(func() {
-		go cb.probeLoop()
+		stopCh := cb.stopProbe
+		go cb.probeLoop(stopCh)
 	})
 }
 
 // probeLoop periodically tests LND connectivity when circuit is open.
-func (cb *CircuitBreaker) probeLoop() {
+func (cb *CircuitBreaker) probeLoop(stopCh <-chan struct{}) {
 	ticker := time.NewTicker(cb.config.ProbeInterval)
 	defer ticker.Stop()
 
@@ -247,7 +249,7 @@ func (cb *CircuitBreaker) probeLoop() {
 
 	for {
 		select {
-		case <-cb.stopProbe:
+		case <-stopCh:
 			log.Printf("[circuit-breaker] probe stopped — circuit recovered")
 			return
 		case <-ticker.C:
@@ -279,18 +281,24 @@ func (cb *CircuitBreaker) probeLoop() {
 }
 
 // stopProbing signals the probe goroutine to stop.
+// Must be called with cb.mu held.
 func (cb *CircuitBreaker) stopProbing() {
+	ch := cb.stopProbe
+
 	select {
-	case cb.stopProbe <- struct{}{}:
+	case ch <- struct{}{}:
 	default:
 	}
-	// Reset probeOnce so future opens can start a new probe
+
+	// Reset probeOnce so future opens can start a new probe.
 	cb.probeOnce = sync.Once{}
 	cb.stopProbe = make(chan struct{})
 }
 
 // Stop gracefully shuts down the circuit breaker.
 func (cb *CircuitBreaker) Stop() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 	cb.stopProbing()
 }
 

@@ -410,6 +410,16 @@ Benchmarked on Apple M1 Pro (single core):
 - [Deployment Guide](./docs/deployment-guide.md)
 - [Releases](https://github.com/Radi-Labs/ARFL/releases)
 
+## Responsible Use
+
+ARFL is experimental open-source networking software intended for legitimate
+privacy, networking, and bandwidth-sharing use cases.
+
+ARFL is provided as open-source software and may be independently operated,
+modified, and deployed by third parties. Users and operators are responsible
+for complying with the laws and regulations applicable to their use of the
+software and infrastructure.
+
 ## License
 
 [MIT](./LICENSE) — Radi Labs

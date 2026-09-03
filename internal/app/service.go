@@ -47,6 +47,14 @@ type Tunnel interface {
 	// PublicKey returns the client's WireGuard public key (base64). Nodes need
 	// this before the tunnel exists, so it must be available at any time.
 	PublicKey() (string, error)
+	// Preflight reports whether the tunnel could be brought up right now,
+	// without changing anything.
+	//
+	// Connect pays both nodes before calling Up, and tokens a node has accepted
+	// are burned at the hub. Checking first — for example that the process is
+	// privileged enough to edit the routing table — turns a silent loss of
+	// funds into a refusal to start.
+	Preflight() error
 	// Up establishes the nested tunnel from node-issued configuration.
 	Up(ctx context.Context, cfg TunnelConfig) error
 	// Down tears the tunnel down and restores the previous routing state.
@@ -369,6 +377,13 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 	clientKey, err := s.clientPublicKey()
 	if err != nil {
 		return nil, err
+	}
+
+	// Check the tunnel can actually be established before spending anything.
+	// Everything below this line costs the user money that cannot be recovered
+	// once a node has accepted its proofs.
+	if err := s.tunnel.Preflight(); err != nil {
+		return nil, fmt.Errorf("cannot establish tunnel: %w", err)
 	}
 
 	entryProofs, err := w.Reserve(ctx, perHopSats)

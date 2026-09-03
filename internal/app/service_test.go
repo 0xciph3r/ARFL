@@ -218,17 +218,24 @@ func (n *testNode) redeem(ctx context.Context, proofs cashu.Proofs) (int64, erro
 
 // fakeTunnel records bring-up without touching the network.
 type fakeTunnel struct {
-	mu       sync.Mutex
-	pubkey   string
-	keyErr   error
-	upErr    error
-	downErr  error
-	upCalls  []app.TunnelConfig
-	downCall int
+	mu           sync.Mutex
+	pubkey       string
+	keyErr       error
+	preflightErr error
+	upErr        error
+	downErr      error
+	upCalls      []app.TunnelConfig
+	downCall     int
 }
 
 func newFakeTunnel() *fakeTunnel {
 	return &fakeTunnel{pubkey: "client-wg-pubkey"}
+}
+
+func (f *fakeTunnel) Preflight() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.preflightErr
 }
 
 func (f *fakeTunnel) PublicKey() (string, error) {
@@ -443,6 +450,53 @@ func TestConnectWithoutBalanceLeavesServiceDisconnected(t *testing.T) {
 	}
 	if len(tunnel.ups()) != 0 {
 		t.Error("tunnel was brought up despite payment failing")
+	}
+}
+
+// An environment that cannot bring the tunnel up must be detected before any
+// payment. The service pays both nodes before calling Up, and proofs a node
+// has accepted are burned at the hub, so discovering the problem during
+// bring-up would cost the user sats for a session they never get.
+func TestConnectChecksTunnelBeforeSpending(t *testing.T) {
+	hub := newTestHub(t)
+	hub.addNode(t, "entry-1", types.RoleEntry)
+	hub.addNode(t, "exit-1", types.RoleExit)
+
+	tunnel := newFakeTunnel()
+	tunnel.preflightErr = errors.New("root privileges are required")
+	svc := newService(t, tunnel)
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	before, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance: %v", err)
+	}
+
+	_, err = svc.Connect(ctx, 32)
+	if err == nil {
+		t.Fatal("connect should fail when the tunnel cannot be established")
+	}
+	if !strings.Contains(err.Error(), "root privileges") {
+		t.Fatalf("error should explain the cause, got %q", err)
+	}
+
+	after, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance: %v", err)
+	}
+	if after != before {
+		t.Fatalf("balance changed from %d to %d: no sats may be spent when the tunnel cannot come up", before, after)
+	}
+	if len(tunnel.ups()) != 0 {
+		t.Error("tunnel must not be brought up after a failed preflight")
+	}
+	if svc.State() != app.StateDisconnected {
+		t.Errorf("state = %q, want disconnected", svc.State())
 	}
 }
 

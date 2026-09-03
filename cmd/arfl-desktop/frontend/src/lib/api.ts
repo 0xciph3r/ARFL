@@ -6,11 +6,13 @@
 import {
   AwaitPurchase,
   Balance,
+  Connect,
   ConnectHub,
   Disconnect,
   ListNodes,
   Locked,
   Purchase,
+  Session,
   Status,
   Unlock,
 } from '../../wailsjs/go/main/Bridge'
@@ -28,6 +30,7 @@ export type StatusView = main.StatusView
 export type HubStatus = app.HubStatus
 export type Invoice = app.Invoice
 export type NodeInfo = types.NodeInfo
+export type Session = app.Session
 
 export const api = {
   locked: () => call(() => Locked()),
@@ -38,5 +41,7 @@ export const api = {
   purchase: (amountSats: number) => call(() => Purchase(amountSats)),
   awaitPurchase: (quoteId: string) => call(() => AwaitPurchase(quoteId)),
   listNodes: () => call(() => ListNodes()),
+  connect: (perHopSats: number) => call(() => Connect(perHopSats)),
+  session: () => call(() => Session()),
   disconnect: () => call(() => Disconnect()),
 }

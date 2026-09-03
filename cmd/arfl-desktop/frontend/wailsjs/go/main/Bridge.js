@@ -10,6 +10,10 @@ export function Balance() {
   return window['go']['main']['Bridge']['Balance']();
 }
 
+export function Connect(arg1) {
+  return window['go']['main']['Bridge']['Connect'](arg1);
+}
+
 export function ConnectHub(arg1) {
   return window['go']['main']['Bridge']['ConnectHub'](arg1);
 }
@@ -28,6 +32,10 @@ export function Locked() {
 
 export function Purchase(arg1) {
   return window['go']['main']['Bridge']['Purchase'](arg1);
+}
+
+export function Session() {
+  return window['go']['main']['Bridge']['Session']();
 }
 
 export function Status() {

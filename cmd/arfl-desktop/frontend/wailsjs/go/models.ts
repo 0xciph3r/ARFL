@@ -1,5 +1,25 @@
 export namespace app {
 	
+	export class HopConfig {
+	    node_id: string;
+	    endpoint: string;
+	    node_wg_pubkey: string;
+	    tunnel_ip: string;
+	    bytes_allowed: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HopConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.node_id = source["node_id"];
+	        this.endpoint = source["endpoint"];
+	        this.node_wg_pubkey = source["node_wg_pubkey"];
+	        this.tunnel_ip = source["tunnel_ip"];
+	        this.bytes_allowed = source["bytes_allowed"];
+	    }
+	}
 	export class HubStatus {
 	    url: string;
 	    name: string;
@@ -61,6 +81,77 @@ export namespace app {
 		    return a;
 		}
 	}
+	export class TunnelConfig {
+	    entry: HopConfig;
+	    exit: HopConfig;
+	    client_key: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TunnelConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.entry = this.convertValues(source["entry"], HopConfig);
+	        this.exit = this.convertValues(source["exit"], HopConfig);
+	        this.client_key = source["client_key"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Session {
+	    state: string;
+	    config: TunnelConfig;
+	    spent_sats: number;
+	    // Go type: time
+	    started_at: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new Session(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = source["state"];
+	        this.config = this.convertValues(source["config"], TunnelConfig);
+	        this.spent_sats = source["spent_sats"];
+	        this.started_at = this.convertValues(source["started_at"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 
 }
 
@@ -71,6 +162,8 @@ export namespace main {
 	    hub_url: string;
 	    state: string;
 	    balance_sats: number;
+	    tunnel_ready: boolean;
+	    tunnel_error?: string;
 	    error?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -83,6 +176,8 @@ export namespace main {
 	        this.hub_url = source["hub_url"];
 	        this.state = source["state"];
 	        this.balance_sats = source["balance_sats"];
+	        this.tunnel_ready = source["tunnel_ready"];
+	        this.tunnel_error = source["tunnel_error"];
 	        this.error = source["error"];
 	    }
 	}

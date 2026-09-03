@@ -4,6 +4,7 @@
   import HubConnect from './components/HubConnect.svelte'
   import Buy from './components/Buy.svelte'
   import Nodes from './components/Nodes.svelte'
+  import Connection from './components/Connection.svelte'
 
   type Tab = 'buy' | 'nodes'
 
@@ -27,11 +28,6 @@
   function onPurchased(balance: number) {
     if (status) status = { ...status, balance_sats: balance }
   }
-
-  // Tunnel bring-up needs a privileged helper, which is the next milestone.
-  // The button is present but disabled so the gap is visible rather than
-  // silently missing.
-  const tunnelReady = false
 </script>
 
 <main>
@@ -72,12 +68,7 @@
       {/if}
     </section>
 
-    <footer>
-      <button disabled={!tunnelReady} title="Tunnel support lands next">
-        Connect
-      </button>
-      <p class="note">Tunnel bring-up arrives in the next release.</p>
-    </footer>
+    <Connection {status} onChanged={refresh} />
   {/if}
 </main>
 
@@ -161,21 +152,5 @@
   section {
     flex: 1;
     overflow-y: auto;
-  }
-
-  footer {
-    padding: 14px 24px 20px;
-    border-top: 1px solid var(--border);
-  }
-
-  footer button {
-    width: 100%;
-  }
-
-  .note {
-    margin: 8px 0 0;
-    text-align: center;
-    font-size: 11px;
-    color: var(--muted);
   }
 </style>

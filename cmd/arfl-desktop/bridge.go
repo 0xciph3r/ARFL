@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/app"
+	"github.com/Radi-Labs/ARFL/internal/tunnel"
 	"github.com/Radi-Labs/ARFL/pkg/types"
 )
 
@@ -20,6 +21,13 @@ type Bridge struct {
 	mu  sync.Mutex
 	ctx context.Context
 	svc *app.Service
+
+	// tun is held separately from the service so its wgctrl handle can be
+	// released on shutdown; app.Service only owns the session, not the handle.
+	tun *tunnel.Tunnel
+	// tunErr records why privileged networking was unavailable, so the UI can
+	// explain the disabled Connect button instead of failing silently.
+	tunErr string
 }
 
 // NewBridge returns a locked bridge. The wallet stays sealed until the user
@@ -40,11 +48,23 @@ func (b *Bridge) Startup(ctx context.Context) {
 // half-configured tunnel after the window closes.
 func (b *Bridge) Shutdown(ctx context.Context) {
 	svc := b.service()
-	if svc == nil {
-		return
+	if svc != nil {
+		if err := svc.Close(ctx); err != nil {
+			fmt.Printf("arfl-desktop: shutdown: %v\n", err)
+		}
 	}
-	if err := svc.Close(ctx); err != nil {
-		fmt.Printf("arfl-desktop: shutdown: %v\n", err)
+
+	// Release the wgctrl handle after teardown, never before: closing it first
+	// would leave the routes and interfaces in place with no way to remove them.
+	b.mu.Lock()
+	tun := b.tun
+	b.tun = nil
+	b.mu.Unlock()
+
+	if tun != nil {
+		if err := tun.Close(); err != nil {
+			fmt.Printf("arfl-desktop: close tunnel: %v\n", err)
+		}
 	}
 }
 
@@ -54,6 +74,12 @@ type StatusView struct {
 	HubURL   string `json:"hub_url"`
 	State    string `json:"state"`
 	Balance  uint64 `json:"balance_sats"`
+	// TunnelReady reports whether privileged networking is available. The UI
+	// disables Connect when it is not, rather than letting the user pay for a
+	// session that cannot be established.
+	TunnelReady bool `json:"tunnel_ready"`
+	// TunnelError explains an unavailable tunnel, typically missing root.
+	TunnelError string `json:"tunnel_error,omitempty"`
 	// Error carries a non-fatal problem (for example an unreadable balance)
 	// without failing the whole call, so the UI can still render.
 	Error string `json:"error,omitempty"`
@@ -72,17 +98,53 @@ func (b *Bridge) Unlock(passphrase string) (*StatusView, error) {
 		return nil, fmt.Errorf("a passphrase is required to unlock the wallet")
 	}
 
+	// Privileged networking is optional. Without it the wallet still mints,
+	// holds balance and browses nodes, so a user without root gets a working
+	// app with Connect disabled rather than one that refuses to open.
+	//
+	// tunnel.New succeeds unprivileged, so Preflight is what actually decides:
+	// without it the UI would offer Connect, the service would pay both nodes,
+	// and bring-up would then fail on the first route command with the sats
+	// already burned.
+	tun, tunErr := tunnel.New()
+	if tunErr == nil {
+		tunErr = tun.Preflight()
+		if tunErr != nil {
+			tun.Close()
+			tun = nil
+		}
+	}
+	if tunErr != nil {
+		b.tunErr = tunErr.Error()
+	}
+
 	svc, err := app.New(app.Config{
-		Passphrase:   passphrase,
-		Tunnel:       nil, // Milestone 3 is wallet + discovery only.
+		Passphrase: passphrase,
+		// A nil *tunnel.Tunnel in an interface is not nil, so pass the
+		// interface explicitly as nil when setup failed.
+		Tunnel:       tunnelOrNil(tun),
 		PollInterval: 2 * time.Second,
 	})
 	if err != nil {
+		if tun != nil {
+			tun.Close()
+		}
 		return nil, err
 	}
 
 	b.svc = svc
+	b.tun = tun
 	return b.status(svc), nil
+}
+
+// tunnelOrNil avoids the typed-nil trap: assigning a nil *tunnel.Tunnel to an
+// app.Tunnel interface yields a non-nil interface, and the service would then
+// call methods on it instead of reporting that no tunnel is configured.
+func tunnelOrNil(t *tunnel.Tunnel) app.Tunnel {
+	if t == nil {
+		return nil
+	}
+	return t
 }
 
 // Locked reports whether the vault still needs a passphrase.
@@ -161,6 +223,43 @@ func (b *Bridge) ListNodes() ([]types.NodeInfo, error) {
 	return nodes, nil
 }
 
+// Connect establishes the two-hop tunnel, paying perHopSats to each node.
+//
+// The call is bounded: node handshakes and route changes can hang on a
+// misbehaving node, and an unbounded call would leave the UI spinning with no
+// way back to a disconnected state.
+func (b *Bridge) Connect(perHopSats uint64) (*app.Session, error) {
+	svc, ctx, err := b.ready()
+	if err != nil {
+		return nil, err
+	}
+
+	b.mu.Lock()
+	ready, reason := b.tun != nil, b.tunErr
+	b.mu.Unlock()
+
+	if !ready {
+		if reason == "" {
+			reason = "privileged networking is unavailable"
+		}
+		return nil, fmt.Errorf("cannot connect: %s", reason)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	return svc.Connect(ctx, perHopSats)
+}
+
+// Session returns the active session, or nil when disconnected.
+func (b *Bridge) Session() *app.Session {
+	svc := b.service()
+	if svc == nil {
+		return nil
+	}
+	return svc.Session()
+}
+
 // Disconnect tears down the active session.
 func (b *Bridge) Disconnect() error {
 	svc, ctx, err := b.ready()
@@ -173,9 +272,11 @@ func (b *Bridge) Disconnect() error {
 // status builds a snapshot. Callers must hold b.mu.
 func (b *Bridge) status(svc *app.Service) *StatusView {
 	view := &StatusView{
-		Unlocked: true,
-		HubURL:   svc.HubURL(),
-		State:    string(svc.State()),
+		Unlocked:    true,
+		HubURL:      svc.HubURL(),
+		State:       string(svc.State()),
+		TunnelReady: b.tun != nil,
+		TunnelError: b.tunErr,
 	}
 	if view.HubURL == "" {
 		return view

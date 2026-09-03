@@ -131,6 +131,16 @@ func (t *Tunnel) PublicKey() (string, error) {
 	return t.keys.PublicKey, nil
 }
 
+// Preflight reports whether the tunnel could be brought up right now, without
+// making any change.
+//
+// app.Service pays both nodes before calling Up, so a failure discovered
+// during bring-up costs the user real sats. This is checked first so an
+// unprivileged process is refused before any payment.
+func (t *Tunnel) Preflight() error {
+	return checkPrivileges()
+}
+
 // Up establishes the nested tunnel.
 func (t *Tunnel) Up(ctx context.Context, cfg app.TunnelConfig) error {
 	t.mu.Lock()

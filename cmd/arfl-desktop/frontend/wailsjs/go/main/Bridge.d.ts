@@ -8,6 +8,8 @@ export function AwaitPurchase(arg1:string):Promise<number>;
 
 export function Balance():Promise<number>;
 
+export function Connect(arg1:number):Promise<app.Session>;
+
 export function ConnectHub(arg1:string):Promise<app.HubStatus>;
 
 export function Disconnect():Promise<void>;
@@ -17,6 +19,8 @@ export function ListNodes():Promise<Array<types.NodeInfo>>;
 export function Locked():Promise<boolean>;
 
 export function Purchase(arg1:number):Promise<app.Invoice>;
+
+export function Session():Promise<app.Session>;
 
 export function Status():Promise<main.StatusView>;
 

@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
-	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
@@ -29,7 +27,16 @@ func NewManager() (*WgctrlManager, error) {
 }
 
 func (m *WgctrlManager) CreateInterface(cfg InterfaceConfig) error {
-	if err := m.createOSInterface(cfg.Name); err != nil {
+	mtu := cfg.MTU
+	if mtu == 0 {
+		mtu = 1280
+	}
+	cfg.MTU = mtu
+
+	// The full config is passed through because Windows installs a tunnel
+	// service that must be given the key and address up front, whereas Linux
+	// and macOS create a bare interface and configure it afterwards.
+	if err := m.createOSInterface(cfg); err != nil {
 		return fmt.Errorf("create OS interface %s: %w", cfg.Name, err)
 	}
 
@@ -48,11 +55,6 @@ func (m *WgctrlManager) CreateInterface(cfg InterfaceConfig) error {
 
 	if err := m.client.ConfigureDevice(cfg.Name, wgCfg); err != nil {
 		return fmt.Errorf("configure device %s: %w", cfg.Name, err)
-	}
-
-	mtu := cfg.MTU
-	if mtu == 0 {
-		mtu = 1280
 	}
 
 	if err := m.setAddress(cfg.Name, cfg.Address, mtu); err != nil {
@@ -130,7 +132,9 @@ func (m *WgctrlManager) GetPeerStats(iface string) ([]PeerStats, error) {
 	stats := make([]PeerStats, 0, len(dev.Peers))
 	for _, peer := range dev.Peers {
 		ps := PeerStats{
-			PublicKey:     base64Encode(peer.PublicKey[:]),
+			// Must match the encoding used by AddPeer and GenerateKeyPair,
+			// otherwise callers cannot correlate stats with the peer they added.
+			PublicKey:     peer.PublicKey.String(),
 			ReceiveBytes:  peer.ReceiveBytes,
 			TransmitBytes: peer.TransmitBytes,
 			TotalBytes:    peer.ReceiveBytes + peer.TransmitBytes,
@@ -151,75 +155,6 @@ func (m *WgctrlManager) Close() error {
 	return m.client.Close()
 }
 
-// --- Platform-specific interface management ---
-
-func (m *WgctrlManager) createOSInterface(name string) error {
-	switch runtime.GOOS {
-	case "linux":
-		// If the interface already exists (e.g. crash recovery), remove it first.
-		if err := run("ip", "link", "add", name, "type", "wireguard"); err != nil {
-			if strings.Contains(err.Error(), "File exists") {
-				_ = run("ip", "link", "delete", name)
-				return run("ip", "link", "add", name, "type", "wireguard")
-			}
-			return err
-		}
-		return nil
-	case "darwin":
-		// macOS uses wireguard-go userspace implementation
-		return run("wireguard-go", name)
-	default:
-		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
-	}
-}
-
-func (m *WgctrlManager) deleteOSInterface(name string) error {
-	switch runtime.GOOS {
-	case "linux":
-		return run("ip", "link", "delete", name)
-	case "darwin":
-		// wireguard-go creates a utun device; removing the socket file stops it
-		return run("rm", "-f", "/var/run/wireguard/"+name+".sock")
-	default:
-		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
-	}
-}
-
-func (m *WgctrlManager) setAddress(name, address string, mtu int) error {
-	switch runtime.GOOS {
-	case "linux":
-		if err := run("ip", "addr", "add", address, "dev", name); err != nil {
-			return err
-		}
-		return run("ip", "link", "set", name, "mtu", strconv.Itoa(mtu))
-	case "darwin":
-		ip, ipNet, err := net.ParseCIDR(address)
-		if err != nil {
-			return fmt.Errorf("parse address %s: %w", address, err)
-		}
-		// macOS ifconfig: ifconfig utunX inet IP PEER_IP netmask MASK
-		peerIP := ip.String()
-		mask := net.IP(ipNet.Mask).String()
-		if err := run("ifconfig", name, "inet", ip.String(), peerIP, "netmask", mask); err != nil {
-			return err
-		}
-		return run("ifconfig", name, "mtu", strconv.Itoa(mtu))
-	default:
-		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
-	}
-}
-
-func (m *WgctrlManager) bringUp(name string) error {
-	switch runtime.GOOS {
-	case "linux":
-		return run("ip", "link", "set", name, "up")
-	case "darwin":
-		return nil // wireguard-go brings interface up automatically
-	default:
-		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
-	}
-}
-
 // --- Helpers ---
 
 func run(name string, args ...string) error {
@@ -229,12 +164,4 @@ func run(name string, args ...string) error {
 		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
-}
-
-func base64Encode(data []byte) string {
-	return strings.TrimRight(
-		strings.Replace(
-			fmt.Sprintf("%s", data), "\n", "", -1,
-		), "=",
-	)
 }

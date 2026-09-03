@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
-	"runtime"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.zx2c4.com/wireguard/wgctrl"
@@ -17,6 +16,16 @@ import (
 // configuration and OS commands for interface creation.
 type WgctrlManager struct {
 	client *wgctrl.Client
+
+	// osNames maps the caller's logical interface name to the name the OS
+	// actually assigned.
+	//
+	// They differ on macOS, where the utun driver refuses arbitrary names and
+	// the kernel picks utunN. Every OS-level call — wgctrl, ifconfig, route —
+	// must use the real name, so the mapping is resolved centrally here rather
+	// than leaking the platform difference to callers.
+	mu      sync.Mutex
+	osNames map[string]string
 }
 
 // NewManager creates a new WgctrlManager.
@@ -25,13 +34,52 @@ func NewManager() (*WgctrlManager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create wgctrl client: %w", err)
 	}
-	return &WgctrlManager{client: client}, nil
+	return &WgctrlManager{client: client, osNames: map[string]string{}}, nil
+}
+
+// InterfaceName returns the OS-level name for a logical interface.
+//
+// Callers that run their own network commands — adding routes, for example —
+// must use this rather than the name they passed to CreateInterface.
+func (m *WgctrlManager) InterfaceName(logical string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if real, ok := m.osNames[logical]; ok {
+		return real
+	}
+	return logical
+}
+
+func (m *WgctrlManager) setOSName(logical, real string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.osNames[logical] = real
+}
+
+func (m *WgctrlManager) forgetOSName(logical string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.osNames, logical)
 }
 
 func (m *WgctrlManager) CreateInterface(cfg InterfaceConfig) error {
-	if err := m.createOSInterface(cfg.Name); err != nil {
+	mtu := cfg.MTU
+	if mtu == 0 {
+		mtu = 1280
+	}
+	cfg.MTU = mtu
+
+	// The full config is passed through because Windows installs a tunnel
+	// service that must be given the key and address up front, whereas Linux
+	// and macOS create a bare interface and configure it afterwards.
+	//
+	// The OS may not honour the requested name, so everything below uses the
+	// name it reports back.
+	osName, err := m.createOSInterface(cfg)
+	if err != nil {
 		return fmt.Errorf("create OS interface %s: %w", cfg.Name, err)
 	}
+	m.setOSName(cfg.Name, osName)
 
 	privKey, err := ParseKey(cfg.PrivateKey)
 	if err != nil {
@@ -46,28 +94,27 @@ func (m *WgctrlManager) CreateInterface(cfg InterfaceConfig) error {
 		wgCfg.ListenPort = &port
 	}
 
-	if err := m.client.ConfigureDevice(cfg.Name, wgCfg); err != nil {
-		return fmt.Errorf("configure device %s: %w", cfg.Name, err)
+	if err := m.client.ConfigureDevice(osName, wgCfg); err != nil {
+		return fmt.Errorf("configure device %s: %w", osName, err)
 	}
 
-	mtu := cfg.MTU
-	if mtu == 0 {
-		mtu = 1280
+	if err := m.setAddress(osName, cfg.Address, mtu); err != nil {
+		return fmt.Errorf("set address on %s: %w", osName, err)
 	}
 
-	if err := m.setAddress(cfg.Name, cfg.Address, mtu); err != nil {
-		return fmt.Errorf("set address on %s: %w", cfg.Name, err)
-	}
-
-	if err := m.bringUp(cfg.Name); err != nil {
-		return fmt.Errorf("bring up %s: %w", cfg.Name, err)
+	if err := m.bringUp(osName); err != nil {
+		return fmt.Errorf("bring up %s: %w", osName, err)
 	}
 
 	return nil
 }
 
 func (m *WgctrlManager) DeleteInterface(name string) error {
-	return m.deleteOSInterface(name)
+	err := m.deleteOSInterface(m.InterfaceName(name))
+	// Drop the mapping either way: a stale entry would make a later attempt to
+	// recreate the interface talk to a device that no longer exists.
+	m.forgetOSName(name)
+	return err
 }
 
 func (m *WgctrlManager) AddPeer(iface string, peer PeerConfig) error {
@@ -102,7 +149,7 @@ func (m *WgctrlManager) AddPeer(iface string, peer PeerConfig) error {
 		peerCfg.PersistentKeepaliveInterval = &dur
 	}
 
-	return m.client.ConfigureDevice(iface, wgtypes.Config{
+	return m.client.ConfigureDevice(m.InterfaceName(iface), wgtypes.Config{
 		Peers: []wgtypes.PeerConfig{peerCfg},
 	})
 }
@@ -113,7 +160,7 @@ func (m *WgctrlManager) RemovePeer(iface string, pubkey string) error {
 		return fmt.Errorf("parse peer public key: %w", err)
 	}
 
-	return m.client.ConfigureDevice(iface, wgtypes.Config{
+	return m.client.ConfigureDevice(m.InterfaceName(iface), wgtypes.Config{
 		Peers: []wgtypes.PeerConfig{{
 			PublicKey: key,
 			Remove:    true,
@@ -122,7 +169,7 @@ func (m *WgctrlManager) RemovePeer(iface string, pubkey string) error {
 }
 
 func (m *WgctrlManager) GetPeerStats(iface string) ([]PeerStats, error) {
-	dev, err := m.client.Device(iface)
+	dev, err := m.client.Device(m.InterfaceName(iface))
 	if err != nil {
 		return nil, fmt.Errorf("get device %s: %w", iface, err)
 	}
@@ -130,7 +177,9 @@ func (m *WgctrlManager) GetPeerStats(iface string) ([]PeerStats, error) {
 	stats := make([]PeerStats, 0, len(dev.Peers))
 	for _, peer := range dev.Peers {
 		ps := PeerStats{
-			PublicKey:     base64Encode(peer.PublicKey[:]),
+			// Must match the encoding used by AddPeer and GenerateKeyPair,
+			// otherwise callers cannot correlate stats with the peer they added.
+			PublicKey:     peer.PublicKey.String(),
 			ReceiveBytes:  peer.ReceiveBytes,
 			TransmitBytes: peer.TransmitBytes,
 			TotalBytes:    peer.ReceiveBytes + peer.TransmitBytes,
@@ -151,75 +200,6 @@ func (m *WgctrlManager) Close() error {
 	return m.client.Close()
 }
 
-// --- Platform-specific interface management ---
-
-func (m *WgctrlManager) createOSInterface(name string) error {
-	switch runtime.GOOS {
-	case "linux":
-		// If the interface already exists (e.g. crash recovery), remove it first.
-		if err := run("ip", "link", "add", name, "type", "wireguard"); err != nil {
-			if strings.Contains(err.Error(), "File exists") {
-				_ = run("ip", "link", "delete", name)
-				return run("ip", "link", "add", name, "type", "wireguard")
-			}
-			return err
-		}
-		return nil
-	case "darwin":
-		// macOS uses wireguard-go userspace implementation
-		return run("wireguard-go", name)
-	default:
-		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
-	}
-}
-
-func (m *WgctrlManager) deleteOSInterface(name string) error {
-	switch runtime.GOOS {
-	case "linux":
-		return run("ip", "link", "delete", name)
-	case "darwin":
-		// wireguard-go creates a utun device; removing the socket file stops it
-		return run("rm", "-f", "/var/run/wireguard/"+name+".sock")
-	default:
-		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
-	}
-}
-
-func (m *WgctrlManager) setAddress(name, address string, mtu int) error {
-	switch runtime.GOOS {
-	case "linux":
-		if err := run("ip", "addr", "add", address, "dev", name); err != nil {
-			return err
-		}
-		return run("ip", "link", "set", name, "mtu", strconv.Itoa(mtu))
-	case "darwin":
-		ip, ipNet, err := net.ParseCIDR(address)
-		if err != nil {
-			return fmt.Errorf("parse address %s: %w", address, err)
-		}
-		// macOS ifconfig: ifconfig utunX inet IP PEER_IP netmask MASK
-		peerIP := ip.String()
-		mask := net.IP(ipNet.Mask).String()
-		if err := run("ifconfig", name, "inet", ip.String(), peerIP, "netmask", mask); err != nil {
-			return err
-		}
-		return run("ifconfig", name, "mtu", strconv.Itoa(mtu))
-	default:
-		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
-	}
-}
-
-func (m *WgctrlManager) bringUp(name string) error {
-	switch runtime.GOOS {
-	case "linux":
-		return run("ip", "link", "set", name, "up")
-	case "darwin":
-		return nil // wireguard-go brings interface up automatically
-	default:
-		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
-	}
-}
-
 // --- Helpers ---
 
 func run(name string, args ...string) error {
@@ -229,12 +209,4 @@ func run(name string, args ...string) error {
 		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
-}
-
-func base64Encode(data []byte) string {
-	return strings.TrimRight(
-		strings.Replace(
-			fmt.Sprintf("%s", data), "\n", "", -1,
-		), "=",
-	)
 }

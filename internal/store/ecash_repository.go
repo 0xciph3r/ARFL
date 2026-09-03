@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/Radi-Labs/ARFL/internal/ecash"
 )
@@ -101,6 +102,12 @@ func (s *Store) UpdateMintQuoteState(id string, state ecash.QuoteState) error {
 }
 
 // SaveSpentProofs records proofs as spent (batch insert in a transaction).
+//
+// The y column is the primary key, so a proof already recorded by a concurrent
+// request fails the insert. That is reported as ecash.ErrProofAlreadySpent so
+// callers reject the spend rather than treating it as an internal fault. This
+// is the backstop when several hub instances share one database and an
+// in-process lock cannot serialise them.
 func (s *Store) SaveSpentProofs(proofs []ecash.SpentProof) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -120,11 +127,30 @@ func (s *Store) SaveSpentProofs(proofs []ecash.SpentProof) error {
 		_, err := stmt.Exec(p.Y, p.KeysetID, p.Amount, p.Secret, p.C,
 			p.SpentAt.UTC().Format("2006-01-02T15:04:05Z"))
 		if err != nil {
+			if isUniqueViolation(err) {
+				return ecash.ErrProofAlreadySpent
+			}
 			return fmt.Errorf("inserting spent proof %s: %w", p.Y, err)
 		}
 	}
 
 	return tx.Commit()
+}
+
+// isUniqueViolation reports whether err is a primary key or unique constraint
+// failure.
+//
+// This matches on the message rather than the driver's typed error because
+// go-sqlite3's error type only exists under cgo, and the non-cgo builds used
+// for cross-compiling the client would not compile against it. Both messages
+// below are the fixed strings SQLite emits for the two forms of the constraint.
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToUpper(err.Error())
+	return strings.Contains(msg, "UNIQUE CONSTRAINT FAILED") ||
+		strings.Contains(msg, "PRIMARY KEY MUST BE UNIQUE")
 }
 
 // IsProofSpent checks if a proof (identified by Y) has been spent.

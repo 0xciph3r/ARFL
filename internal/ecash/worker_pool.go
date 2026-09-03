@@ -52,12 +52,25 @@ func (wp *WorkerPool) SignBlindedMessages(ctx context.Context, outputs cashu.Bli
 }
 
 // VerifyProofs acquires a worker slot, then verifies.
+//
+// This only checks proofs; it does not mark them spent. Callers that intend to
+// spend must use VerifyAndMarkSpent, or two concurrent requests can both see
+// the same proof as unspent.
 func (wp *WorkerPool) VerifyProofs(ctx context.Context, proofs cashu.Proofs) ([]SpentProof, error) {
 	if err := wp.acquire(ctx); err != nil {
 		return nil, err
 	}
 	defer wp.release()
 	return wp.mint.VerifyProofs(proofs)
+}
+
+// VerifyAndMarkSpent acquires a worker slot, then verifies and spends atomically.
+func (wp *WorkerPool) VerifyAndMarkSpent(ctx context.Context, proofs cashu.Proofs) ([]SpentProof, error) {
+	if err := wp.acquire(ctx); err != nil {
+		return nil, err
+	}
+	defer wp.release()
+	return wp.mint.VerifyAndMarkSpent(proofs)
 }
 
 // Swap acquires a worker slot, then performs the swap.

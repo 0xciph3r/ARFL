@@ -1,0 +1,11 @@
+build/bin
+node_modules
+
+# Vite output is a build artifact, but main.go embeds this directory, so an
+# empty placeholder must stay tracked or `go build ./...` fails on a fresh
+# clone before the frontend has ever been built.
+frontend/dist/*
+!frontend/dist/.gitkeep
+
+# Wails frontend dependency checksum, regenerated on every build.
+package.json.md5

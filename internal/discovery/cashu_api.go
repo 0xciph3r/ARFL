@@ -45,6 +45,8 @@ func (api *DiscoveryAPI) SetMint(mint *ecash.Mint, mintStore ecash.Store) {
 	api.mux.HandleFunc("/v1/keysets", api.handleKeysets)
 	// NUT-04: Mint quote (request + check + mint)
 	api.mux.HandleFunc("/v1/mint/quote/bolt11", api.handleMintQuote)
+	// Trailing-slash pattern so GET /v1/mint/quote/bolt11/{id} resolves.
+	api.mux.HandleFunc("/v1/mint/quote/bolt11/", api.handleMintQuote)
 	api.mux.HandleFunc("/v1/mint/bolt11", api.handleMintTokens)
 	// NUT-03: Swap
 	api.mux.HandleFunc("/v1/swap", api.handleSwap)
@@ -509,28 +511,24 @@ func (api *DiscoveryAPI) handleRedeem(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), cryptoTimeout)
 	defer cancel()
 
-	spentProofs, err := api.cryptoPool.VerifyProofs(ctx, req.Proofs)
+	// Verify and mark spent in one step. Doing these separately let two
+	// concurrent requests carrying the same proof both pass the spent check
+	// before either recorded it, so both were paid for the same ecash.
+	_, err := api.cryptoPool.VerifyAndMarkSpent(ctx, req.Proofs)
 	if err != nil {
-		switch err {
-		case ecash.ErrInvalidProof:
+		switch {
+		case errors.Is(err, ecash.ErrInvalidProof):
 			writeError(w, http.StatusBadRequest, "invalid proof")
-		case ecash.ErrProofAlreadySpent:
+		case errors.Is(err, ecash.ErrProofAlreadySpent):
 			writeError(w, http.StatusConflict, "proof already spent")
-		case ecash.ErrDuplicateProofs:
+		case errors.Is(err, ecash.ErrDuplicateProofs):
 			writeError(w, http.StatusBadRequest, "duplicate proofs")
-		case ecash.ErrUnknownKeyset:
+		case errors.Is(err, ecash.ErrUnknownKeyset):
 			writeError(w, http.StatusBadRequest, "unknown keyset")
 		default:
-			log.Printf("[ecash] redeem verify error: %v", err)
+			log.Printf("[ecash] redeem error: %v", err)
 			writeError(w, http.StatusInternalServerError, "verification failed")
 		}
-		return
-	}
-
-	// Mark proofs as spent.
-	if err := api.mintStore.SaveSpentProofs(spentProofs); err != nil {
-		log.Printf("[ecash] redeem save spent error: %v", err)
-		writeError(w, http.StatusInternalServerError, "failed to record redemption")
 		return
 	}
 

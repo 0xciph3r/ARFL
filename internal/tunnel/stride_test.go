@@ -3,6 +3,7 @@ package tunnel
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -59,6 +60,31 @@ func TestSTRIDE_Spoofing_SameOperatorRunsBothHops(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "same operator") {
 		t.Fatalf("error should explain the collapsed hop, got %q", err)
+	}
+	assertNothingApplied(t, fwg, fnet)
+}
+
+func TestSTRIDE_Spoofing_BothHopsOnOneHostViaDifferentPorts(t *testing.T) {
+	// The shared-key check above is not enough. A hostile hub can run both hops
+	// on one machine with two distinct WireGuard keys, listening on two ports,
+	// and every string in the config differs. That host still terminates the
+	// outer tunnel — seeing the client's real address — and the inner tunnel,
+	// seeing the destination, which is the correlation the second hop exists to
+	// prevent. Only comparing the resolved addresses catches it.
+	fwg, fnet := newFakeWG(), newFakeNet()
+	tun := newReadyTunnel(t, fwg, fnet)
+
+	cfg := validConfig()
+	entryHost, _, err := net.SplitHostPort(cfg.Entry.Endpoint)
+	if err != nil {
+		t.Fatalf("split entry endpoint: %v", err)
+	}
+	cfg.Exit.Endpoint = net.JoinHostPort(entryHost, "51821")
+
+	if err := tun.Up(context.Background(), cfg); err == nil {
+		t.Fatal("both hops on one host must be rejected even when the keys and ports differ")
+	} else if !strings.Contains(err.Error(), "two-hop") {
+		t.Fatalf("error should explain the collapsed guarantee, got %q", err)
 	}
 	assertNothingApplied(t, fwg, fnet)
 }

@@ -461,6 +461,20 @@ func (s *loadMemStore) UpdateMintQuoteState(id string, state ecash.QuoteState) e
 	return nil
 }
 
+func (s *loadMemStore) TransitionMintQuoteState(id string, from, to ecash.QuoteState) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	q, ok := s.quotes[id]
+	if !ok {
+		return false, ecash.ErrQuoteNotFound
+	}
+	if q.State != from {
+		return false, nil
+	}
+	q.State = to
+	return true, nil
+}
+
 func (s *loadMemStore) IsProofSpent(y string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

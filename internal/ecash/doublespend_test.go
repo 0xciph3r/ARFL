@@ -25,7 +25,11 @@ type racyStore struct {
 	mu      sync.Mutex
 	spent   map[string]bool
 	readGap time.Duration
-	reads   int
+
+	// active/peak track how many reads overlap, so concurrency can be
+	// asserted directly instead of inferred from elapsed time.
+	active int
+	peak   int
 }
 
 func newRacyStore() *racyStore {
@@ -42,11 +46,26 @@ func newRacyStore() *racyStore {
 func (s *racyStore) IsProofSpent(y string) (bool, error) {
 	s.mu.Lock()
 	was := s.spent[y]
-	s.reads++
+	s.active++
+	if s.active > s.peak {
+		s.peak = s.active
+	}
 	s.mu.Unlock()
 
 	time.Sleep(s.readGap)
+
+	s.mu.Lock()
+	s.active--
+	s.mu.Unlock()
 	return was, nil
+}
+
+// peakReaders reports the greatest number of reads that were ever in flight
+// at the same time.
+func (s *racyStore) peakReaders() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.peak
 }
 
 // SaveSpentProofs deliberately overwrites without complaint, so acceptance is
@@ -64,6 +83,42 @@ func (s *racyStore) GetSpentProofsCount() (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return int64(len(s.spent)), nil
+}
+
+// GetMintQuote stalls after reading, so concurrent callers all observe the same
+// state and any check-then-act on it is exposed.
+func (s *racyStore) GetMintQuote(id string) (*MintQuote, error) {
+	s.mu.Lock()
+	q, ok := s.quotes[id]
+	if !ok {
+		s.mu.Unlock()
+		return nil, ErrQuoteNotFound
+	}
+	// Copy under the lock. Reading the fields after releasing it would race
+	// with a concurrent transition writing them.
+	copied := *q
+	s.mu.Unlock()
+
+	time.Sleep(s.readGap)
+	return &copied, nil
+}
+
+// TransitionMintQuoteState compares and sets atomically, as the contract on
+// ecash.Store requires. The race must be settled by the mint using this, not by
+// the store being lucky.
+func (s *racyStore) TransitionMintQuoteState(id string, from, to QuoteState) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	q, ok := s.quotes[id]
+	if !ok {
+		return false, ErrQuoteNotFound
+	}
+	if q.State != from {
+		return false, nil
+	}
+	q.State = to
+	return true, nil
 }
 
 // spendRace fires n concurrent attempts to spend the same proof, released
@@ -178,9 +233,63 @@ func TestSwapIsAtomic(t *testing.T) {
 	}
 }
 
+// TestMintTokensIssuesOncePerQuote is the regression test for quote
+// double-issuance: MintTokens used to read the quote state, sign, and only
+// then mark it issued, so two concurrent requests for one paid invoice both
+// saw QuotePaid and both received signatures — one Lightning payment, two sets
+// of tokens.
+//
+// The store stalls inside the quote read, so without an atomic claim every
+// caller is guaranteed to observe QuotePaid. Exactly one may be served.
+func TestMintTokensIssuesOncePerQuote(t *testing.T) {
+	store := newRacyStore()
+	m, err := NewMint(store, testSeed)
+	if err != nil {
+		t.Fatalf("new mint: %v", err)
+	}
+
+	const quoteID = "quote-race"
+	store.quotes[quoteID] = &MintQuote{
+		ID:     quoteID,
+		Amount: 8,
+		State:  QuotePaid,
+	}
+
+	const attempts = 8
+	accepted, errs := spendRace(t, attempts, func() error {
+		outputs, err := blindedOutputs(m, 8)
+		if err != nil {
+			return err
+		}
+		_, err = m.MintTokens(quoteID, outputs)
+		return err
+	})
+
+	if accepted != 1 {
+		t.Fatalf("one paid quote issued tokens %d times out of %d concurrent attempts, want exactly 1: the mint gave away %d free token sets", accepted, attempts, accepted-1)
+	}
+	for _, err := range errs {
+		if !errors.Is(err, ErrQuoteAlreadyUsed) {
+			t.Errorf("losing attempt failed with %v, want ErrQuoteAlreadyUsed", err)
+		}
+	}
+
+	q, err := store.GetMintQuote(quoteID)
+	if err != nil {
+		t.Fatalf("get quote: %v", err)
+	}
+	if q.State != QuoteIssued {
+		t.Errorf("quote state = %v, want %v", q.State, QuoteIssued)
+	}
+}
+
 // TestVerifyProofsStillAllowsConcurrentReads guards against fixing the race by
 // serialising all verification: checking proofs without spending them (the
 // /v1/checkstate path) must not queue behind other callers' spends.
+//
+// Concurrency is measured directly rather than by elapsed time. A wall-clock
+// bound would flake on a loaded CI runner under -race, and would only show
+// overlap indirectly.
 func TestVerifyProofsStillAllowsConcurrentReads(t *testing.T) {
 	store := newRacyStore()
 	m, err := NewMint(store, testSeed)
@@ -194,7 +303,6 @@ func TestVerifyProofsStillAllowsConcurrentReads(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(readers)
 
-	began := time.Now()
 	for i := 0; i < readers; i++ {
 		go func() {
 			defer wg.Done()
@@ -205,10 +313,7 @@ func TestVerifyProofsStillAllowsConcurrentReads(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Serialised, this would take readers × readGap. Allow generous slack for
-	// slow CI while still failing if the reads were queued.
-	if limit := time.Duration(readers) * store.readGap; time.Since(began) >= limit {
-		t.Errorf("%d concurrent verifications took %v, at least the %v a fully serialised path would need: read-only checks are being blocked",
-			readers, time.Since(began), limit)
+	if peak := store.peakReaders(); peak < 2 {
+		t.Errorf("peak concurrent verifications was %d of %d readers: read-only checks are being serialised", peak, readers)
 	}
 }

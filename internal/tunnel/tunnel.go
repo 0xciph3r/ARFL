@@ -172,6 +172,21 @@ func (t *Tunnel) Up(ctx context.Context, cfg app.TunnelConfig) error {
 		return fmt.Errorf("exit endpoint: %w", err)
 	}
 
+	// Both hops resolving to one host defeats the point of having two.
+	//
+	// validate() rejects a shared key and an identical endpoint string, but a
+	// hostile hub can hand out two keys on one machine at different ports, or
+	// two hostnames pointing at the same address. That machine would terminate
+	// the outer tunnel, seeing the client's real address, and the inner tunnel,
+	// seeing where the traffic goes — the exact correlation the second hop
+	// exists to prevent. Comparing after resolution catches both forms.
+	//
+	// An operator with two addresses can still run both hops; that is a
+	// discovery and reputation problem, not one the client can settle here.
+	if entryIP == exitIP {
+		return fmt.Errorf("entry and exit both resolve to %s: a single host would see the client and the destination, defeating the two-hop guarantee", entryIP)
+	}
+
 	// Capture the current default route first: once the tunnel takes over the
 	// routing table there is no way to rediscover where traffic used to go.
 	gateway, iface, err := t.net.DefaultRoute()

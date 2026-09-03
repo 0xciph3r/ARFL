@@ -2,6 +2,8 @@ package ecash
 
 import (
 	"encoding/hex"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +17,10 @@ type memStore struct {
 	keysets     map[string]*KeysetRecord
 	quotes      map[string]*MintQuote
 	spentProofs map[string]bool
+
+	// quoteMu guards the compare-and-set in TransitionMintQuoteState, which
+	// concurrency tests rely on to pick a single winner.
+	quoteMu sync.Mutex
 }
 
 func newMemStore() *memStore {
@@ -75,6 +81,23 @@ func (s *memStore) UpdateMintQuoteState(id string, state QuoteState) error {
 	}
 	q.State = state
 	return nil
+}
+
+// TransitionMintQuoteState compares and sets under the store's own lock, so
+// only one caller can move a quote out of a given state.
+func (s *memStore) TransitionMintQuoteState(id string, from, to QuoteState) (bool, error) {
+	s.quoteMu.Lock()
+	defer s.quoteMu.Unlock()
+
+	q, ok := s.quotes[id]
+	if !ok {
+		return false, ErrQuoteNotFound
+	}
+	if q.State != from {
+		return false, nil
+	}
+	q.State = to
+	return true, nil
 }
 
 func (s *memStore) SaveSpentProofs(proofs []SpentProof) error {
@@ -477,5 +500,98 @@ func TestDuplicateProofs(t *testing.T) {
 	_, err := m.VerifyProofs(cashu.Proofs{proof, proof})
 	if err != ErrDuplicateProofs {
 		t.Fatalf("expected ErrDuplicateProofs, got: %v", err)
+	}
+}
+
+// unreleasableStore lets a quote be claimed but refuses to hand it back,
+// standing in for the case where something else has already moved the quote
+// out of QuoteIssued by the time signing fails.
+type unreleasableStore struct {
+	*memStore
+}
+
+func (s *unreleasableStore) TransitionMintQuoteState(id string, from, to QuoteState) (bool, error) {
+	if from == QuoteIssued && to == QuotePaid {
+		return false, nil
+	}
+	return s.memStore.TransitionMintQuoteState(id, from, to)
+}
+
+// unsignableOutputs reference a keyset the mint does not hold, so signing
+// fails after the quote has already been claimed.
+func unsignableOutputs(t *testing.T) cashu.BlindedMessages {
+	t.Helper()
+
+	r, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	B_, _, err := gcrypto.BlindMessage(hex.EncodeToString(r.Serialize()[:16]), r)
+	if err != nil {
+		t.Fatalf("blind: %v", err)
+	}
+	return cashu.BlindedMessages{cashu.NewBlindedMessage("0000000000000000", 8, B_)}
+}
+
+// TestMintTokensReleasesQuoteWhenSigningFails covers the other half of the
+// claim-before-sign change: claiming early means a signing failure would
+// otherwise burn a paid invoice that produced nothing. The quote must go back
+// to QuotePaid so the payer can retry.
+func TestMintTokensReleasesQuoteWhenSigningFails(t *testing.T) {
+	store := newMemStore()
+	m, err := NewMint(store, testSeed)
+	if err != nil {
+		t.Fatalf("NewMint: %v", err)
+	}
+
+	const quoteID = "quote-release"
+	store.quotes[quoteID] = &MintQuote{ID: quoteID, Amount: 8, State: QuotePaid}
+
+	if _, err := m.MintTokens(quoteID, unsignableOutputs(t)); err == nil {
+		t.Fatal("MintTokens succeeded with an unknown keyset, want a signing error")
+	}
+
+	q, err := store.GetMintQuote(quoteID)
+	if err != nil {
+		t.Fatalf("get quote: %v", err)
+	}
+	if q.State != QuotePaid {
+		t.Fatalf("quote state = %v after a failed signing, want %v: the payment was consumed without producing tokens", q.State, QuotePaid)
+	}
+
+	// The retry is the point of releasing it, so prove it actually works.
+	outputs, err := blindedOutputs(m, 8)
+	if err != nil {
+		t.Fatalf("blinded outputs: %v", err)
+	}
+	if _, err := m.MintTokens(quoteID, outputs); err != nil {
+		t.Fatalf("retry after a released quote failed: %v", err)
+	}
+}
+
+// TestMintTokensReportsAFailedRelease guards the case the PR review caught:
+// the release is itself conditional and can lose. Discarding that result would
+// leave a paid quote stranded in QuoteIssued while reporting only the signing
+// error, so an operator would have no way to tell a retryable failure from a
+// payment that can never be recovered.
+func TestMintTokensReportsAFailedRelease(t *testing.T) {
+	store := &unreleasableStore{memStore: newMemStore()}
+	m, err := NewMint(store, testSeed)
+	if err != nil {
+		t.Fatalf("NewMint: %v", err)
+	}
+
+	const quoteID = "quote-stuck"
+	store.quotes[quoteID] = &MintQuote{ID: quoteID, Amount: 8, State: QuotePaid}
+
+	_, err = m.MintTokens(quoteID, unsignableOutputs(t))
+	if err == nil {
+		t.Fatal("MintTokens succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "not released") {
+		t.Errorf("error = %q, want it to report that the quote was not released", err)
+	}
+	if !strings.Contains(err.Error(), quoteID) {
+		t.Errorf("error = %q, want it to name the stranded quote %s", err, quoteID)
 	}
 }

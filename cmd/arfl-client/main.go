@@ -216,10 +216,20 @@ func main() {
 	}
 	log.Println("[client] outer tunnel configured")
 
+	// The OS may not use the name we asked for — macOS assigns utunN — so
+	// routes must use the name it actually assigned. Resolved after the
+	// interface exists; resolving earlier would silently return the logical
+	// name and point the routes at nothing.
+	outerIf := wgMgr.InterfaceName("wg-outer")
+
+	teardown := func() {
+		cleanup(wgMgr, entryIP, exitIP, defaultGW, defaultIface)
+	}
+
 	// 2. Set up routing so exit node's IP goes through outer tunnel
 	log.Println("[client] configuring routes...")
-	addRoute(entryIP+"/32", defaultGW, defaultIface) // entry reachable via real gateway
-	addRoute(exitIP+"/32", "", "wg-outer")           // exit goes through outer tunnel
+	mustRoute(teardown, entryIP+"/32", defaultGW, defaultIface) // entry via real gateway
+	mustRoute(teardown, exitIP+"/32", "", outerIf)              // exit via outer tunnel
 
 	// 3. Create inner tunnel (client <-> exit node, carried inside outer)
 	log.Println("[client] creating inner tunnel to exit node...")
@@ -244,9 +254,11 @@ func main() {
 	}
 	log.Println("[client] inner tunnel configured")
 
+	innerIf := wgMgr.InterfaceName("wg-inner")
+
 	// 4. Route all traffic through inner tunnel
-	addRoute("0.0.0.0/1", "", "wg-inner")
-	addRoute("128.0.0.0/1", "", "wg-inner")
+	mustRoute(teardown, "0.0.0.0/1", "", innerIf)
+	mustRoute(teardown, "128.0.0.0/1", "", innerIf)
 
 	// 5. Set DNS to Quad9 within tunnel
 	setDNS(protocol.DNSResolver)
@@ -284,13 +296,18 @@ func main() {
 }
 
 func cleanup(wgMgr *wg.WgctrlManager, entryIP, exitIP, defaultGW, defaultIface string) {
-	// Remove routes
-	delRoute("0.0.0.0/1", "", "wg-inner")
-	delRoute("128.0.0.0/1", "", "wg-inner")
-	delRoute(exitIP+"/32", "", "wg-outer")
+	// Resolve before deleting the interfaces, since deleting drops the mapping.
+	outerIf := wgMgr.InterfaceName("wg-outer")
+	innerIf := wgMgr.InterfaceName("wg-inner")
+
+	// Every step is attempted even if an earlier one fails. Stopping early
+	// would leave the machine with tunnel routes or DNS still in place and no
+	// tunnel behind them.
+	delRoute("0.0.0.0/1", "", innerIf)
+	delRoute("128.0.0.0/1", "", innerIf)
+	delRoute(exitIP+"/32", "", outerIf)
 	delRoute(entryIP+"/32", defaultGW, defaultIface)
 
-	// Remove interfaces
 	wgMgr.DeleteInterface("wg-inner")
 	wgMgr.DeleteInterface("wg-outer")
 
@@ -359,7 +376,7 @@ func getDefaultGateway() (gw string, iface string) {
 	return gw, iface
 }
 
-func addRoute(cidr, gateway, iface string) {
+func addRoute(cidr, gateway, iface string) error {
 	var err error
 	switch runtime.GOOS {
 	case "linux":
@@ -384,7 +401,24 @@ func addRoute(cidr, gateway, iface string) {
 		}
 	}
 	if err != nil {
-		log.Printf("[route] add %s: %v", cidr, err)
+		return fmt.Errorf("add route %s dev %s: %w", cidr, iface, err)
+	}
+	return nil
+}
+
+// mustRoute adds a route or aborts the connection.
+//
+// A failed route used to be logged and ignored, which meant the client could
+// report a successful connection while traffic kept using the normal
+// interface — the tunnels were up but nothing was directed into them. For a
+// tool whose entire purpose is not leaking traffic, failing loudly is the only
+// safe behaviour, so this tears the connection down and exits.
+func mustRoute(teardown func(), cidr, gateway, iface string) {
+	if err := addRoute(cidr, gateway, iface); err != nil {
+		log.Printf("[client] %v", err)
+		log.Println("[client] refusing to continue: traffic would leave unprotected")
+		teardown()
+		os.Exit(1)
 	}
 }
 

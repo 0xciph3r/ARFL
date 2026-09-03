@@ -394,14 +394,17 @@ func (api *DiscoveryAPI) handleSwap(w http.ResponseWriter, r *http.Request) {
 
 	sigs, err := api.cryptoPool.Swap(ctx, req.Inputs, req.Outputs)
 	if err != nil {
-		switch err {
-		case ecash.ErrInvalidProof:
+		// errors.Is, not equality: a duplicate detected by the store is
+		// wrapped on the way out, and an exact match would report the
+		// conflict as a 500 the client would retry forever.
+		switch {
+		case errors.Is(err, ecash.ErrInvalidProof):
 			writeError(w, http.StatusBadRequest, err.Error())
-		case ecash.ErrProofAlreadySpent:
-			writeError(w, http.StatusConflict, err.Error())
-		case ecash.ErrDuplicateProofs:
+		case errors.Is(err, ecash.ErrProofAlreadySpent):
+			writeError(w, http.StatusConflict, "proof already spent")
+		case errors.Is(err, ecash.ErrDuplicateProofs):
 			writeError(w, http.StatusBadRequest, err.Error())
-		case ecash.ErrAmountMismatch:
+		case errors.Is(err, ecash.ErrAmountMismatch):
 			writeError(w, http.StatusBadRequest, err.Error())
 		default:
 			log.Printf("[ecash] swap error: %v", err)

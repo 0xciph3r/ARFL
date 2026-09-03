@@ -175,9 +175,11 @@ func TestSelectPair_IntegrationWithMockHub(t *testing.T) {
 // --- CashuConnector tests ---
 
 func TestCashuConnector_HappyPath(t *testing.T) {
-	// Mock node /connect endpoint.
+	// Mock the node's /cashu-connect endpoint. The path is asserted exactly:
+	// posting proofs to /connect reaches the RSA gate, which decodes them into
+	// an empty token and rejects the request.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/connect" || r.Method != http.MethodPost {
+		if r.URL.Path != "/cashu-connect" || r.Method != http.MethodPost {
 			http.NotFound(w, r)
 			return
 		}

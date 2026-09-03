@@ -80,6 +80,12 @@ type Store interface {
 	GetMintQuote(id string) (*MintQuote, error)
 	UpdateMintQuoteState(id string, state QuoteState) error
 
+	// TransitionMintQuoteState must compare and set atomically, reporting
+	// false if the quote was not in the expected state. Claiming a quote is
+	// the moment a payment becomes tokens, so a caller that reads the state
+	// and writes it back separately can issue twice for one payment.
+	TransitionMintQuoteState(id string, from, to QuoteState) (bool, error)
+
 	// Spent proofs
 	//
 	// SaveSpentProofs must be atomic across all proofs in the batch and must
@@ -434,15 +440,43 @@ func (m *Mint) MintTokens(quoteID string, outputs cashu.BlindedMessages) (cashu.
 		return nil, ErrOutputOverQuote
 	}
 
+	// Claim the quote before signing anything.
+	//
+	// Checking the state and then marking it issued afterwards is the same
+	// check-then-act hole that allowed proofs to be double spent: two requests
+	// carrying one paid quote both read QuotePaid, both sign, and a single
+	// Lightning payment becomes two sets of tokens. The transition is a
+	// conditional update, so exactly one caller can move the quote out of
+	// QuotePaid and the loser is turned away here, before any signature exists.
+	won, err := m.store.TransitionMintQuoteState(quoteID, QuotePaid, QuoteIssued)
+	if err != nil {
+		return nil, fmt.Errorf("claiming quote: %w", err)
+	}
+	if !won {
+		return nil, ErrQuoteAlreadyUsed
+	}
+
 	// Sign the blinded messages
 	sigs, err := m.SignBlindedMessages(outputs)
 	if err != nil {
+		// The quote is claimed but produced nothing. Hand it back so the payer
+		// can retry rather than losing the payment to a transient failure.
+		//
+		// The release is itself conditional, so it can legitimately lose: if
+		// the quote is no longer QuoteIssued something else has moved it, and
+		// silently discarding that would leave a paid quote stuck in a state
+		// no retry can recover from while reporting only the signing error.
+		// Both cases are surfaced, because a payment that produced no tokens
+		// and cannot be retried is not something an operator should have to
+		// infer from a missing log line.
+		released, rerr := m.store.TransitionMintQuoteState(quoteID, QuoteIssued, QuotePaid)
+		if rerr != nil {
+			return nil, fmt.Errorf("signing failed (%v) and quote %s could not be released: %w", err, quoteID, rerr)
+		}
+		if !released {
+			return nil, fmt.Errorf("signing failed (%v) and quote %s was not released: it is no longer in the issued state", err, quoteID)
+		}
 		return nil, err
-	}
-
-	// Mark quote as issued
-	if err := m.store.UpdateMintQuoteState(quoteID, QuoteIssued); err != nil {
-		return nil, fmt.Errorf("updating quote state: %w", err)
 	}
 
 	return sigs, nil

@@ -88,7 +88,11 @@ func (s *Store) GetMintQuote(id string) (*ecash.MintQuote, error) {
 	return &q, nil
 }
 
-// UpdateMintQuoteState transitions a mint quote to a new state.
+// UpdateMintQuoteState sets a quote's state unconditionally.
+//
+// Prefer TransitionMintQuoteState for the paid-to-issued step: this cannot
+// express "only if the quote has not already been issued", so using it there
+// allows two concurrent requests to issue tokens against a single payment.
 func (s *Store) UpdateMintQuoteState(id string, state ecash.QuoteState) error {
 	res, err := s.db.Exec(`UPDATE mint_quotes SET state = ? WHERE id = ?`, state, id)
 	if err != nil {
@@ -99,6 +103,26 @@ func (s *Store) UpdateMintQuoteState(id string, state ecash.QuoteState) error {
 		return ecash.ErrQuoteNotFound
 	}
 	return nil
+}
+
+// TransitionMintQuoteState moves a quote from one state to another only if it
+// is currently in the expected state, reporting whether it won.
+//
+// The compare and the write are a single statement so the database decides the
+// winner. This is what stops one paid invoice being redeemed for tokens twice
+// when requests arrive concurrently, including against separate hub processes
+// sharing the database, where an in-process lock would not help.
+func (s *Store) TransitionMintQuoteState(id string, from, to ecash.QuoteState) (bool, error) {
+	res, err := s.db.Exec(
+		`UPDATE mint_quotes SET state = ? WHERE id = ? AND state = ?`, to, id, from)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // SaveSpentProofs records proofs as spent (batch insert in a transaction).

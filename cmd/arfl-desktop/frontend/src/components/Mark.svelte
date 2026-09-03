@@ -1,7 +1,7 @@
 <script lang="ts">
   // The ARFL mark, inline rather than an <img> so it can be tinted from CSS
-  // and stay crisp at any size. The path is Meyer's, taken verbatim from
-  // assets/brand/arfl-logo-dark.svg — keep it in sync if the brand changes.
+  // and stay crisp at any size. The path geometry is Meyer's, taken from
+  // assets/brand/arfl-logo-dark.svg; stroke width is tuned for small UI sizes.
   let { size = 20, glow = false }: { size?: number; glow?: boolean } = $props()
 </script>
 

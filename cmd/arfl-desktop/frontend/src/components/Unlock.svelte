@@ -39,7 +39,7 @@
 
   async function submit(event: Event) {
     event.preventDefault()
-    if (!passphrase || busy) return
+    if (!passphrase || busy || resetting) return
     if (mode === 'create' && passphrase !== confirmPassphrase) {
       error = 'Passphrases do not match.'
       return
@@ -60,7 +60,7 @@
   }
 
   async function resetVault() {
-    if (resetAck !== 'RESET' || resetting) return
+    if (resetAck !== 'RESET' || resetting || busy) return
     resetting = true
     error = ''
     try {
@@ -126,7 +126,7 @@
 
     <button
       type="submit"
-      disabled={!passphrase || busy || (mode === 'create' && !confirmPassphrase)}
+      disabled={!passphrase || busy || resetting || (mode === 'create' && !confirmPassphrase)}
     >
       {#if busy}
         {mode === 'create' ? 'Creating…' : 'Unlocking…'}
@@ -150,7 +150,7 @@
         <button
           type="button"
           class="secondary"
-          disabled={resetAck !== 'RESET' || resetting}
+          disabled={resetAck !== 'RESET' || resetting || busy}
           onclick={resetVault}
         >
           {resetting ? 'Resetting…' : 'Reset local wallet'}

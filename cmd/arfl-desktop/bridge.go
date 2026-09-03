@@ -168,8 +168,9 @@ func (b *Bridge) VaultState() (*VaultStateView, error) {
 // in-memory service state from the file on disk.
 func (b *Bridge) ResetVault() error {
 	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	loaded := b.svc != nil
-	b.mu.Unlock()
 	if loaded {
 		return fmt.Errorf("lock the wallet before resetting it")
 	}

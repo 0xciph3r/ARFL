@@ -293,9 +293,14 @@ func (w *Wallet) Reserve(ctx context.Context, amountSats uint64) (cashu.Proofs, 
 
 	payment, change, err := w.swapForChange(ctx, taken, amountSats)
 	if err != nil {
-		// A swap that the mint refused outright leaves the inputs unspent, so
-		// they can go back in the store. Anything else may have burned them;
-		// restoring those would show a balance that cannot be spent.
+		// 409 from /v1/swap means the mint has already seen these proofs
+		// spent. They are burned, and returning them to the store would show
+		// a balance the user can never spend.
+		//
+		// Every other failure — a rejected request, a timeout, an unreachable
+		// hub — leaves them far more likely to be untouched, so they go back.
+		// If one of those was in fact spent, the mint rejects it on the next
+		// attempt, which is a recoverable error rather than a silent loss.
 		var hubErr *HubError
 		if errors.As(err, &hubErr) && hubErr.StatusCode == http.StatusConflict {
 			return nil, fmt.Errorf("swap for change: %w", err)

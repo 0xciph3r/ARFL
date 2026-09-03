@@ -17,10 +17,19 @@ type fakeWG struct {
 	peers    map[string][]wg.PeerConfig
 	failOn   string
 	closeErr error
+	// osNames simulates a platform that renames interfaces, as macOS does.
+	osNames map[string]string
 }
 
 func newFakeWG() *fakeWG {
-	return &fakeWG{peers: map[string][]wg.PeerConfig{}}
+	return &fakeWG{peers: map[string][]wg.PeerConfig{}, osNames: map[string]string{}}
+}
+
+func (f *fakeWG) InterfaceName(logical string) string {
+	if real, ok := f.osNames[logical]; ok {
+		return real
+	}
+	return logical
 }
 
 func (f *fakeWG) CreateInterface(cfg wg.InterfaceConfig) error {
@@ -464,4 +473,40 @@ type failingNet struct {
 
 func (f *failingNet) DeleteRoute(cidr, gateway, iface string) error {
 	return errors.New("route deletion refused")
+}
+
+// On macOS the utun driver refuses arbitrary interface names, so the kernel
+// picks utunN and the tunnel's logical names never exist at the OS level.
+// Routes naming the logical interface would silently target nothing, leaving
+// traffic outside the tunnel.
+func TestRoutesUseTheNameTheOSAssigned(t *testing.T) {
+	fwg, fnet := newFakeWG(), newFakeNet()
+	fwg.osNames[OuterInterface] = "utun4"
+	fwg.osNames[InnerInterface] = "utun5"
+	tun := newReadyTunnel(t, fwg, fnet)
+
+	if err := tun.Up(context.Background(), validConfig()); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+
+	for _, r := range fnet.added {
+		if r.iface == OuterInterface || r.iface == InnerInterface {
+			t.Fatalf("route %s uses the logical name %q instead of the assigned one", r.cidr, r.iface)
+		}
+	}
+
+	// The exit node must be reachable over the outer interface, and default
+	// traffic over the inner one.
+	byCIDR := map[string]string{}
+	for _, r := range fnet.added {
+		byCIDR[r.cidr] = r.iface
+	}
+	if got := byCIDR["198.51.100.20/32"]; got != "utun4" {
+		t.Errorf("exit route iface = %q, want utun4", got)
+	}
+	for _, half := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
+		if got := byCIDR[half]; got != "utun5" {
+			t.Errorf("half route %s iface = %q, want utun5", half, got)
+		}
+	}
 }

@@ -22,15 +22,25 @@ import (
 // Installation is asynchronous, so configuring it immediately would race.
 const interfaceReadyTimeout = 15 * time.Second
 
-func (m *WgctrlManager) createOSInterface(cfg InterfaceConfig) error {
+func (m *WgctrlManager) createOSInterface(cfg InterfaceConfig) (string, error) {
 	exe, err := wireguardExe()
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	confPath, err := writeTunnelConfig(cfg)
 	if err != nil {
-		return err
+		return "", err
+	}
+
+	// The config holds the tunnel's private key and the service reads it from
+	// this path for the tunnel's lifetime, so it can only be removed once the
+	// tunnel is gone. Any failure below means CreateInterface never succeeds
+	// and DeleteInterface will not be called, so every early return has to
+	// clean up itself or the key is left on disk indefinitely.
+	cleanup := func() {
+		_ = run(exe, "/uninstalltunnelservice", cfg.Name)
+		_ = os.Remove(confPath)
 	}
 
 	// A leftover service from a crashed session owns the adapter name and
@@ -38,10 +48,21 @@ func (m *WgctrlManager) createOSInterface(cfg InterfaceConfig) error {
 	_ = run(exe, "/uninstalltunnelservice", cfg.Name)
 
 	if err := run(exe, "/installtunnelservice", confPath); err != nil {
-		return fmt.Errorf("install tunnel service (is WireGuard for Windows installed?): %w", err)
+		// The service may have been partially registered before failing, so
+		// tear it down rather than assuming nothing was created.
+		cleanup()
+		return "", fmt.Errorf("install tunnel service (is WireGuard for Windows installed?): %w", err)
 	}
 
-	return m.awaitInterface(cfg.Name)
+	if err := m.awaitInterface(cfg.Name); err != nil {
+		// The service installed but never produced an adapter. Leaving it
+		// registered would block the next attempt, which reuses this name.
+		cleanup()
+		return "", err
+	}
+
+	// The tunnel service uses the requested name for the adapter.
+	return cfg.Name, nil
 }
 
 func (m *WgctrlManager) deleteOSInterface(name string) error {

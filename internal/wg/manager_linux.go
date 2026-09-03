@@ -8,8 +8,9 @@ import (
 )
 
 // Linux has WireGuard in the kernel, so interfaces are managed with iproute2.
+// The kernel honours the requested name, so the OS name always matches.
 
-func (m *WgctrlManager) createOSInterface(cfg InterfaceConfig) error {
+func (m *WgctrlManager) createOSInterface(cfg InterfaceConfig) (string, error) {
 	name := cfg.Name
 
 	if err := run("ip", "link", "add", name, "type", "wireguard"); err != nil {
@@ -17,11 +18,14 @@ func (m *WgctrlManager) createOSInterface(cfg InterfaceConfig) error {
 		// every subsequent connection until the user rebooted.
 		if strings.Contains(err.Error(), "File exists") {
 			_ = run("ip", "link", "delete", name)
-			return run("ip", "link", "add", name, "type", "wireguard")
+			if rerr := run("ip", "link", "add", name, "type", "wireguard"); rerr != nil {
+				return "", rerr
+			}
+			return name, nil
 		}
-		return err
+		return "", err
 	}
-	return nil
+	return name, nil
 }
 
 func (m *WgctrlManager) deleteOSInterface(name string) error {

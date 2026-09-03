@@ -60,6 +60,13 @@ type WireGuard interface {
 	CreateInterface(cfg wg.InterfaceConfig) error
 	DeleteInterface(name string) error
 	AddPeer(iface string, peer wg.PeerConfig) error
+	// InterfaceName maps a logical interface name to the name the OS assigned.
+	//
+	// They differ on macOS, where the utun driver refuses arbitrary names and
+	// the kernel picks utunN. Routes are added with our own commands rather
+	// than through the manager, so they must be given the real name or they
+	// reference an interface that does not exist.
+	InterfaceName(logical string) string
 	Close() error
 }
 
@@ -215,7 +222,10 @@ func (t *Tunnel) bringUp(
 	if err := t.addRoute(route{cidr: entryIP + "/32", gateway: gateway, iface: iface}, state); err != nil {
 		return err
 	}
-	if err := t.addRoute(route{cidr: exitIP + "/32", iface: OuterInterface}, state); err != nil {
+	// Routes must name the interface the OS actually created, which is not the
+	// logical name on macOS.
+	outerOS := t.wg.InterfaceName(OuterInterface)
+	if err := t.addRoute(route{cidr: exitIP + "/32", iface: outerOS}, state); err != nil {
 		return err
 	}
 
@@ -241,8 +251,9 @@ func (t *Tunnel) bringUp(
 	// Two half-routes rather than 0.0.0.0/0: they outrank the existing default
 	// route on longest-prefix match without deleting it, so teardown restores
 	// connectivity by removing these alone.
+	innerOS := t.wg.InterfaceName(InnerInterface)
 	for _, half := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
-		if err := t.addRoute(route{cidr: half, iface: InnerInterface}, state); err != nil {
+		if err := t.addRoute(route{cidr: half, iface: innerOS}, state); err != nil {
 			return err
 		}
 	}

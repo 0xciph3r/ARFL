@@ -134,7 +134,11 @@ func (n *testNode) connectCount() int {
 }
 
 func (n *testNode) handleConnect(w http.ResponseWriter, r *http.Request) {
-	if !strings.HasSuffix(r.URL.Path, "/connect") {
+	// Matched exactly. This used to be HasSuffix(path, "/connect"), which also
+	// matches "/cashu-connect" — so the fake accepted the client posting Cashu
+	// proofs to the RSA endpoint, and the mismatch survived until a real node
+	// rejected it. The fake must be as strict as the node it stands in for.
+	if r.URL.Path != "/cashu-connect" {
 		http.NotFound(w, r)
 		return
 	}

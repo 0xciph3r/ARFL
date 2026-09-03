@@ -39,7 +39,7 @@ func NewCashuConnector() *CashuConnector {
 	}
 }
 
-// CashuConnectRequest is sent to the node's /connect endpoint.
+// CashuConnectRequest is sent to the node's /cashu-connect endpoint.
 type CashuConnectRequest struct {
 	Proofs   cashu.Proofs `json:"proofs"`
 	WGPubkey string       `json:"wg_pubkey"`
@@ -72,7 +72,11 @@ func (cc *CashuConnector) ConnectWithProofs(
 		return nil, fmt.Errorf("marshal connect request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, connectURL+"/connect", bytes.NewReader(reqBody))
+	// The node serves two gates on this port: /connect takes the legacy RSA
+	// blind tokens, /cashu-connect takes Cashu proofs. Posting proofs to
+	// /connect decodes into an empty token and is rejected, so the path must
+	// match the credential being presented.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, connectURL+"/cashu-connect", bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

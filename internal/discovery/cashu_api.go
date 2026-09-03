@@ -45,6 +45,8 @@ func (api *DiscoveryAPI) SetMint(mint *ecash.Mint, mintStore ecash.Store) {
 	api.mux.HandleFunc("/v1/keysets", api.handleKeysets)
 	// NUT-04: Mint quote (request + check + mint)
 	api.mux.HandleFunc("/v1/mint/quote/bolt11", api.handleMintQuote)
+	// Trailing-slash pattern so GET /v1/mint/quote/bolt11/{id} resolves.
+	api.mux.HandleFunc("/v1/mint/quote/bolt11/", api.handleMintQuote)
 	api.mux.HandleFunc("/v1/mint/bolt11", api.handleMintTokens)
 	// NUT-03: Swap
 	api.mux.HandleFunc("/v1/swap", api.handleSwap)

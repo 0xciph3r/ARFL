@@ -2,6 +2,7 @@ package ecash
 
 import (
 	"encoding/hex"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,10 @@ type memStore struct {
 	keysets     map[string]*KeysetRecord
 	quotes      map[string]*MintQuote
 	spentProofs map[string]bool
+
+	// quoteMu guards the compare-and-set in TransitionMintQuoteState, which
+	// concurrency tests rely on to pick a single winner.
+	quoteMu sync.Mutex
 }
 
 func newMemStore() *memStore {
@@ -75,6 +80,23 @@ func (s *memStore) UpdateMintQuoteState(id string, state QuoteState) error {
 	}
 	q.State = state
 	return nil
+}
+
+// TransitionMintQuoteState compares and sets under the store's own lock, so
+// only one caller can move a quote out of a given state.
+func (s *memStore) TransitionMintQuoteState(id string, from, to QuoteState) (bool, error) {
+	s.quoteMu.Lock()
+	defer s.quoteMu.Unlock()
+
+	q, ok := s.quotes[id]
+	if !ok {
+		return false, ErrQuoteNotFound
+	}
+	if q.State != from {
+		return false, nil
+	}
+	q.State = to
+	return true, nil
 }
 
 func (s *memStore) SaveSpentProofs(proofs []SpentProof) error {

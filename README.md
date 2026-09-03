@@ -1,4 +1,6 @@
-# ARFL
+<p align="center">
+  <img src="assets/brand/arfl-banner.png" alt="ARFL" width="720">
+</p>
 
 **Privacy-respecting bandwidth marketplace** — A decentralised VPN protocol powered by Bitcoin.
 
@@ -17,7 +19,7 @@ Users pay per-gigabyte via Lightning. Node operators earn passive income on band
 │           │ ◄── Cashu tokens ─ │  (mint)  │                      │          │
 └─────┬─────┘                    └──────────┘                      └────┬─────┘
       │                                                                 │
-      │  NIP-44 encrypted token                                         │
+      │  token delivery                                                 │
       └────────────────── WireGuard tunnel ────────────────────────────►│
                           (entry → exit → internet)
 ```
@@ -25,8 +27,8 @@ Users pay per-gigabyte via Lightning. Node operators earn passive income on band
 1. **Client** pays a Lightning invoice for bandwidth (e.g., 500 sats for 1 GB)
 2. **Hub** mints Cashu ecash tokens — blind-signed via BDHKE (Blind Diffie-Hellman Key Exchange)
 3. **Client** unblinds tokens locally — Hub mathematically cannot link tokens to the buyer
-4. **Client** encrypts tokens with NIP-44 and delivers to **Node** via Nostr relay
-5. **Node** decrypts, verifies proofs with the Hub's `/v1/redeem`, grants WireGuard access
+4. **Client** delivers tokens to the **Node** — the desktop client posts proofs to the node's `/cashu-connect` endpoint today; NIP-44 encrypted delivery over Nostr is implemented but not yet wired in
+5. **Node** verifies proofs with the Hub's `/v1/redeem`, grants WireGuard access
 6. Traffic flows through a **nested two-hop WireGuard tunnel** (entry → exit → internet)
 
 ### Privacy Properties
@@ -34,7 +36,7 @@ Users pay per-gigabyte via Lightning. Node operators earn passive income on band
 | Property | How |
 |---|---|
 | **Buyer-session unlinkability** | Cashu BDHKE — Hub signs blinded messages, cannot link tokens to buyers |
-| **Token delivery privacy** | NIP-44 encryption — Hub cannot read token contents in transit |
+| **Token delivery privacy** | NIP-44 encryption — Hub cannot read token contents in transit (implemented in `internal/client/token_sender.go`; see the threat model for the client's current path) |
 | **Entry node can't see destinations** | Inner WireGuard tunnel encrypts traffic end-to-end to the exit |
 | **Exit node can't see client IP** | Only sees the entry node's IP (NAT'd) |
 | **No accounts or identity** | Lightning payments require no personal information |
@@ -48,6 +50,8 @@ ARFL is a **privacy-respecting bandwidth marketplace** — not an untraceable VP
 - The residential node economics model works for flat-rate fiber operators. Commercial cloud hosting is explicitly not viable at current pricing.
 - Two-hop routing means every GB costs 2x bandwidth. At $5/250GB, nodes clear ~$0.008/GB each — viable for unmetered pipes, not cloud servers.
 - The hub cannot link buyers to sessions, but a compromised hub could potentially correlate timing. Future work: client-side node pairing from the Nostr relay index.
+- Token delivery in the current client is a direct HTTPS call to each node's `/cashu-connect` endpoint, made before the tunnel is up — so the nodes see the client's IP during setup. The NIP-44 Nostr delivery path exists but is not yet wired into the client.
+- Tunnels route IPv4 only (`0.0.0.0/1` and `128.0.0.0/1`). IPv6 traffic is not encapsulated; disable IPv6 at the OS level to avoid leaking around the tunnel.
 
 ## Installation
 

@@ -35,7 +35,7 @@
   {#if loading}
     <p class="muted">Loading…</p>
   {:else if error}
-    <p class="error">{error}</p>
+    <p class="error" role="alert">{error}</p>
   {:else if nodes.length === 0}
     <p class="muted">This hub has no online nodes right now.</p>
   {:else}

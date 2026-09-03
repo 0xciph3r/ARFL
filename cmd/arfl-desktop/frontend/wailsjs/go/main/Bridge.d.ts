@@ -20,8 +20,12 @@ export function Locked():Promise<boolean>;
 
 export function Purchase(arg1:number):Promise<app.Invoice>;
 
+export function ResetVault():Promise<void>;
+
 export function Session():Promise<app.Session>;
 
 export function Status():Promise<main.StatusView>;
 
 export function Unlock(arg1:string):Promise<main.StatusView>;
+
+export function VaultState():Promise<main.VaultStateView>;

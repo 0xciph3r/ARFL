@@ -34,6 +34,10 @@ export function Purchase(arg1) {
   return window['go']['main']['Bridge']['Purchase'](arg1);
 }
 
+export function ResetVault() {
+  return window['go']['main']['Bridge']['ResetVault']();
+}
+
 export function Session() {
   return window['go']['main']['Bridge']['Session']();
 }
@@ -44,4 +48,8 @@ export function Status() {
 
 export function Unlock(arg1) {
   return window['go']['main']['Bridge']['Unlock'](arg1);
+}
+
+export function VaultState() {
+  return window['go']['main']['Bridge']['VaultState']();
 }

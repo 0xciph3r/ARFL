@@ -42,6 +42,7 @@
   // payment already in flight.
   async function settle(created: Invoice) {
     waiting = true
+    error = ''
     try {
       onPurchased(await api.awaitPurchase(created.quote_id))
       invoice = null
@@ -51,6 +52,10 @@
     } finally {
       waiting = false
     }
+  }
+
+  function retry() {
+    if (invoice) settle(invoice)
   }
 
   async function copy() {
@@ -80,6 +85,7 @@
         <button
           class="secondary"
           class:active={amount === preset}
+          aria-pressed={amount === preset}
           onclick={() => (amount = preset)}
         >
           {preset.toLocaleString()}
@@ -91,7 +97,7 @@
     <input id="amount" type="number" min="1" bind:value={amount} />
 
     {#if error}
-      <p class="error">{error}</p>
+      <p class="error" role="alert">{error}</p>
     {/if}
 
     <button onclick={request} disabled={amount <= 0}>Request invoice</button>
@@ -107,11 +113,18 @@
     </button>
 
     {#if waiting}
-      <p class="waiting">Waiting for payment…</p>
+      <p class="waiting" role="status">Waiting for payment…</p>
     {/if}
 
     {#if error}
-      <p class="error">{error}</p>
+      <p class="error" role="alert">{error}</p>
+      <button class="secondary" onclick={retry} disabled={waiting}>
+        Check payment again
+      </button>
+      <p class="hint">
+        Cancelling discards this invoice. If you have already paid it, check
+        again instead — requesting a new one would charge you twice.
+      </p>
     {/if}
 
     <button class="secondary" onclick={cancel} disabled={waiting}>Cancel</button>
@@ -180,5 +193,12 @@
     font-size: 12px;
     color: var(--err);
     word-break: break-word;
+  }
+
+  .hint {
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--muted);
   }
 </style>

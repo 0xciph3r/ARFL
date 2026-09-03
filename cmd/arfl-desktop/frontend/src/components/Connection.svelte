@@ -54,6 +54,11 @@
 </script>
 
 <footer>
+  <div class="status" class:live={connected}>
+    <span class="dot"></span>
+    {connected ? 'Protected · two-hop tunnel' : 'Not protected · traffic is direct'}
+  </div>
+
   {#if !status.tunnel_ready}
     <button disabled title={status.tunnel_error}>Connect</button>
     <p class="note warn">
@@ -74,14 +79,14 @@
       {busy ? 'Connecting…' : 'Connect'}
     </button>
     {#if affordable}
-      <p class="note">{total} sats · {PER_HOP_SATS} per hop</p>
+      <p class="note">{total} sats · {PER_HOP_SATS} per hop, spent on connect</p>
     {:else}
       <p class="note warn">Need {total} sats to connect. Buy more first.</p>
     {/if}
   {/if}
 
   {#if error}
-    <p class="note warn">{error}</p>
+    <p class="note warn" role="alert">{error}</p>
   {/if}
 </footer>
 
@@ -97,6 +102,39 @@
 
   .danger {
     background: var(--err);
+    /* The base button carries a purple glow; on a destructive control that
+     * reads as unfinished rather than deliberate. */
+    box-shadow: none;
+  }
+
+  /* Whether traffic is actually protected must never be inferred from which
+   * button happens to be showing. */
+  .status {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    margin-bottom: 12px;
+    font-size: 11px;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .status .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--muted);
+  }
+
+  .status.live {
+    color: var(--ok);
+  }
+
+  .status.live .dot {
+    background: var(--ok);
+    box-shadow: 0 0 8px var(--ok);
   }
 
   .note {

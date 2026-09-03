@@ -81,6 +81,13 @@ type Store interface {
 	UpdateMintQuoteState(id string, state QuoteState) error
 
 	// Spent proofs
+	//
+	// SaveSpentProofs must be atomic across all proofs in the batch and must
+	// return ErrProofAlreadySpent if any proof is already recorded, rather
+	// than silently overwriting or partially inserting. Implementations
+	// backed by a shared database are the only defence against double spends
+	// when more than one mint process is running, since the mint's in-process
+	// lock cannot serialise them.
 	SaveSpentProofs(proofs []SpentProof) error
 	IsProofSpent(Y string) (bool, error)
 	GetSpentProofsCount() (int64, error)
@@ -104,6 +111,11 @@ type Mint struct {
 	masterKey     *hdkeychain.ExtendedKey
 	store         Store
 	nextKeysetIdx uint32
+
+	// spendMu serialises verify-then-mark so a proof cannot be accepted twice.
+	// It is separate from mu, which guards keyset state and is held in read
+	// mode during verification.
+	spendMu sync.Mutex
 }
 
 // NewMint creates a mint from a master seed. If no keyset exists in the store,
@@ -348,6 +360,34 @@ func (m *Mint) VerifyProofs(proofs cashu.Proofs) ([]SpentProof, error) {
 	return spent, nil
 }
 
+// VerifyAndMarkSpent verifies proofs and records them as spent as one
+// indivisible step.
+//
+// Verifying and marking separately is a double-spend hole: two concurrent
+// requests carrying the same proof can both read it as unspent before either
+// records it, and both are then accepted. spendMu closes that window, so every
+// caller that intends to spend proofs must use this rather than calling
+// VerifyProofs and SaveSpentProofs itself.
+//
+// The lock only covers one process. A hub running as several instances against
+// a shared database still relies on the store rejecting a duplicate insert,
+// which is why SaveSpentProofs reports an already-spent proof as
+// ErrProofAlreadySpent rather than a generic failure.
+func (m *Mint) VerifyAndMarkSpent(proofs cashu.Proofs) ([]SpentProof, error) {
+	m.spendMu.Lock()
+	defer m.spendMu.Unlock()
+
+	spent, err := m.VerifyProofs(proofs)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := m.store.SaveSpentProofs(spent); err != nil {
+		return nil, fmt.Errorf("saving spent proofs: %w", err)
+	}
+	return spent, nil
+}
+
 // Swap verifies input proofs, marks them spent, and signs new outputs.
 // The total input amount must equal total output amount (no fees for MVP).
 func (m *Mint) Swap(inputs cashu.Proofs, outputs cashu.BlindedMessages) (cashu.BlindedSignatures, error) {
@@ -357,14 +397,8 @@ func (m *Mint) Swap(inputs cashu.Proofs, outputs cashu.BlindedMessages) (cashu.B
 		return nil, ErrAmountMismatch
 	}
 
-	spentProofs, err := m.VerifyProofs(inputs)
-	if err != nil {
+	if _, err := m.VerifyAndMarkSpent(inputs); err != nil {
 		return nil, err
-	}
-
-	// Mark proofs as spent
-	if err := m.store.SaveSpentProofs(spentProofs); err != nil {
-		return nil, fmt.Errorf("saving spent proofs: %w", err)
 	}
 
 	// Sign new outputs

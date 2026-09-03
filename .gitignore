@@ -21,10 +21,11 @@ target
 #.idea/
 .DS_Store
 
-# Binaries
-arfl-hub
-arfl-node
-arfl-client
+# Binaries (anchored to the repo root: unanchored names also matched the
+# cmd/arfl-* source directories, which silently ignored new files added there)
+/arfl-hub
+/arfl-node
+/arfl-client
 
 # Config files (may contain secrets)
 hub.json
@@ -34,4 +35,4 @@ keys/
 
 # Testnet generated data
 deploy/data/
-arfl-hub-linux
+/arfl-hub-linux

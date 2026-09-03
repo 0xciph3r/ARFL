@@ -1,0 +1,13 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "arfl-desktop",
+  "outputfilename": "arfl-desktop",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "0xciph3r",
+    "email": "42790057+0xciph3r@users.noreply.github.com"
+  }
+}

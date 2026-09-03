@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
@@ -264,14 +266,95 @@ func (w *Wallet) Proofs() (cashu.Proofs, error) {
 	return w.store.List(w.client.HubURL())
 }
 
-// Reserve removes proofs worth at least amountSats from the store and returns
+// Reserve removes proofs worth exactly amountSats from the store and returns
 // them for spending.
 //
 // Proofs are removed up front because a spent proof is worthless: keeping them
 // after handing them to a node risks presenting them again and being rejected
 // as a double-spend.
-func (w *Wallet) Reserve(amountSats uint64) (cashu.Proofs, error) {
-	return w.store.Take(w.client.HubURL(), amountSats)
+//
+// Stored denominations rarely add up to an arbitrary amount — minting 128 sats
+// produces a single 128 proof, so paying 32 would otherwise burn all 128. When
+// no exact combination exists, the surplus is swapped at the mint for exact
+// change, which is returned to the store.
+func (w *Wallet) Reserve(ctx context.Context, amountSats uint64) (cashu.Proofs, error) {
+	if amountSats == 0 {
+		return nil, fmt.Errorf("amount must be greater than zero")
+	}
+
+	taken, err := w.store.Take(w.client.HubURL(), amountSats)
+	if err != nil {
+		return nil, err
+	}
+
+	if taken.Amount() == amountSats {
+		return taken, nil
+	}
+
+	payment, change, err := w.swapForChange(ctx, taken, amountSats)
+	if err != nil {
+		// A swap that the mint refused outright leaves the inputs unspent, so
+		// they can go back in the store. Anything else may have burned them;
+		// restoring those would show a balance that cannot be spent.
+		var hubErr *HubError
+		if errors.As(err, &hubErr) && hubErr.StatusCode == http.StatusConflict {
+			return nil, fmt.Errorf("swap for change: %w", err)
+		}
+		if rerr := w.store.Add(w.client.HubURL(), taken); rerr != nil {
+			return nil, fmt.Errorf("swap for change: %w (proofs could not be returned to the store: %v)", err, rerr)
+		}
+		return nil, fmt.Errorf("swap for change: %w", err)
+	}
+
+	if len(change) > 0 {
+		if err := w.store.Add(w.client.HubURL(), change); err != nil {
+			return nil, fmt.Errorf("save change proofs: %w", err)
+		}
+	}
+
+	return payment, nil
+}
+
+// swapForChange exchanges inputs for two disjoint proof sets: one worth
+// exactly amountSats and one holding the remainder.
+func (w *Wallet) swapForChange(
+	ctx context.Context,
+	inputs cashu.Proofs,
+	amountSats uint64,
+) (payment, change cashu.Proofs, err error) {
+	total := inputs.Amount()
+	if total < amountSats {
+		return nil, nil, fmt.Errorf("inputs worth %d cannot cover %d sats", total, amountSats)
+	}
+
+	keyset, err := w.client.ActiveKeyset(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetch hub keyset: %w", err)
+	}
+
+	paymentAmounts := cashu.AmountSplit(amountSats)
+	changeAmounts := cashu.AmountSplit(total - amountSats)
+
+	outputs, states, err := blindAmounts(keyset.ID, append(append([]uint64{}, paymentAmounts...), changeAmounts...))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	signatures, err := w.client.Swap(ctx, inputs, outputs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	proofs, err := unblindSignatures(signatures, states, keyset)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(proofs) != len(outputs) {
+		return nil, nil, fmt.Errorf("hub returned %d proofs for %d outputs", len(proofs), len(outputs))
+	}
+
+	// Outputs were requested payment-first, so the split point is fixed.
+	return proofs[:len(paymentAmounts)], proofs[len(paymentAmounts):], nil
 }
 
 // Release returns previously reserved proofs to the store. Call this when a

@@ -196,7 +196,7 @@ func TestReserveRemovesProofsFromBalance(t *testing.T) {
 
 	mintPaid(t, hub, w, 100)
 
-	reserved, err := w.Reserve(64)
+	reserved, err := w.Reserve(context.Background(), 64)
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestReleaseRestoresReservedProofs(t *testing.T) {
 
 	mintPaid(t, hub, w, 100)
 
-	reserved, err := w.Reserve(64)
+	reserved, err := w.Reserve(context.Background(), 64)
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
@@ -244,6 +244,44 @@ func TestReleaseRestoresReservedProofs(t *testing.T) {
 	}
 }
 
+// TestReserveSwapsForExactChange guards against silently burning the surplus.
+// Minting 128 sats yields a single 128-denomination proof, so reserving 32
+// without a swap would hand the whole 128 to a node and lose 96 sats.
+func TestReserveSwapsForExactChange(t *testing.T) {
+	hub := newTestHub(t)
+	w := newTestWallet(t, hub)
+
+	mintPaid(t, hub, w, 128)
+
+	reserved, err := w.Reserve(context.Background(), 32)
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	if reserved.Amount() != 32 {
+		t.Fatalf("reserved %d sats, want exactly 32", reserved.Amount())
+	}
+
+	balance, err := w.Balance()
+	if err != nil {
+		t.Fatalf("balance: %v", err)
+	}
+	if balance != 96 {
+		t.Fatalf("balance is %d, want 96 in change", balance)
+	}
+
+	// Both the payment and the change must be freshly signed, spendable proofs.
+	if _, err := hub.mint.VerifyProofs(reserved); err != nil {
+		t.Fatalf("payment proofs rejected by mint: %v", err)
+	}
+	change, err := w.Proofs()
+	if err != nil {
+		t.Fatalf("list change: %v", err)
+	}
+	if _, err := hub.mint.VerifyProofs(change); err != nil {
+		t.Fatalf("change proofs rejected by mint: %v", err)
+	}
+}
+
 // TestReserveBeyondBalanceFails verifies the wallet refuses to over-commit.
 func TestReserveBeyondBalanceFails(t *testing.T) {
 	hub := newTestHub(t)
@@ -251,7 +289,7 @@ func TestReserveBeyondBalanceFails(t *testing.T) {
 
 	mintPaid(t, hub, w, 32)
 
-	_, err := w.Reserve(1000)
+	_, err := w.Reserve(context.Background(), 1000)
 	if !errors.Is(err, wallet.ErrInsufficientBalance) {
 		t.Fatalf("got %v, want ErrInsufficientBalance", err)
 	}

@@ -208,6 +208,35 @@ func (c *MintClient) MintTokens(
 	return resp.Signatures, nil
 }
 
+// Swap exchanges input proofs for new blinded outputs of the same total
+// value (NUT-03). Wallets use this to split a large denomination into exact
+// change so a payment does not have to overpay.
+func (c *MintClient) Swap(
+	ctx context.Context,
+	inputs cashu.Proofs,
+	outputs cashu.BlindedMessages,
+) (cashu.BlindedSignatures, error) {
+	if len(inputs) == 0 {
+		return nil, fmt.Errorf("at least one input is required")
+	}
+	if len(outputs) == 0 {
+		return nil, fmt.Errorf("at least one output is required")
+	}
+
+	body := map[string]any{"inputs": inputs, "outputs": outputs}
+	var resp struct {
+		Signatures cashu.BlindedSignatures `json:"signatures"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/v1/swap", body, &resp); err != nil {
+		return nil, err
+	}
+	if len(resp.Signatures) != len(outputs) {
+		return nil, fmt.Errorf("hub returned %d signatures for %d outputs",
+			len(resp.Signatures), len(outputs))
+	}
+	return resp.Signatures, nil
+}
+
 // do performs a JSON request against the hub and decodes the response.
 func (c *MintClient) do(ctx context.Context, method, path string, body, out any) error {
 	var reader io.Reader

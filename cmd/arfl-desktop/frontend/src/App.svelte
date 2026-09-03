@@ -5,6 +5,7 @@
   import Buy from './components/Buy.svelte'
   import Nodes from './components/Nodes.svelte'
   import Connection from './components/Connection.svelte'
+  import Mark from './components/Mark.svelte'
 
   type Tab = 'buy' | 'nodes'
 
@@ -37,15 +38,23 @@
     <HubConnect {onConnected} />
   {:else}
     <header>
-      <div class="hub">
-        <span class="label">Hub</span>
-        <span class="url">{hub?.name || status.hub_url}</span>
+      <div class="identity">
+        <div class="lockup">
+          <Mark size={20} />
+          <div class="wordmark" style="--wordmark-h: 14px" role="img" aria-label="ARFL"></div>
+        </div>
+        <div class="hub" title={status.hub_url}>
+          <span class="label">Hub</span>
+          <span class="url">{hub?.name || status.hub_url}</span>
+        </div>
       </div>
       <div class="balance">
         <span class="sats">{status.balance_sats.toLocaleString()}</span>
         <span class="unit">sats</span>
       </div>
     </header>
+
+    <div class="decorative-hero" aria-hidden="true"></div>
 
     <nav>
       <button
@@ -77,6 +86,9 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    width: 100%;
+    max-width: 448px;
+    margin: 0 auto;
     overflow: hidden;
   }
 
@@ -89,10 +101,23 @@
     -webkit-app-region: drag;
   }
 
-  .hub {
+  .identity {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .lockup {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .hub {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
     min-width: 0;
   }
 
@@ -104,23 +129,27 @@
   }
 
   .url {
-    font-size: 13px;
+    font-size: 12px;
+    color: var(--muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 200px;
+    max-width: 180px;
   }
 
   .balance {
     display: flex;
     align-items: baseline;
     gap: 4px;
+    flex-shrink: 0;
   }
 
   .sats {
     font-size: 20px;
     font-weight: 600;
-    color: var(--accent);
+    /* Orange means money everywhere in this UI; see style.css. */
+    color: var(--sats);
+    font-variant-numeric: tabular-nums;
   }
 
   .unit {
@@ -131,7 +160,23 @@
   nav {
     display: flex;
     gap: 4px;
-    padding: 10px 24px 0;
+    padding: 4px 24px 0;
+  }
+
+  .decorative-hero {
+    width: calc(100% - 60px);
+    max-width: 360px;
+    height: 110px;
+    margin: 12px auto 6px;
+    border-radius: 12px;
+    background-image:
+      linear-gradient(180deg, rgba(20, 15, 28, 0.10), rgba(20, 15, 28, 0.34)),
+      url(./assets/eyes.png);
+    background-size: cover;
+    background-position: center;
+    filter: grayscale(1) blur(0.7px) contrast(0.92);
+    opacity: 0.12;
+    pointer-events: none;
   }
 
   .tab {

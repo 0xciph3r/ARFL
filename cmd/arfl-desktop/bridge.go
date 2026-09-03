@@ -8,11 +8,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/app"
 	"github.com/Radi-Labs/ARFL/internal/tunnel"
+	"github.com/Radi-Labs/ARFL/internal/wallet"
 	"github.com/Radi-Labs/ARFL/pkg/types"
 )
 
@@ -85,6 +87,13 @@ type StatusView struct {
 	Error string `json:"error,omitempty"`
 }
 
+// VaultStateView describes whether a local encrypted token vault already
+// exists. The UI uses this to switch between first-run "create" and
+// returning-user "unlock" flows.
+type VaultStateView struct {
+	Exists bool `json:"exists"`
+}
+
 // Unlock opens the encrypted proof vault. Calling it again is a no-op, since
 // re-opening the store while a session is live would drop that session.
 func (b *Bridge) Unlock(passphrase string) (*StatusView, error) {
@@ -135,6 +144,45 @@ func (b *Bridge) Unlock(passphrase string) (*StatusView, error) {
 	b.svc = svc
 	b.tun = tun
 	return b.status(svc), nil
+}
+
+// VaultState reports whether the local encrypted vault file exists.
+func (b *Bridge) VaultState() (*VaultStateView, error) {
+	path, err := wallet.DefaultStorePath()
+	if err != nil {
+		return nil, fmt.Errorf("resolve vault path: %w", err)
+	}
+	_, err = os.Stat(path)
+	if err == nil {
+		return &VaultStateView{Exists: true}, nil
+	}
+	if os.IsNotExist(err) {
+		return &VaultStateView{Exists: false}, nil
+	}
+	return nil, fmt.Errorf("read vault state: %w", err)
+}
+
+// ResetVault deletes the local encrypted token vault.
+//
+// This is only allowed while locked. Deleting while unlocked would orphan the
+// in-memory service state from the file on disk.
+func (b *Bridge) ResetVault() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	loaded := b.svc != nil
+	if loaded {
+		return fmt.Errorf("lock the wallet before resetting it")
+	}
+
+	path, err := wallet.DefaultStorePath()
+	if err != nil {
+		return fmt.Errorf("resolve vault path: %w", err)
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete vault: %w", err)
+	}
+	return nil
 }
 
 // tunnelOrNil avoids the typed-nil trap: assigning a nil *tunnel.Tunnel to an

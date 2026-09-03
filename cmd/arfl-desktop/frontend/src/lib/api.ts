@@ -12,9 +12,11 @@ import {
   ListNodes,
   Locked,
   Purchase,
+  ResetVault,
   Session,
   Status,
   Unlock,
+  VaultState,
 } from '../../wailsjs/go/main/Bridge'
 import type { app, main, types } from '../../wailsjs/go/models'
 
@@ -31,6 +33,7 @@ export type HubStatus = app.HubStatus
 export type Invoice = app.Invoice
 export type NodeInfo = types.NodeInfo
 export type Session = app.Session
+export type VaultStateView = main.VaultStateView
 
 export const api = {
   locked: () => call(() => Locked()),
@@ -41,6 +44,8 @@ export const api = {
   purchase: (amountSats: number) => call(() => Purchase(amountSats)),
   awaitPurchase: (quoteId: string) => call(() => AwaitPurchase(quoteId)),
   listNodes: () => call(() => ListNodes()),
+  vaultState: () => call(() => VaultState()),
+  resetVault: () => call(() => ResetVault()),
   connect: (perHopSats: number) => call(() => Connect(perHopSats)),
   session: () => call(() => Session()),
   disconnect: () => call(() => Disconnect()),

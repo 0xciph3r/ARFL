@@ -1,21 +1,46 @@
+/* Design tokens.
+ *
+ * The palette is Meyer's brand purple. Bitcoin orange is deliberately NOT the
+ * accent: it is reserved for sats and Lightning amounts (--sats), so orange in
+ * this UI always means "this is money". Using it for ordinary buttons as well
+ * would spend that signal on things that are not payments.
+ */
 :root {
-  --bg: #0c0e14;
-  --panel: #151823;
-  --panel-2: #1b1f2e;
-  --border: #262b3d;
-  --text: #e8eaf0;
-  --muted: #8b93a7;
-  --accent: #f7931a;
-  --accent-dim: #b56d13;
+  --bg: #0b0910;
+  --bg-tint: #171128;
+  --panel: #16121f;
+  --panel-2: #1e1829;
+  --border: #2b2338;
+  --border-soft: #221b2e;
+  --text: #ece7f2;
+  --muted: #948aa6;
+
+  /* Brand purple, from the logo artwork. */
+  --accent: #9d7bb0;
+  --accent-bright: #b795c7;
+  --accent-dim: #7d5f91;
+  --accent-deep: #5d456c;
+  --accent-wash: rgba(157, 123, 176, 0.12);
+  --accent-glow: rgba(157, 123, 176, 0.28);
+
+  /* Money only. */
+  --sats: #f7931a;
+
   --ok: #3ddc84;
   --err: #ff6b6b;
+
   --radius: 10px;
+  --radius-lg: 14px;
 
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
     "Helvetica Neue", sans-serif;
   font-size: 14px;
   color: var(--text);
   background: var(--bg);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
 * {
@@ -31,10 +56,39 @@ body {
   overflow: hidden;
 }
 
+/* A single light source behind the whole window. Flat panels on a flat
+ * background read as unfinished; this gives the surfaces something to sit on. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(70% 55% at 50% -10%, rgba(157, 123, 176, 0.16), transparent 70%),
+    radial-gradient(50% 40% at 100% 100%, rgba(125, 95, 145, 0.10), transparent 70%);
+  z-index: 0;
+}
+
 #app {
+  position: relative;
+  z-index: 1;
   height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+/* The wordmark is masked rather than drawn, so it takes the brand colour
+ * exactly instead of being approximated by a filter chain over a near-white
+ * PNG. The artwork is a flat silhouette, so nothing is lost. Callers set
+ * --wordmark-h; the width follows the artwork's 480x172 aspect ratio. */
+.wordmark {
+  --wordmark-h: 24px;
+  height: var(--wordmark-h);
+  width: calc(var(--wordmark-h) * 2.79);
+  flex-shrink: 0;
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent-dim));
+  -webkit-mask: url(./assets/wordmark.png) center / contain no-repeat;
+  mask: url(./assets/wordmark.png) center / contain no-repeat;
 }
 
 button {
@@ -43,19 +97,31 @@ button {
   border: none;
   border-radius: var(--radius);
   padding: 10px 14px;
-  background: var(--accent);
-  color: #12141c;
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent-dim));
+  color: #17101d;
   font-weight: 600;
-  transition: filter 120ms ease;
+  letter-spacing: 0.2px;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.18) inset,
+    0 6px 16px -8px var(--accent-glow);
+  transition: filter 120ms ease, transform 120ms ease, box-shadow 120ms ease;
 }
 
 button:hover:not(:disabled) {
-  filter: brightness(1.1);
+  filter: brightness(1.08);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.22) inset,
+    0 10px 22px -8px var(--accent-glow);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
 }
 
 button:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 button.secondary {
@@ -63,6 +129,20 @@ button.secondary {
   color: var(--text);
   border: 1px solid var(--border);
   font-weight: 500;
+  box-shadow: none;
+}
+
+button.secondary:hover:not(:disabled) {
+  border-color: var(--accent-deep);
+  filter: none;
+  box-shadow: none;
+}
+
+/* Focus has to survive the custom backgrounds above, and keyboard users need
+ * it on every control, not just inputs. */
+:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 2px;
 }
 
 input {
@@ -74,10 +154,12 @@ input {
   background: var(--panel-2);
   color: var(--text);
   outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
 input:focus {
-  border-color: var(--accent-dim);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-wash);
 }
 
 input::placeholder {
@@ -87,4 +169,38 @@ input::placeholder {
 code {
   font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
   font-size: 12px;
+}
+
+::selection {
+  background: var(--accent-glow);
+  color: var(--text);
+}
+
+/* Scrollbars default to a pale grey that breaks the dark surface. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-deep);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
 }

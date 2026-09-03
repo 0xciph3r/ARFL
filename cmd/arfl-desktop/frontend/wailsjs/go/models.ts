@@ -181,6 +181,18 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
+	export class VaultStateView {
+	    exists: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new VaultStateView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.exists = source["exists"];
+	    }
+	}
 
 }
 

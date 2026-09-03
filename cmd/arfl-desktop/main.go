@@ -26,6 +26,7 @@ func main() {
 		Title:            "ARFL",
 		Width:            420,
 		Height:           680,
+		DisableResize:    true,
 		MinWidth:         380,
 		MinHeight:        560,
 		BackgroundColour: &options.RGBA{R: 12, G: 14, B: 20, A: 1},

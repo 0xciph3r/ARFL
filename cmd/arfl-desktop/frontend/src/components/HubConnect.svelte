@@ -30,7 +30,8 @@
   <h2>Connect to a hub</h2>
   <p class="lede">
     Hubs are run independently. ARFL does not operate one — point the client at
-    whichever you trust.
+    whichever you trust. Your balance is held with the hub that issued it and
+    cannot be spent at another.
   </p>
 
   <input
@@ -42,7 +43,7 @@
   />
 
   {#if error}
-    <p class="error">{error}</p>
+    <p class="error" role="alert">{error}</p>
   {/if}
 
   <button type="submit" disabled={!url.trim() || busy}>

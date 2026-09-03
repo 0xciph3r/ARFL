@@ -88,7 +88,6 @@ func (s *Store) GetMintQuote(id string) (*ecash.MintQuote, error) {
 	return &q, nil
 }
 
-// UpdateMintQuoteState transitions a mint quote to a new state.
 // UpdateMintQuoteState sets a quote's state unconditionally.
 //
 // Prefer TransitionMintQuoteState for the paid-to-issued step: this cannot

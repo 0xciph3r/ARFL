@@ -459,10 +459,22 @@ func (m *Mint) MintTokens(quoteID string, outputs cashu.BlindedMessages) (cashu.
 	// Sign the blinded messages
 	sigs, err := m.SignBlindedMessages(outputs)
 	if err != nil {
-		// The quote is spent but produced nothing. Hand it back so the payer
+		// The quote is claimed but produced nothing. Hand it back so the payer
 		// can retry rather than losing the payment to a transient failure.
-		if _, rerr := m.store.TransitionMintQuoteState(quoteID, QuoteIssued, QuotePaid); rerr != nil {
+		//
+		// The release is itself conditional, so it can legitimately lose: if
+		// the quote is no longer QuoteIssued something else has moved it, and
+		// silently discarding that would leave a paid quote stuck in a state
+		// no retry can recover from while reporting only the signing error.
+		// Both cases are surfaced, because a payment that produced no tokens
+		// and cannot be retried is not something an operator should have to
+		// infer from a missing log line.
+		released, rerr := m.store.TransitionMintQuoteState(quoteID, QuoteIssued, QuotePaid)
+		if rerr != nil {
 			return nil, fmt.Errorf("signing failed (%v) and quote %s could not be released: %w", err, quoteID, rerr)
+		}
+		if !released {
+			return nil, fmt.Errorf("signing failed (%v) and quote %s was not released: it is no longer in the issued state", err, quoteID)
 		}
 		return nil, err
 	}

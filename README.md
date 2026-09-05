@@ -426,4 +426,4 @@ software and infrastructure.
 
 ## License
 
-[MIT](./LICENSE) — Radi Labs
+[MIT](./LICENSE) 

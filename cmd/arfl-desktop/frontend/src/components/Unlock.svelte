@@ -79,104 +79,121 @@
 </script>
 
 <form class="unlock" onsubmit={submit}>
-  <div class="brand">
-    <Mark size={44} glow />
-    <div class="wordmark" style="--wordmark-h: 44px" role="img" aria-label="ARFL"></div>
-    <p>Decentralised VPN, paid over Lightning.</p>
-  </div>
-
-  <div class="decorative-hero" aria-hidden="true"></div>
-
-  {#if vaultExists === null}
-    <p class="hint">Loading wallet state…</p>
-    {#if error}
-      <p class="error" role="alert">{error}</p>
-    {/if}
-  {:else}
-    <h2>{mode === 'create' ? 'Create wallet' : 'Unlock wallet'}</h2>
-
-    <label for="passphrase">{mode === 'create' ? 'New passphrase' : 'Wallet passphrase'}</label>
-    <input
-      id="passphrase"
-      type="password"
-      bind:value={passphrase}
-      placeholder={mode === 'create' ? 'Create a strong passphrase' : 'Unlock your token vault'}
-      autocomplete={mode === 'create' ? 'new-password' : 'current-password'}
-    />
-
-    {#if mode === 'create'}
-      <label for="confirm-passphrase">Confirm passphrase</label>
-      <input
-        id="confirm-passphrase"
-        type="password"
-        bind:value={confirmPassphrase}
-        placeholder="Confirm your passphrase"
-        autocomplete="new-password"
-      />
-    {/if}
-
-    <p class="hint">
-      Your tokens are encrypted on this device with this passphrase. There is no
-      recovery service.
-    </p>
-
-    {#if error}
-      <p class="error" role="alert">{error}</p>
-    {/if}
-
-    <button
-      type="submit"
-      disabled={!passphrase || busy || resetting || (mode === 'create' && !confirmPassphrase)}
-    >
-      {#if busy}
-        {mode === 'create' ? 'Creating…' : 'Unlocking…'}
-      {:else}
-        {mode === 'create' ? 'Create wallet' : 'Unlock'}
-      {/if}
-    </button>
-
-    {#if mode === 'unlock'}
-      <div class="reset">
-        <p class="hint">
-          Forgot your passphrase? Type <code>RESET</code> to delete this local wallet and
-          create a new one. Any tokens in it will be lost.
-        </p>
-        <input
-          type="text"
-          bind:value={resetAck}
-          placeholder="Type RESET to confirm"
-          autocomplete="off"
-        />
-        <button
-          type="button"
-          class="secondary"
-          disabled={resetAck !== 'RESET' || resetting || busy}
-          onclick={resetVault}
-        >
-          {resetting ? 'Resetting…' : 'Reset local wallet'}
-        </button>
+  <div class="stack">
+    <div class="brand">
+      <div class="lockup">
+        <Mark size={44} glow />
+        <div class="wordmark" style="--wordmark-h: 30px" role="img" aria-label="ARFL"></div>
       </div>
+      <p>Decentralised VPN, paid over Lightning.</p>
+    </div>
+
+    <div class="decorative-hero" aria-hidden="true"></div>
+
+    {#if vaultExists === null}
+      <p class="hint">Loading wallet state…</p>
+      {#if error}
+        <p class="error" role="alert">{error}</p>
+      {/if}
+    {:else}
+      <h2>{mode === 'create' ? 'Create wallet' : 'Unlock wallet'}</h2>
+
+      <label for="passphrase">{mode === 'create' ? 'New passphrase' : 'Wallet passphrase'}</label>
+      <input
+        id="passphrase"
+        type="password"
+        bind:value={passphrase}
+        placeholder={mode === 'create' ? 'Create a strong passphrase' : 'Unlock your token vault'}
+        autocomplete={mode === 'create' ? 'new-password' : 'current-password'}
+      />
+
+      {#if mode === 'create'}
+        <label for="confirm-passphrase">Confirm passphrase</label>
+        <input
+          id="confirm-passphrase"
+          type="password"
+          bind:value={confirmPassphrase}
+          placeholder="Confirm your passphrase"
+          autocomplete="new-password"
+        />
+      {/if}
+
+      <p class="hint">
+        Your tokens are encrypted on this device with this passphrase. There is no
+        recovery service.
+      </p>
+
+      {#if error}
+        <p class="error" role="alert">{error}</p>
+      {/if}
+
+      <button
+        type="submit"
+        disabled={!passphrase || busy || resetting || (mode === 'create' && !confirmPassphrase)}
+      >
+        {#if busy}
+          {mode === 'create' ? 'Creating…' : 'Unlocking…'}
+        {:else}
+          {mode === 'create' ? 'Create wallet' : 'Unlock'}
+        {/if}
+      </button>
+
+      {#if mode === 'unlock'}
+        <div class="reset">
+          <p class="hint">
+            Forgot your passphrase? Type <code>RESET</code> to delete this local wallet and
+            create a new one. Any tokens in it will be lost.
+          </p>
+          <input
+            type="text"
+            bind:value={resetAck}
+            placeholder="Type RESET to confirm"
+            autocomplete="off"
+          />
+          <button
+            type="button"
+            class="secondary"
+            disabled={resetAck !== 'RESET' || resetting || busy}
+            onclick={resetVault}
+          >
+            {resetting ? 'Resetting…' : 'Reset local wallet'}
+          </button>
+        </div>
+      {/if}
     {/if}
-  {/if}
+  </div>
 </form>
 
 <style>
   .unlock {
     display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: clamp(32px, 5vh, 48px) 24px 24px;
+    margin: 0;
+  }
+
+  .stack {
+    display: flex;
     flex-direction: column;
     gap: 10px;
-    height: 100%;
-    overflow-y: auto;
-    padding: 20px 24px 28px;
-    margin: 0;
+    width: 100%;
+    margin: auto 0;
   }
 
   .brand {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 14px;
-    margin-bottom: 10px;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+
+  .lockup {
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
 
   h2 {
@@ -194,7 +211,7 @@
   .decorative-hero {
     width: min(100%, 360px);
     height: 100px;
-    margin: 0 auto 8px;
+    margin: 0 auto 12px;
     border-radius: 12px;
     background-image:
       linear-gradient(180deg, rgba(20, 15, 28, 0.06), rgba(20, 15, 28, 0.32)),
@@ -242,14 +259,18 @@
     width: 100%;
   }
 
-  @media (max-height: 720px) {
+  @media (max-height: 560px) {
     .unlock {
-      padding-top: 14px;
+      padding: 16px 24px 20px;
+    }
+
+    .stack {
+      margin: 0;
       gap: 8px;
     }
 
     .brand {
-      gap: 10px;
+      gap: 8px;
       margin-bottom: 4px;
     }
 

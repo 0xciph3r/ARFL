@@ -60,23 +60,30 @@ ARFL is a **privacy-respecting bandwidth marketplace** — not an untraceable VP
 - **Go 1.23+** — [install](https://go.dev/dl/)
 - **WireGuard** — `apt install wireguard wireguard-tools` (Linux) or `brew install wireguard-tools` (macOS)
 - **nftables** (Linux nodes only) — `apt install nftables` (for kernel-level quota enforcement)
-- **LND** (hub, production) — Lightning node with REST API enabled ([Polar](https://lightningpolar.com) for local dev)
+- **LND** (hub) — Lightning node with REST API enabled (`mainnet` for live sats, `testnet/signet` for E2E dry runs; [Polar](https://lightningpolar.com) for local dev)
 
 ### Build from Source
 
 ```bash
 git clone https://github.com/Radi-Labs/ARFL.git
 cd ARFL
-go build ./...
+mkdir -p bin
+go build -o bin/arfl-hub ./cmd/arfl-hub
+go build -o bin/arfl-node ./cmd/arfl-node
+go build -o bin/arfl-client ./cmd/arfl-client
 ```
 
-This produces three binaries in the current directory:
+This produces three binaries:
 
 | Binary | Purpose |
 |---|---|
-| `arfl-hub` | Coordination hub — discovery, payments, blind signing |
-| `arfl-node` | Node daemon — WireGuard tunnel endpoint (entry or exit) |
-| `arfl-client` | Client CLI — purchase bandwidth, connect to nodes |
+| `bin/arfl-hub` | Coordination hub — discovery, payments, blind signing |
+| `bin/arfl-node` | Node daemon — WireGuard tunnel endpoint (entry or exit) |
+| `bin/arfl-client` | Client CLI — purchase bandwidth, connect to nodes |
+
+> **Important (production deploy):** build the hub with CGO enabled (default).
+> `CGO_ENABLED=0` will compile, but SQLite will be a stub and `arfl-hub` exits
+> at startup with `go-sqlite3 requires cgo to work`.
 
 ### Automated Node Setup (Ubuntu)
 

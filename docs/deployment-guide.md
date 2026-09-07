@@ -31,10 +31,10 @@ Step-by-step guide to deploy a full ARFL network: hub, entry node, exit node, an
 Run on each server:
 
 ```bash
-apt update && apt install -y wireguard wireguard-tools nftables curl
+apt update && apt install -y wireguard wireguard-tools nftables curl git build-essential ca-certificates
 
 # Install Go
-curl -sL https://go.dev/dl/go1.24.5.linux-amd64.tar.gz | tar -C /usr/local -xz
+curl -sL https://go.dev/dl/go1.26.3.linux-amd64.tar.gz | tar -C /usr/local -xz
 echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile.d/go.sh
 source /etc/profile.d/go.sh
 go version
@@ -46,12 +46,41 @@ go version
 mkdir -p /opt/arfl/src
 cd /opt/arfl/src
 
-# Clone the repo (or upload source)
-git clone https://github.com/Radi-Labs/ARFL.git .
+# Clone once; then keep the checkout pinned to latest main
+if [ ! -d .git ]; then
+  git clone https://github.com/0xciph3r/ARFL.git .
+fi
+git fetch origin --prune
+git checkout -q main
+git reset --hard origin/main
 
 # Build both binaries
-go build -o /usr/local/bin/arfl-hub ./cmd/arfl-hub/
-go build -o /usr/local/bin/arfl-node ./cmd/arfl-node/
+/usr/local/go/bin/go build -o /usr/local/bin/arfl-hub ./cmd/arfl-hub
+/usr/local/go/bin/go build -o /usr/local/bin/arfl-node ./cmd/arfl-node
+```
+
+> **Important:** do **not** build `arfl-hub` with `CGO_ENABLED=0`. The hub uses
+> `mattn/go-sqlite3`; a non-CGO build starts, then fails with
+> `go-sqlite3 requires cgo to work`.
+
+## 2.1 Rolling patch updates (no reinstall)
+
+For a code-only patch, rebuild on-host and restart services:
+
+```bash
+# Hub
+cd /opt/arfl/src
+git fetch origin --prune
+git checkout -q main
+git reset --hard origin/main
+/usr/local/go/bin/go build -o /usr/local/bin/arfl-hub ./cmd/arfl-hub
+systemctl restart arfl-hub
+curl -fsS http://127.0.0.1:8080/health
+
+# Nodes
+/usr/local/go/bin/go build -o /usr/local/bin/arfl-node ./cmd/arfl-node
+systemctl restart arfl-node
+curl -fsS http://127.0.0.1:9091/health
 ```
 
 ## 3. Set Up Lightning (Voltage or self-hosted)
@@ -59,7 +88,7 @@ go build -o /usr/local/bin/arfl-node ./cmd/arfl-node/
 ### Option A: Voltage (recommended for demos)
 
 1. Create an account at [voltage.cloud](https://voltage.cloud)
-2. Select **Infrastructure** → create a new **LND node** on **mainnet**
+2. Select **Infrastructure** → create a new **LND node** (`mainnet` for live sats, or `testnet/signet` for dry runs)
 3. Wait for the node to sync (usually 5-10 minutes)
 4. Download from the Voltage dashboard:
    - `tls.cert` — TLS certificate
@@ -460,10 +489,18 @@ server public key). Create a `.conf` file and import it into WireGuard.
 ### Purchase returns error
 - Check hub can reach LND: `curl --cacert tls.cert https://<lnd-host>:8080/v1/getinfo -H "Grpc-Metadata-macaroon: $(xxd -p admin.macaroon | tr -d '\n')"`
 - Verify macaroon permissions (needs invoice + router)
+- If logs show `x509: certificate signed by unknown authority`, re-upload the
+  current `tls.cert` from your LND/Voltage node to the hub and restart `arfl-hub`
 
 ### Payment not settling
 - LND node must have inbound liquidity
 - Check LND channel status in Voltage dashboard or `lncli listchannels`
+
+### Hub keeps restarting after a patch
+- Check logs: `journalctl -u arfl-hub -n 80 --no-pager`
+- If you see `go-sqlite3 requires cgo to work`, the hub binary was built with
+  `CGO_ENABLED=0`. Rebuild on-host with `/usr/local/go/bin/go build ...` and
+  restart the service.
 
 ### WireGuard tunnel not working
 - Verify IP forwarding: `sysctl net.ipv4.ip_forward`

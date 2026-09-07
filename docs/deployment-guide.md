@@ -83,6 +83,46 @@ systemctl restart arfl-node
 curl -fsS http://127.0.0.1:9091/health
 ```
 
+## 2.2 Install from GitHub release assets (Linux amd64)
+
+Use this when you want fast patch rollout without compiling on-server.
+
+```bash
+VERSION=v0.1.0
+BASE_URL="https://github.com/0xciph3r/ARFL/releases/download/${VERSION}"
+mkdir -p /tmp/arfl-release && cd /tmp/arfl-release
+
+# download with curl (or use wget equivalents below)
+curl -fL -o arfl-hub-linux-amd64  "${BASE_URL}/arfl-hub-linux-amd64"
+curl -fL -o arfl-node-linux-amd64 "${BASE_URL}/arfl-node-linux-amd64"
+curl -fL -o checksums.txt         "${BASE_URL}/checksums.txt"
+
+# verify checksums before install
+sha256sum -c checksums.txt
+```
+
+Install and restart:
+
+```bash
+# Hub
+install -m 755 arfl-hub-linux-amd64 /usr/local/bin/arfl-hub
+systemctl restart arfl-hub
+curl -fsS http://127.0.0.1:8080/health
+
+# Node (run on entry and exit)
+install -m 755 arfl-node-linux-amd64 /usr/local/bin/arfl-node
+systemctl restart arfl-node
+curl -fsS http://127.0.0.1:9091/health
+```
+
+`wget` equivalents:
+
+```bash
+wget "${BASE_URL}/arfl-hub-linux-amd64"
+wget "${BASE_URL}/arfl-node-linux-amd64"
+wget "${BASE_URL}/checksums.txt"
+```
+
 ## 3. Set Up Lightning (Voltage or self-hosted)
 
 ### Option A: Voltage (recommended for demos)

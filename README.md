@@ -85,6 +85,35 @@ This produces three binaries:
 > `CGO_ENABLED=0` will compile, but SQLite will be a stub and `arfl-hub` exits
 > at startup with `go-sqlite3 requires cgo to work`.
 
+### Install from GitHub Release Assets (Linux amd64)
+
+If you just want to run the latest released hub/node binaries:
+
+```bash
+VERSION=v0.1.0
+BASE_URL="https://github.com/0xciph3r/ARFL/releases/download/${VERSION}"
+
+mkdir -p /usr/local/bin /tmp/arfl-release && cd /tmp/arfl-release
+
+# curl (or use wget commands below)
+curl -fL -o arfl-hub-linux-amd64  "${BASE_URL}/arfl-hub-linux-amd64"
+curl -fL -o arfl-node-linux-amd64 "${BASE_URL}/arfl-node-linux-amd64"
+curl -fL -o checksums.txt         "${BASE_URL}/checksums.txt"
+
+# verify + install
+sha256sum -c checksums.txt
+install -m 755 arfl-hub-linux-amd64  /usr/local/bin/arfl-hub
+install -m 755 arfl-node-linux-amd64 /usr/local/bin/arfl-node
+```
+
+`wget` equivalent:
+
+```bash
+wget "${BASE_URL}/arfl-hub-linux-amd64"
+wget "${BASE_URL}/arfl-node-linux-amd64"
+wget "${BASE_URL}/checksums.txt"
+```
+
 ### Automated Node Setup (Ubuntu)
 
 For production node servers, the setup script installs WireGuard, nftables, enables IP forwarding, and opens the UDP port:

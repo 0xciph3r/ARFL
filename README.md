@@ -8,8 +8,8 @@ ARFL is a decentralised VPN protocol that combines WireGuard, Nostr, the Bitcoin
 
 Users pay per-gigabyte via Lightning. Node operators earn passive income on bandwidth they already own. The hub coordinates sessions but **mathematically cannot link buyers to their browsing activity** thanks to Cashu blind signatures (BDHKE).
 
-[![CI](https://github.com/Radi-Labs/ARFL/actions/workflows/ci.yml/badge.svg)](https://github.com/Radi-Labs/ARFL/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/Radi-Labs/ARFL)](https://github.com/Radi-Labs/ARFL/releases/latest)
+[![CI](https://github.com/0xciph3r/ARFL/actions/workflows/ci.yml/badge.svg)](https://github.com/0xciph3r/ARFL/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/0xciph3r/ARFL)](https://github.com/0xciph3r/ARFL/releases/latest)
 
 ## How It Works
 
@@ -57,7 +57,7 @@ ARFL is a **privacy-respecting bandwidth marketplace** — not an untraceable VP
 
 ### Prerequisites
 
-- **Go 1.23+** — [install](https://go.dev/dl/)
+- **Go 1.26.3+** — [install](https://go.dev/dl/)
 - **WireGuard** — `apt install wireguard wireguard-tools` (Linux) or `brew install wireguard-tools` (macOS)
 - **nftables** (Linux nodes only) — `apt install nftables` (for kernel-level quota enforcement)
 - **LND** (hub) — Lightning node with REST API enabled (`mainnet` for live sats, `testnet/signet` for E2E dry runs; [Polar](https://lightningpolar.com) for local dev)
@@ -65,7 +65,7 @@ ARFL is a **privacy-respecting bandwidth marketplace** — not an untraceable VP
 ### Build from Source
 
 ```bash
-git clone https://github.com/Radi-Labs/ARFL.git
+git clone https://github.com/0xciph3r/ARFL.git
 cd ARFL
 mkdir -p bin
 go build -o bin/arfl-hub ./cmd/arfl-hub
@@ -448,7 +448,7 @@ Benchmarked on Apple M1 Pro (single core):
 - [Architecture](./docs/architecture.md)
 - [API Specification](./docs/api-spec.md)
 - [Deployment Guide](./docs/deployment-guide.md)
-- [Releases](https://github.com/Radi-Labs/ARFL/releases)
+- [Releases](https://github.com/0xciph3r/ARFL/releases)
 
 ## Responsible Use
 

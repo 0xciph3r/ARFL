@@ -115,22 +115,39 @@ func (c *LNDClient) CreateInvoice(ctx context.Context, amountSats int64, memo st
 
 // LookupInvoice checks the current status of an invoice by payment hash.
 func (c *LNDClient) LookupInvoice(ctx context.Context, paymentHash string) (*Invoice, error) {
-	// LND REST expects the hash as URL-safe base64 in the path.
+	// paymentHash in ARFL is always hex.
+	// Some LND deployments accept hex in /v1/invoice/{hash}, while others
+	// expect URL-safe base64. Try hex first, then fall back to base64.
+	var resp lndInvoice
+	if err := c.get(ctx, "/v1/invoice/"+paymentHash, &resp); err == nil {
+		return lndInvoiceToInvoice(&resp)
+	} else if !isInvoiceLookupNotFound(err) {
+		return nil, fmt.Errorf("lookup invoice: %w", err)
+	}
+
 	hashBytes, err := hex.DecodeString(paymentHash)
 	if err != nil {
 		return nil, fmt.Errorf("invalid payment hash: %w", err)
 	}
 	hashB64 := base64.URLEncoding.EncodeToString(hashBytes)
 
-	var resp lndInvoice
 	if err := c.get(ctx, "/v1/invoice/"+hashB64, &resp); err != nil {
-		if strings.Contains(err.Error(), "unable to locate invoice") {
+		if isInvoiceLookupNotFound(err) {
 			return nil, ErrInvoiceNotFound
 		}
 		return nil, fmt.Errorf("lookup invoice: %w", err)
 	}
 
 	return lndInvoiceToInvoice(&resp)
+}
+
+func isInvoiceLookupNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unable to locate invoice") ||
+		strings.Contains(msg, "http 404")
 }
 
 // SubscribeInvoices opens a streaming connection to LND's invoice subscription.

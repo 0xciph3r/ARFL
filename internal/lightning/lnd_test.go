@@ -324,6 +324,51 @@ func TestLND_LookupInvoice_Settled(t *testing.T) {
 	}
 }
 
+func TestLND_LookupInvoice_HexPath(t *testing.T) {
+	// Simulate LND variants that expect a hex hash path, not base64.
+	const hashHex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Grpc-Metadata-macaroon") != "mac" {
+			http.Error(w, `{"message":"invalid macaroon"}`, http.StatusUnauthorized)
+			return
+		}
+		if !strings.HasPrefix(r.URL.Path, "/v1/invoice/") {
+			http.NotFound(w, r)
+			return
+		}
+		got := strings.TrimPrefix(r.URL.Path, "/v1/invoice/")
+		if got != hashHex {
+			http.Error(w, `{"message":"unable to locate invoice"}`, http.StatusNotFound)
+			return
+		}
+
+		rHashBytes, _ := hex.DecodeString(hashHex)
+		inv := lndInvoice{
+			Memo:         "hex-lookup",
+			RHash:        base64.StdEncoding.EncodeToString(rHashBytes),
+			Value:        "1000",
+			State:        "SETTLED",
+			CreationDate: fmt.Sprintf("%d", time.Now().Add(-30*time.Second).Unix()),
+			SettleDate:   fmt.Sprintf("%d", time.Now().Unix()),
+			Expiry:       "900",
+		}
+		_ = json.NewEncoder(w).Encode(inv)
+	}))
+	t.Cleanup(srv.Close)
+
+	client := newLNDClientDirect(srv.URL, "mac", srv.Client())
+	got, err := client.LookupInvoice(context.Background(), hashHex)
+	if err != nil {
+		t.Fatalf("LookupInvoice: %v", err)
+	}
+	if got.Status != InvoiceSettled {
+		t.Fatalf("status = %s, want %s", got.Status, InvoiceSettled)
+	}
+	if got.PaymentHash != hashHex {
+		t.Fatalf("payment hash = %s, want %s", got.PaymentHash, hashHex)
+	}
+}
+
 // --- SubscribeInvoices ---
 
 func TestLND_SubscribeInvoices_ReceivesSettlement(t *testing.T) {

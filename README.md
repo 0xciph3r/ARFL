@@ -8,8 +8,8 @@ ARFL is a decentralised VPN protocol that combines WireGuard, Nostr, the Bitcoin
 
 Users pay per-gigabyte via Lightning. Node operators earn passive income on bandwidth they already own. The hub coordinates sessions but **mathematically cannot link buyers to their browsing activity** thanks to Cashu blind signatures (BDHKE).
 
-[![CI](https://github.com/Radi-Labs/ARFL/actions/workflows/ci.yml/badge.svg)](https://github.com/Radi-Labs/ARFL/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/Radi-Labs/ARFL)](https://github.com/Radi-Labs/ARFL/releases/latest)
+[![CI](https://github.com/0xciph3r/ARFL/actions/workflows/ci.yml/badge.svg)](https://github.com/0xciph3r/ARFL/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/0xciph3r/ARFL)](https://github.com/0xciph3r/ARFL/releases/latest)
 
 ## How It Works
 
@@ -57,26 +57,62 @@ ARFL is a **privacy-respecting bandwidth marketplace** — not an untraceable VP
 
 ### Prerequisites
 
-- **Go 1.23+** — [install](https://go.dev/dl/)
+- **Go 1.26.3+** — [install](https://go.dev/dl/)
 - **WireGuard** — `apt install wireguard wireguard-tools` (Linux) or `brew install wireguard-tools` (macOS)
 - **nftables** (Linux nodes only) — `apt install nftables` (for kernel-level quota enforcement)
-- **LND** (hub, production) — Lightning node with REST API enabled ([Polar](https://lightningpolar.com) for local dev)
+- **LND** (hub) — Lightning node with REST API enabled (`mainnet` for live sats, `testnet/signet` for E2E dry runs; [Polar](https://lightningpolar.com) for local dev)
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/Radi-Labs/ARFL.git
+git clone https://github.com/0xciph3r/ARFL.git
 cd ARFL
-go build ./...
+mkdir -p bin
+go build -o bin/arfl-hub ./cmd/arfl-hub
+go build -o bin/arfl-node ./cmd/arfl-node
+go build -o bin/arfl-client ./cmd/arfl-client
 ```
 
-This produces three binaries in the current directory:
+This produces three binaries:
 
 | Binary | Purpose |
 |---|---|
-| `arfl-hub` | Coordination hub — discovery, payments, blind signing |
-| `arfl-node` | Node daemon — WireGuard tunnel endpoint (entry or exit) |
-| `arfl-client` | Client CLI — purchase bandwidth, connect to nodes |
+| `bin/arfl-hub` | Coordination hub — discovery, payments, blind signing |
+| `bin/arfl-node` | Node daemon — WireGuard tunnel endpoint (entry or exit) |
+| `bin/arfl-client` | Client CLI — purchase bandwidth, connect to nodes |
+
+> **Important (production deploy):** build the hub with CGO enabled (default).
+> `CGO_ENABLED=0` will compile, but SQLite will be a stub and `arfl-hub` exits
+> at startup with `go-sqlite3 requires cgo to work`.
+
+### Install from GitHub Release Assets (Linux amd64)
+
+If you just want to run the latest released hub/node binaries:
+
+```bash
+VERSION=v0.1.0
+BASE_URL="https://github.com/0xciph3r/ARFL/releases/download/${VERSION}"
+
+mkdir -p /usr/local/bin /tmp/arfl-release && cd /tmp/arfl-release
+
+# curl (or use wget commands below)
+curl -fL -o arfl-hub-linux-amd64  "${BASE_URL}/arfl-hub-linux-amd64"
+curl -fL -o arfl-node-linux-amd64 "${BASE_URL}/arfl-node-linux-amd64"
+curl -fL -o checksums.txt         "${BASE_URL}/checksums.txt"
+
+# verify + install
+sha256sum -c checksums.txt
+install -m 755 arfl-hub-linux-amd64  /usr/local/bin/arfl-hub
+install -m 755 arfl-node-linux-amd64 /usr/local/bin/arfl-node
+```
+
+`wget` equivalent:
+
+```bash
+wget "${BASE_URL}/arfl-hub-linux-amd64"
+wget "${BASE_URL}/arfl-node-linux-amd64"
+wget "${BASE_URL}/checksums.txt"
+```
 
 ### Automated Node Setup (Ubuntu)
 
@@ -412,7 +448,7 @@ Benchmarked on Apple M1 Pro (single core):
 - [Architecture](./docs/architecture.md)
 - [API Specification](./docs/api-spec.md)
 - [Deployment Guide](./docs/deployment-guide.md)
-- [Releases](https://github.com/Radi-Labs/ARFL/releases)
+- [Releases](https://github.com/0xciph3r/ARFL/releases)
 
 ## Responsible Use
 

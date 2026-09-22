@@ -444,7 +444,7 @@ Benchmarked on Apple M1 Pro (single core):
 
 ## Links
 
-- [Whitepaper (PDF)](./ARFL_Whitepaper.pdf)
+- [Whitepaper (PDF)](./ARFL_Whitepaper_v0.4.pdf)
 - [Architecture](./docs/architecture.md)
 - [API Specification](./docs/api-spec.md)
 - [Deployment Guide](./docs/deployment-guide.md)

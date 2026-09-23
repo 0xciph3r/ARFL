@@ -6,7 +6,7 @@ title: API Specification
 # ARFL Hub API Specification
 
 **Version:** 0.1.0  
-**Base URL:** `https://your-hub-domain.example` (replace with your hub's URL)
+**Base URL:** `https://hub.arfl.us` 
 
 This document describes all public HTTP endpoints exposed by an ARFL hub.
 Extension builders (LNbits, Layerz, etc.) should use this as the integration reference.
@@ -58,10 +58,14 @@ Returns hub health status.
 Returns all online, verified nodes with their signed Nostr events and attestations.
 Clients verify signatures independently — the hub cannot manipulate the list undetected.
 
+Current runtime behavior uses WireGuard as the active data plane (`endpoint`, `connect_url`, `wg_pubkey`).
+Multi-transport fields (`transports`, `preferred_transport`) are optional negotiation metadata and
+are emitted when a node operator configures transport capabilities.
+
 **Query parameters:**
 - `role` (optional): `"entry"`, `"exit"`, or omit for all
 
-**Response:**
+**Response (current runtime):**
 ```json
 {
   "nodes": [
@@ -85,6 +89,46 @@ Clients verify signatures independently — the hub cannot manipulate the list u
   "count": 2
 }
 ```
+
+**Response (when transport adapters are enabled):**
+```json
+{
+  "nodes": [
+    {
+      "info": {
+        "nostr_pubkey": "7e63a1a6...",
+        "wg_pubkey": "anF7eMAgCI...",
+        "endpoint": "203.0.113.10:51820",
+        "connect_url": "http://203.0.113.10:9091",
+        "transports": [
+          {
+            "transport": "wireguard",
+            "endpoint": "203.0.113.10:51820",
+            "connect_url": "http://203.0.113.10:9091"
+          },
+          {
+            "transport": "hysteria2",
+            "endpoint": "203.0.113.10:443",
+            "connect_url": "http://203.0.113.10:9092"
+          }
+        ],
+        "preferred_transport": "hysteria2",
+        "role": "entry",
+        "upload_mbps": 1000,
+        "download_mbps": 1000,
+        "load": 0,
+        "capacity": 100,
+        "version": "0.1.0"
+      },
+      "event": { "...signed Nostr event..." }
+    }
+  ],
+  "timestamp": 1784037256,
+  "count": 2
+}
+```
+
+`transports` is optional for backward compatibility. When present, clients should select a common transport supported by both entry and exit nodes.
 
 ---
 

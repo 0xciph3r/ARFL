@@ -9,10 +9,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/app"
+	"github.com/Radi-Labs/ARFL/internal/config"
 	"github.com/Radi-Labs/ARFL/internal/tunnel"
 	"github.com/Radi-Labs/ARFL/internal/wallet"
 	"github.com/Radi-Labs/ARFL/pkg/types"
@@ -127,8 +129,18 @@ func (b *Bridge) Unlock(passphrase string) (*StatusView, error) {
 		b.tunErr = tunErr.Error()
 	}
 
+	preferred, allowed, err := loadTransportPolicyFromClientConfig()
+	if err != nil {
+		if tun != nil {
+			tun.Close()
+		}
+		return nil, err
+	}
+
 	svc, err := app.New(app.Config{
-		Passphrase: passphrase,
+		Passphrase:          passphrase,
+		PreferredTransports: preferred,
+		AllowedTransports:   allowed,
 		// A nil *tunnel.Tunnel in an interface is not nil, so pass the
 		// interface explicitly as nil when setup failed.
 		Tunnel:       tunnelOrNil(tun),
@@ -193,6 +205,61 @@ func tunnelOrNil(t *tunnel.Tunnel) app.Tunnel {
 		return nil
 	}
 	return t
+}
+
+func loadTransportPolicyFromClientConfig() ([]types.Transport, []types.Transport, error) {
+	cfgPath := strings.TrimSpace(os.Getenv("ARFL_CLIENT_CONFIG"))
+	if cfgPath == "" {
+		cfgPath = "client.json"
+	}
+
+	if _, err := os.Stat(cfgPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, nil
+		}
+		return nil, nil, fmt.Errorf("read client config path %q: %w", cfgPath, err)
+	}
+
+	cfg, err := config.LoadClientConfig(cfgPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load client config %q: %w", cfgPath, err)
+	}
+	if cfg.RequireCommonHops != nil && !*cfg.RequireCommonHops {
+		return nil, nil, fmt.Errorf(
+			"client config %q: require_common_hop_transport=false is not yet supported by arfl-desktop (mixed-hop adapters are not implemented); set require_common_hop_transport=true",
+			cfgPath,
+		)
+	}
+
+	preferred, err := parseTransportNames("preferred_transports", cfg.PreferredTransports)
+	if err != nil {
+		return nil, nil, fmt.Errorf("client config %q: %w", cfgPath, err)
+	}
+	allowed, err := parseTransportNames("allowed_transports", cfg.AllowedTransports)
+	if err != nil {
+		return nil, nil, fmt.Errorf("client config %q: %w", cfgPath, err)
+	}
+	return preferred, allowed, nil
+}
+
+func parseTransportNames(field string, in []string) ([]types.Transport, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make([]types.Transport, 0, len(in))
+	for _, raw := range in {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case string(types.TransportWireGuard):
+			out = append(out, types.TransportWireGuard)
+		case string(types.TransportHysteria2):
+			out = append(out, types.TransportHysteria2)
+		case string(types.TransportAmneziaWG):
+			out = append(out, types.TransportAmneziaWG)
+		default:
+			return nil, fmt.Errorf("%s has unsupported transport %q", field, raw)
+		}
+	}
+	return out, nil
 }
 
 // Locked reports whether the vault still needs a passphrase.

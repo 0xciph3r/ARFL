@@ -11,21 +11,39 @@ const (
 	RoleBoth  NodeRole = "both"
 )
 
+// Transport identifies a node data-plane transport.
+type Transport string
+
+const (
+	TransportWireGuard Transport = "wireguard"
+	TransportHysteria2 Transport = "hysteria2"
+	TransportAmneziaWG Transport = "amneziawg"
+)
+
+// TransportCapability describes one transport a node supports.
+type TransportCapability struct {
+	Transport  Transport `json:"transport"`
+	Endpoint   string    `json:"endpoint,omitempty"`    // Data-plane endpoint, e.g. "203.0.113.10:51820"
+	ConnectURL string    `json:"connect_url,omitempty"` // Control-plane connect API base URL
+}
+
 // NodeInfo represents a node's published metadata (from Nostr or config).
 type NodeInfo struct {
-	ID           string   `json:"id"`
-	NostrPubkey  string   `json:"nostr_pubkey"`
-	WGPubkey     string   `json:"wg_pubkey"`
-	Endpoint     string   `json:"endpoint"`
-	ConnectURL   string   `json:"connect_url,omitempty"` // HTTP base URL for token-gated /connect
-	LNURL        string   `json:"lnurl"`
-	DepositSats  int64    `json:"deposit_sats"`
-	UploadMbps   int      `json:"upload_mbps"`
-	DownloadMbps int      `json:"download_mbps"`
-	Load         int      `json:"load"`
-	Capacity     int      `json:"capacity"`
-	Role         NodeRole `json:"role"`
-	Version      string   `json:"version"`
+	ID                 string                `json:"id"`
+	NostrPubkey        string                `json:"nostr_pubkey"`
+	WGPubkey           string                `json:"wg_pubkey"`
+	Endpoint           string                `json:"endpoint"`
+	ConnectURL         string                `json:"connect_url,omitempty"` // HTTP base URL for token-gated /connect
+	Transports         []TransportCapability `json:"transports,omitempty"`  // Multi-transport capabilities advertised by this node
+	LNURL              string                `json:"lnurl"`
+	DepositSats        int64                 `json:"deposit_sats"`
+	UploadMbps         int                   `json:"upload_mbps"`
+	DownloadMbps       int                   `json:"download_mbps"`
+	Load               int                   `json:"load"`
+	Capacity           int                   `json:"capacity"`
+	Role               NodeRole              `json:"role"`
+	Version            string                `json:"version"`
+	PreferredTransport Transport             `json:"preferred_transport,omitempty"` // Optional node hint for transport selection
 }
 
 // SessionConfig holds the parameters for a two-hop session.
@@ -36,8 +54,9 @@ type SessionConfig struct {
 	EntryNode   NodeInfo `json:"entry_node"`
 	ExitNode    NodeInfo `json:"exit_node"`
 	ClientWGPub string   `json:"client_wg_pubkey"`
-	OuterTunIP  string   `json:"outer_tunnel_ip"` // e.g. 10.100.0.2
-	InnerTunIP  string   `json:"inner_tunnel_ip"` // e.g. 10.200.0.2
+	Transport   string   `json:"transport,omitempty"` // Selected session transport (e.g. "wireguard", "hysteria2")
+	OuterTunIP  string   `json:"outer_tunnel_ip"`     // e.g. 10.100.0.2
+	InnerTunIP  string   `json:"inner_tunnel_ip"`     // e.g. 10.200.0.2
 	QuotaMB     int64    `json:"quota_mb"`
 }
 

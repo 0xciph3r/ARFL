@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/app"
+	"github.com/Radi-Labs/ARFL/internal/client"
 	"github.com/Radi-Labs/ARFL/internal/discovery"
 	"github.com/Radi-Labs/ARFL/internal/ecash"
 	"github.com/Radi-Labs/ARFL/internal/lightning"
@@ -291,6 +292,35 @@ func newService(t *testing.T, tunnel app.Tunnel) *app.Service {
 	return svc
 }
 
+func newServiceWithTransports(t *testing.T, tunnel app.Tunnel, preferred []types.Transport, allowed []types.Transport) *app.Service {
+	t.Helper()
+	svc, err := app.New(app.Config{
+		StorePath:           t.TempDir() + "/tokens.json",
+		Passphrase:          "correct horse battery staple",
+		Tunnel:              tunnel,
+		PollInterval:        10 * time.Millisecond,
+		PreferredTransports: preferred,
+		AllowedTransports:   allowed,
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	return svc
+}
+
+func (h *testHub) setNodeTransports(id string, preferred types.Transport, caps []types.TransportCapability) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i := range h.nodes {
+		if h.nodes[i].Info.ID != id {
+			continue
+		}
+		h.nodes[i].Info.PreferredTransport = preferred
+		h.nodes[i].Info.Transports = append([]types.TransportCapability(nil), caps...)
+		return
+	}
+}
+
 // fundService runs the full purchase path so the service holds spendable sats.
 func fundService(t *testing.T, hub *testHub, svc *app.Service, amount uint64) {
 	t.Helper()
@@ -421,6 +451,9 @@ func TestConnectSpendsBothHopsAndBringsTunnelUp(t *testing.T) {
 	if ups[0].Entry.NodeWGPubkey != entry.wgPubkey {
 		t.Errorf("entry wg pubkey = %q, want %q", ups[0].Entry.NodeWGPubkey, entry.wgPubkey)
 	}
+	if ups[0].Transport != types.TransportWireGuard {
+		t.Errorf("transport = %q, want %q", ups[0].Transport, types.TransportWireGuard)
+	}
 
 	// The two hops must not have been paid with the same proofs: the hub burns
 	// proofs on redemption, so a shared set would have failed at the exit node.
@@ -430,6 +463,121 @@ func TestConnectSpendsBothHopsAndBringsTunnelUp(t *testing.T) {
 	}
 	if balance != 64 {
 		t.Errorf("balance = %d, want 64 remaining after spending 64", balance)
+	}
+}
+
+func TestConnectFailsFastForUnsupportedTransport(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	exit := hub.addNode(t, "exit-1", types.RoleExit)
+
+	hub.setNodeTransports("entry-1", types.TransportHysteria2, []types.TransportCapability{
+		{Transport: types.TransportWireGuard, Endpoint: "entry-1.example:51820", ConnectURL: entry.server.URL},
+		{Transport: types.TransportHysteria2, Endpoint: "entry-1.example:443", ConnectURL: entry.server.URL},
+	})
+	hub.setNodeTransports("exit-1", types.TransportHysteria2, []types.TransportCapability{
+		{Transport: types.TransportWireGuard, Endpoint: "exit-1.example:51820", ConnectURL: exit.server.URL},
+		{Transport: types.TransportHysteria2, Endpoint: "exit-1.example:443", ConnectURL: exit.server.URL},
+	})
+
+	tunnel := newFakeTunnel()
+	svc := newServiceWithTransports(
+		t,
+		tunnel,
+		[]types.Transport{types.TransportHysteria2, types.TransportWireGuard},
+		[]types.Transport{types.TransportWireGuard, types.TransportHysteria2},
+	)
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	before, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance before connect: %v", err)
+	}
+
+	_, err = svc.Connect(ctx, 32)
+	if !errors.Is(err, app.ErrTransportUnsupported) {
+		t.Fatalf("error = %v, want ErrTransportUnsupported", err)
+	}
+	if !strings.Contains(err.Error(), "selected=hysteria2") {
+		t.Fatalf("error should include selected transport, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "preferred=hysteria2,wireguard") {
+		t.Fatalf("error should include preferred policy, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "allowed=hysteria2,wireguard") {
+		t.Fatalf("error should include allowed policy, got %q", err)
+	}
+
+	if entry.connectCount() != 0 || exit.connectCount() != 0 {
+		t.Fatalf("node connect should not run for unsupported transport: entry=%d exit=%d", entry.connectCount(), exit.connectCount())
+	}
+	if len(tunnel.ups()) != 0 {
+		t.Fatal("tunnel should not be brought up for unsupported transport")
+	}
+	after, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance after connect: %v", err)
+	}
+	if before != after {
+		t.Fatalf("balance changed on unsupported transport: before=%d after=%d", before, after)
+	}
+}
+
+func TestConnectNoCompatiblePairIncludesTransportPolicyAndPreservesBalance(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	exit := hub.addNode(t, "exit-1", types.RoleExit)
+
+	hub.setNodeTransports("entry-1", types.TransportHysteria2, []types.TransportCapability{
+		{Transport: types.TransportHysteria2, Endpoint: "entry-1.example:443", ConnectURL: entry.server.URL},
+	})
+	hub.setNodeTransports("exit-1", types.TransportHysteria2, []types.TransportCapability{
+		{Transport: types.TransportHysteria2, Endpoint: "exit-1.example:443", ConnectURL: exit.server.URL},
+	})
+
+	svc := newServiceWithTransports(
+		t,
+		newFakeTunnel(),
+		[]types.Transport{types.TransportWireGuard},
+		[]types.Transport{types.TransportWireGuard},
+	)
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	before, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance before connect: %v", err)
+	}
+
+	_, err = svc.Connect(ctx, 32)
+	if !errors.Is(err, client.ErrNoCompatiblePair) {
+		t.Fatalf("error = %v, want ErrNoCompatiblePair", err)
+	}
+	if !strings.Contains(err.Error(), "preferred=wireguard") {
+		t.Fatalf("error should include preferred policy, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "allowed=wireguard") {
+		t.Fatalf("error should include allowed policy, got %q", err)
+	}
+	if entry.connectCount() != 0 || exit.connectCount() != 0 {
+		t.Fatalf("node connect should not run when no compatible pair exists: entry=%d exit=%d", entry.connectCount(), exit.connectCount())
+	}
+
+	after, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance after connect: %v", err)
+	}
+	if before != after {
+		t.Fatalf("balance changed on incompatible policy: before=%d after=%d", before, after)
 	}
 }
 

@@ -262,7 +262,18 @@ Create `/opt/arfl/data/node.json` on the entry node:
   "relays": ["wss://relay.damus.io", "wss://nos.lol"],
   "upload_mbps": 1000,
   "download_mbps": 1000,
-  "capacity": 100
+  "capacity": 100,
+  "enabled_transports": ["wireguard"],
+  "transport_endpoints": {
+    "wireguard": "<entry-public-ip>:51820",
+    "hysteria2": "<entry-public-ip>:443",
+    "amneziawg": "<entry-public-ip>:51830"
+  },
+  "transport_connect_addrs": {
+    "wireguard": "0.0.0.0:9091",
+    "hysteria2": "0.0.0.0:9092",
+    "amneziawg": "0.0.0.0:9093"
+  }
 }
 ```
 
@@ -307,9 +318,23 @@ Create `/opt/arfl/data/node.json` on the exit node:
   "relays": ["wss://relay.damus.io", "wss://nos.lol"],
   "upload_mbps": 1000,
   "download_mbps": 1000,
-  "capacity": 100
+  "capacity": 100,
+  "enabled_transports": ["wireguard"],
+  "transport_endpoints": {
+    "wireguard": "<exit-public-ip>:51821",
+    "hysteria2": "<exit-public-ip>:443",
+    "amneziawg": "<exit-public-ip>:51831"
+  },
+  "transport_connect_addrs": {
+    "wireguard": "0.0.0.0:9091",
+    "hysteria2": "0.0.0.0:9092",
+    "amneziawg": "0.0.0.0:9093"
+  }
 }
 ```
+
+These transport fields are optional negotiation metadata and are advertised in discovery. Current active runtime transport remains WireGuard unless transport adapters are enabled in code.
+At this stage the node serves one shared connect API listener (`connect_addr`), so advertised `connect_url` points to that shared endpoint.
 
 ### Enable IP forwarding (exit node only)
 

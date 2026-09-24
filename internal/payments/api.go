@@ -3,6 +3,7 @@ package payments
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -91,6 +92,10 @@ func (api *PurchaseAPI) StartSettlementListener(ctx context.Context) error {
 				continue
 			}
 			if err := api.onInvoiceSettled(inv); err != nil {
+				if errors.Is(err, store.ErrInvoiceNotFound) {
+					log.Printf("[payment-api] settled invoice %s is not a ticket purchase, skipping", inv.PaymentHash)
+					continue
+				}
 				log.Printf("[payment-api] settlement processing error: %v", err)
 			}
 		}

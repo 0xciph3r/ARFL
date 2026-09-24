@@ -1525,6 +1525,35 @@ prevents entering in_flight when context is already canceled.
 
 ---
 
+### Decision 109: Desktop rejects mixed-hop transport policy for now
+
+**Date:** 2026-09-23
+**Context:** Desktop runtime currently assumes a single common transport can be
+selected across both hops. Mixed-hop adapter wiring is not implemented yet.
+
+**Decision:** `cmd/arfl-desktop` now fails fast while loading client policy only
+when `require_common_hop_transport` is explicitly set to false, with an actionable
+error directing operators to set it to true.
+
+**Rationale:** This prevents silent misconfiguration and avoids starting sessions
+under a policy the desktop client cannot honor, while preserving compatibility for
+existing configs where the field is absent.
+
+---
+
+### Decision 110: Advertise one shared connect URL across transports until per-transport listeners exist
+
+**Context:** Node metadata can include per-transport `transport_connect_addrs`, but runtime currently
+serves a single connect API listener for `/connect` and `/cashu-connect` on `connect_addr`.
+
+**Decision:** Capability advertisement keeps transport-specific endpoints but uses the shared public
+connect URL for all advertised transports until per-transport listeners are implemented.
+
+**Rationale:** This avoids advertising unreachable control-plane URLs (for example ports with no bound
+listener) while preserving transport negotiation metadata for future adapter phases.
+
+---
+
 ### Decision 63: UNIQUE constraint on payouts(settlement_entry_id)
 
 **Context:** Without uniqueness, concurrent settlement cycles or bugs could create
@@ -2059,3 +2088,192 @@ and **open protocol** — not as an "untraceable" or "invisible" VPN.
 
 **Defend it as:** "We built a protocol where privacy is the default, not the selling point.
 The value is that anyone can earn sats by sharing bandwidth they already own."
+
+---
+
+### Decision 100: Transport migration starts metadata-first (no runtime cutover)
+
+**Context:** We are introducing multi-transport support (WireGuard, Hysteria2, AmneziaWG),
+but the immediate release risk is high if runtime transport behavior changes before
+negotiation, fallback policy, and observability are in place.
+
+**Decision:** Phase 1 of this migration is schema/config groundwork only:
+
+- Add transport capability types in shared models (`Transport`, `TransportCapability`)
+- Extend `NodeInfo` and config structs with optional transport metadata
+- Keep all current runtime behavior on WireGuard until transport adapters are explicitly wired
+
+This keeps the codebase forward-compatible without breaking current deployments or demos.
+
+**Rationale:**
+1. Preserve backward compatibility for existing node configs and clients.
+2. Unblock incremental implementation (negotiation, adapters, failover) behind explicit slices.
+3. Avoid a risky "big bang" transport switch before canary data exists.
+
+**Invariants for upcoming slices:**
+- Hub remains transport-agnostic control plane.
+- Client selects entry/exit nodes with a common supported transport.
+- Mixed-hop transports are out of scope for first rollout.
+- WireGuard remains fallback until Hysteria2/AmneziaWG canary gates pass.
+
+**Defend it as:** "We decoupled capability modeling from runtime cutover so we can ship
+transport migration safely, testably, and without breaking current operators."
+
+---
+
+### Decision 101: Node advertisement uses `enabled_transports` as authoritative capability list
+
+**Context:** We introduced transport metadata fields and needed a deterministic way for nodes
+to advertise capabilities without changing active runtime transport behavior.
+
+**Decision:** Node announcements derive `NodeInfo.transports` from `enabled_transports` in order:
+
+- Unknown transport names are ignored.
+- If `enabled_transports` is empty, advertise a WireGuard capability by default.
+- Duplicate transport entries are de-duplicated.
+- A transport is advertised only when it has a usable endpoint.
+- For `wireguard`, endpoint/connect URL fall back to legacy `endpoint` + `connect_addr`.
+- `preferred_transport` is derived from the first advertised capability, else `wireguard`.
+
+**Why:** This provides one authoritative list for future negotiation while preserving full backward
+compatibility with legacy clients and operator configs.
+
+**Defend it as:** "Operators explicitly declare supported transports, while legacy WireGuard
+fields stay valid as safe defaults during migration."
+
+---
+
+### Decision 102: Client pair selection requires a common advertised transport
+
+**Context:** Multi-transport metadata is now advertised by nodes. Pairing entry and exit nodes
+without checking transport compatibility would produce sessions that cannot be established once
+transport negotiation is enforced.
+
+**Decision:** Node pair selection now requires a common transport between entry and exit:
+
+- `PairNodes` defaults to WireGuard preference for backward-compatible runtime behavior.
+- Transport-aware selection (`PairNodesWithPreferred`) picks from a caller-provided preference order.
+- If no common transport exists for any viable entry/exit combination, return an explicit
+  `ErrNoCompatiblePair`.
+- Legacy nodes that do not advertise `transports` are treated as WireGuard-capable from legacy fields.
+
+**Why:** This keeps current behavior stable while making future transport negotiation deterministic
+and fail-fast when node metadata is incompatible.
+
+**Defend it as:** "We only form pairs that can actually speak the same transport, while keeping
+WireGuard as the default compatibility path during migration."
+
+---
+
+### Decision 103: Service-level transport preference order is explicit and sanitized
+
+**Context:** Transport-aware pairing needs a deterministic preference order and safe defaults.
+Relying on ad-hoc caller input would make pair selection behavior inconsistent across clients.
+
+**Decision:** `app.Config.PreferredTransports` now drives selector preference order, with
+sanitization rules:
+
+- Empty or fully invalid preference lists fall back to `[wireguard]`.
+- Only known transports are accepted (`wireguard`, `hysteria2`, `amneziawg`).
+- Duplicates are removed while preserving the first-seen order.
+
+The selected pair transport is persisted into `TunnelConfig.transport` for downstream
+transport adapter wiring, while current runtime behavior remains WireGuard.
+
+**Defend it as:** "Preference is caller-controlled but normalized, so all clients negotiate
+transports predictably and safely during migration."
+
+---
+
+### Decision 104: Transport allowlist is enforced at pair selection time
+
+**Context:** Preference order alone is not enough for rollout control. We need a hard deny mechanism
+to disable specific transports per client/runtime while still advertising multi-transport capability.
+
+**Decision:** Pair selection now takes both:
+
+- `preferred` transport order (selection priority), and
+- `allowed` transport set (hard eligibility filter).
+
+Only transports present in both node capabilities and the allowlist are considered. If no pair has
+a common allowed transport, selection fails with `ErrNoCompatiblePair`.
+
+**Why:** This gives us safe progressive rollout/canary controls (for example, "prefer Hysteria2
+but only allow WireGuard in stable channels") without changing node advertisement semantics.
+
+**Defend it as:** "Preference chooses what we want; allowlist enforces what we permit."
+
+---
+
+### Decision 105: Pair selection projects nodes onto the chosen transport endpoint
+
+**Context:** A selected transport is only useful if downstream connect/tunnel steps use the endpoint
+and connect URL for that specific transport. Returning raw node metadata risks selecting Hysteria2
+while still dialing WireGuard endpoints.
+
+**Decision:** During pair selection, once a common transport is chosen, each node is projected onto
+that transport capability:
+
+- `NodeInfo.endpoint` and `NodeInfo.connect_url` are replaced with the selected transport's values.
+- Legacy nodes without transport capabilities remain valid through WireGuard fallback projection.
+- Pairs are rejected if projection fails for either hop.
+
+**Why:** This keeps current call sites unchanged while making transport negotiation actionable end-to-end.
+
+**Defend it as:** "The chosen transport is not just a label; it drives the exact endpoints the client dials."
+
+---
+
+### Decision 106: Non-WireGuard selections fail fast until transport adapters are implemented
+
+**Context:** Pair selection can now negotiate non-WireGuard transports, but the current connect/tunnel
+runtime only implements WireGuard session establishment and token handoff semantics.
+
+**Decision:** `app.Service.Connect` enforces an execution gate:
+
+- `wireguard` proceeds through the existing connect/tunnel path.
+- Any other selected transport returns `ErrTransportUnsupported` before reserve/redeem or tunnel setup.
+
+**Why:** This prevents partial-spend or undefined behavior when metadata negotiation selects a transport
+that runtime adapters do not yet support.
+
+**Defend it as:** "Negotiation can advance safely without risking user funds until each transport has
+an explicit execution adapter."
+
+---
+
+### Decision 107: Desktop loads transport policy from client config with strict validation
+
+**Context:** Transport preference/allowlist logic was implemented in the service, but desktop runtime
+needed a stable way to provide operator/user policy without hardcoding transport order.
+
+**Decision:** On unlock, desktop attempts to load client policy from:
+
+1. `ARFL_CLIENT_CONFIG` (if set), otherwise
+2. `client.json` in current working directory.
+
+If the file exists, transport names in `preferred_transports` and `allowed_transports` are parsed
+strictly; unknown names fail unlock with an explicit configuration error.
+
+**Why:** This keeps policy declarative and prevents silent fallback caused by misspelled transport names.
+
+**Defend it as:** "Policy is configuration-driven, and invalid transport policy fails loudly instead of
+quietly changing network behavior."
+
+---
+
+### Decision 108: Desktop transport policy loader is test-locked
+
+**Context:** Desktop now loads transport policy from `client.json` / `ARFL_CLIENT_CONFIG`. A parsing or
+path regression here would silently alter negotiation behavior at unlock time.
+
+**Decision:** Added direct unit coverage for:
+
+- valid transport parsing (case/whitespace normalization),
+- strict invalid-name rejection,
+- default-missing-file behavior (nil policy),
+- env-path config loading.
+
+**Why:** This makes desktop unlock policy behavior deterministic and safe during rapid transport migration.
+
+**Defend it as:** "Transport policy loading is now verified behavior, not best-effort parsing."

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -985,5 +986,13 @@ func TestSTRIDE_ConcurrentMarkSpent(t *testing.T) {
 
 	if wins != 1 {
 		t.Errorf("expected exactly 1 winner, got %d", wins)
+	}
+}
+
+func TestSettleInvoice_UnknownInvoiceIsNotFound(t *testing.T) {
+	s := testStore(t)
+	err := s.SettleInvoice("hash-that-was-never-recorded")
+	if !errors.Is(err, ErrInvoiceNotFound) {
+		t.Fatalf("got %v, want ErrInvoiceNotFound", err)
 	}
 }

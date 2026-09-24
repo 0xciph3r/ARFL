@@ -195,7 +195,18 @@ On first run, the Hub generates an RSA denomination key in `keys/key-100mb.json`
   "attestation": "<hub-issued attestation JSON>",
   "hub_url": "http://<hub-ip>:8080",
   "hub_pubkey_file": "keys/key-100mb.pub.json",
-  "connect_addr": "0.0.0.0:9091"
+  "connect_addr": "0.0.0.0:9091",
+  "enabled_transports": ["wireguard"],
+  "transport_endpoints": {
+    "wireguard": "<public-ip>:51820",
+    "hysteria2": "<public-ip>:443",
+    "amneziawg": "<public-ip>:51830"
+  },
+  "transport_connect_addrs": {
+    "wireguard": "0.0.0.0:9091",
+    "hysteria2": "0.0.0.0:9092",
+    "amneziawg": "0.0.0.0:9093"
+  }
 }
 ```
 
@@ -219,9 +230,23 @@ On first run, the Hub generates an RSA denomination key in `keys/key-100mb.json`
   "attestation": "<hub-issued attestation JSON>",
   "hub_url": "http://<hub-ip>:8080",
   "hub_pubkey_file": "keys/key-100mb.pub.json",
-  "connect_addr": "0.0.0.0:9091"
+  "connect_addr": "0.0.0.0:9091",
+  "enabled_transports": ["wireguard"],
+  "transport_endpoints": {
+    "wireguard": "<public-ip>:51821",
+    "hysteria2": "<public-ip>:443",
+    "amneziawg": "<public-ip>:51831"
+  },
+  "transport_connect_addrs": {
+    "wireguard": "0.0.0.0:9091",
+    "hysteria2": "0.0.0.0:9092",
+    "amneziawg": "0.0.0.0:9093"
+  }
 }
 ```
+
+`enabled_transports`, `transport_endpoints`, and `transport_connect_addrs` are negotiation metadata: they are advertised in node discovery, but current active runtime transport remains WireGuard unless transport adapters are enabled in code.
+Today, node `/connect` and `/cashu-connect` are served on one shared connect API listener (`connect_addr`), so advertised `connect_url` currently resolves to that shared endpoint.
 
 ### Client
 
@@ -249,6 +274,21 @@ sudo ./arfl-client --discover http://<hub-ip>:8080 \
   --hub-pubkeys <hub-nostr-pubkey> \
   --key client.key
 ```
+
+**Optional client transport policy (`client.json`):**
+```json
+{
+  "hub_url": "http://<hub-ip>:8080",
+  "preferred_transports": ["hysteria2", "wireguard"],
+  "allowed_transports": ["wireguard", "hysteria2"],
+  "require_common_hop_transport": true
+}
+```
+
+Desktop loads this policy from `client.json` in the current working directory by default, or from
+`ARFL_CLIENT_CONFIG=/path/to/client.json` when set.
+Unknown transport names in `preferred_transports` / `allowed_transports` are treated as configuration errors.
+If `require_common_hop_transport` is explicitly set to `false`, `arfl-desktop` rejects the policy until mixed-hop adapters are implemented.
 
 ### Bandwidth Tiers
 

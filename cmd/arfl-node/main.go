@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -121,9 +122,17 @@ func main() {
 
 	// Start admin API
 	adminServer := control.NewServer(wgMgr, quotaMgr, cfg.Interface)
+	adminServer.StartReaper(ctx, control.DefaultPeerIdleTimeout)
 
 	// Wire token-gated /connect if hub_url and hub_pubkey_file are configured.
 	connectAddr := cfg.ConnectAddr
+	caps := buildTransportCapabilities(cfg, derivePublicConnectURL(cfg.Endpoint, connectAddr))
+	if err := checkTransportConfig(cfg, caps); err != nil {
+		log.Fatalf("node config: %v", err)
+	}
+	for _, msg := range unadvertisedTransports(cfg, caps) {
+		log.Printf("[node] warning: %s", msg)
+	}
 	if cfg.HubURL != "" && cfg.HubPubkeyFile != "" {
 		pubKey, err := credentials.LoadPublicKey(cfg.HubPubkeyFile)
 		if err != nil {
@@ -205,22 +214,21 @@ func main() {
 		} else {
 			// nodeInfoFn is called every 60s to get fresh load/capacity data.
 			nodeInfoFn := func() types.NodeInfo {
+				defaultConnectURL := derivePublicConnectURL(cfg.Endpoint, connectAddr)
+				caps := buildTransportCapabilities(cfg, defaultConnectURL)
 				info := types.NodeInfo{
-					NostrPubkey:  nodeKP.PubkeyHex(),
-					WGPubkey:     wgPubKeyB64,
-					Endpoint:     cfg.Endpoint,
-					UploadMbps:   cfg.UploadMbps,
-					DownloadMbps: cfg.DownloadMbps,
-					Load:         int(atomic.LoadInt32(&currentLoad)),
-					Capacity:     cfg.Capacity,
-					Role:         types.NodeRole(cfg.Role),
-					Version:      "0.1.0",
-				}
-				if connectAddr != "" {
-					// Derive public connect URL from the WG endpoint host + connect port.
-					host := strings.Split(cfg.Endpoint, ":")[0]
-					_, port, _ := strings.Cut(connectAddr, ":")
-					info.ConnectURL = "http://" + host + ":" + port
+					NostrPubkey:        nodeKP.PubkeyHex(),
+					WGPubkey:           wgPubKeyB64,
+					Endpoint:           cfg.Endpoint,
+					ConnectURL:         defaultConnectURL,
+					Transports:         caps,
+					PreferredTransport: preferredTransport(caps),
+					UploadMbps:         cfg.UploadMbps,
+					DownloadMbps:       cfg.DownloadMbps,
+					Load:               int(atomic.LoadInt32(&currentLoad)),
+					Capacity:           cfg.Capacity,
+					Role:               types.NodeRole(cfg.Role),
+					Version:            "0.1.0",
 				}
 				return info
 			}
@@ -294,10 +302,169 @@ func deriveTunnelSubnet(tunnelIP string) string {
 	if idx := strings.Index(ip, "/"); idx >= 0 {
 		ip = ip[:idx]
 	}
+
 	// Take first 3 octets.
 	parts := strings.Split(ip, ".")
 	if len(parts) >= 3 {
 		return parts[0] + "." + parts[1] + "." + parts[2]
 	}
 	return "10.100.0" // fallback
+}
+
+func derivePublicConnectURL(endpoint, connectAddr string) string {
+	if connectAddr == "" || endpoint == "" {
+		return ""
+	}
+
+	host := parseHost(endpoint)
+	port := parsePort(connectAddr)
+	if host == "" || port == "" {
+		return ""
+	}
+	return "http://" + net.JoinHostPort(host, port)
+}
+
+func parseHost(endpoint string) string {
+	if endpoint == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(endpoint); err == nil {
+		return host
+	}
+	return strings.Trim(endpoint, "[]")
+}
+
+func parsePort(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	if _, port, err := net.SplitHostPort(addr); err == nil {
+		return port
+	}
+	if idx := strings.LastIndex(addr, ":"); idx >= 0 && idx+1 < len(addr) {
+		return addr[idx+1:]
+	}
+	return ""
+}
+
+func preferredTransport(caps []types.TransportCapability) types.Transport {
+	if len(caps) > 0 {
+		return caps[0].Transport
+	}
+	return types.TransportWireGuard
+}
+
+func transportMapLookup(values map[string]string, raw string, canonical string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	if v := strings.TrimSpace(values[canonical]); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(values[strings.ToLower(strings.TrimSpace(raw))]); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(values[raw]); v != "" {
+		return v
+	}
+	return ""
+}
+
+func transportSet(value types.TransportCapability, seen map[types.Transport]struct{}) bool {
+	if _, exists := seen[value.Transport]; exists {
+		return false
+	}
+	seen[value.Transport] = struct{}{}
+	return true
+}
+
+func buildTransportCapabilities(cfg *config.NodeConfig, defaultConnectURL string) []types.TransportCapability {
+	enabled := cfg.EnabledTransports
+	if len(enabled) == 0 {
+		enabled = []string{string(types.TransportWireGuard)}
+	}
+
+	caps := make([]types.TransportCapability, 0, len(enabled))
+	seen := make(map[types.Transport]struct{}, len(enabled))
+	for _, raw := range enabled {
+		t, ok := parseTransport(raw)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[t]; exists {
+			continue
+		}
+
+		key := string(t)
+
+		var endpoint string
+		endpoint = transportMapLookup(cfg.TransportEndpoints, raw, key)
+		if endpoint == "" && t == types.TransportWireGuard {
+			endpoint = cfg.Endpoint
+		}
+		if endpoint == "" {
+			continue
+		}
+
+		// The current control API listener is shared across transports, so we
+		// advertise a single reachable public control endpoint for every
+		// transport capability.
+		connectURL := defaultConnectURL
+
+		capability := types.TransportCapability{
+			Transport:  t,
+			Endpoint:   endpoint,
+			ConnectURL: connectURL,
+		}
+		if transportSet(capability, seen) {
+			caps = append(caps, capability)
+		}
+	}
+	return caps
+}
+
+func parseTransport(raw string) (types.Transport, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(types.TransportWireGuard):
+		return types.TransportWireGuard, true
+	case string(types.TransportHysteria2):
+		return types.TransportHysteria2, true
+	case string(types.TransportAmneziaWG):
+		return types.TransportAmneziaWG, true
+	default:
+		return "", false
+	}
+}
+
+// checkTransportConfig rejects a config that names transports but yields none
+// to advertise. Without this the node would publish an empty capability list,
+// which the client reads as a legacy WireGuard node — so a node configured for
+// Hysteria2 only, with its endpoint missing, would silently be sold as WireGuard.
+func checkTransportConfig(cfg *config.NodeConfig, caps []types.TransportCapability) error {
+	if len(cfg.EnabledTransports) > 0 && len(caps) == 0 {
+		return fmt.Errorf("enabled_transports %v produced no advertisable transport: each needs a known name and an endpoint in transport_endpoints (wireguard falls back to endpoint)", cfg.EnabledTransports)
+	}
+	return nil
+}
+
+// unadvertisedTransports describes each configured transport that was dropped,
+// so a partly valid config is visible at startup instead of silently shrinking.
+func unadvertisedTransports(cfg *config.NodeConfig, caps []types.TransportCapability) []string {
+	advertised := make(map[types.Transport]struct{}, len(caps))
+	for _, c := range caps {
+		advertised[c.Transport] = struct{}{}
+	}
+
+	var out []string
+	for _, raw := range cfg.EnabledTransports {
+		t, ok := parseTransport(raw)
+		if !ok {
+			out = append(out, fmt.Sprintf("enabled_transports entry %q is not a known transport and is ignored", raw))
+			continue
+		}
+		if _, ok := advertised[t]; !ok {
+			out = append(out, fmt.Sprintf("transport %q is enabled but has no endpoint in transport_endpoints, so it is not advertised", t))
+		}
+	}
+	return out
 }

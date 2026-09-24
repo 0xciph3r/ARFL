@@ -510,3 +510,33 @@ func TestRoutesUseTheNameTheOSAssigned(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateEndpoints(t *testing.T) {
+	tun := newTunnel(nil, nil)
+
+	cases := []struct {
+		name        string
+		entry, exit string
+		wantErr     string
+	}{
+		{"distinct public hosts", "203.0.113.10:51820", "198.51.100.7:51821", ""},
+		{"entry not host:port", "203.0.113.10", "198.51.100.7:51821", "entry endpoint"},
+		{"exit is loopback", "203.0.113.10:51820", "127.0.0.1:51821", "exit endpoint"},
+		{"entry is private", "10.0.0.5:51820", "198.51.100.7:51821", "entry endpoint"},
+		{"same host on two ports", "203.0.113.10:51820", "203.0.113.10:51821", "single host"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tun.ValidateEndpoints(tc.entry, tc.exit)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("got %v, want an error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/app"
+	"github.com/Radi-Labs/ARFL/internal/client"
 	"github.com/Radi-Labs/ARFL/internal/discovery"
 	"github.com/Radi-Labs/ARFL/internal/ecash"
 	"github.com/Radi-Labs/ARFL/internal/lightning"
@@ -118,12 +119,22 @@ type testNode struct {
 
 	mu        sync.Mutex
 	rejectAll bool
+	rejectAs  int
 	connects  int
 }
 
 func (n *testNode) setReject(reject bool) {
 	n.mu.Lock()
 	n.rejectAll = reject
+	n.mu.Unlock()
+}
+
+// setBurnedReject makes the node answer 409, as a real node does when the hub
+// reports the presented proofs as already spent.
+func (n *testNode) setBurnedReject() {
+	n.mu.Lock()
+	n.rejectAll = true
+	n.rejectAs = http.StatusConflict
 	n.mu.Unlock()
 }
 
@@ -146,10 +157,14 @@ func (n *testNode) handleConnect(w http.ResponseWriter, r *http.Request) {
 	n.mu.Lock()
 	n.connects++
 	reject := n.rejectAll
+	status := n.rejectAs
 	n.mu.Unlock()
 
 	if reject {
-		w.WriteHeader(http.StatusPaymentRequired)
+		if status == 0 {
+			status = http.StatusPaymentRequired
+		}
+		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "node offline"})
 		return
 	}
@@ -291,6 +306,35 @@ func newService(t *testing.T, tunnel app.Tunnel) *app.Service {
 	return svc
 }
 
+func newServiceWithTransports(t *testing.T, tunnel app.Tunnel, preferred []types.Transport, allowed []types.Transport) *app.Service {
+	t.Helper()
+	svc, err := app.New(app.Config{
+		StorePath:           t.TempDir() + "/tokens.json",
+		Passphrase:          "correct horse battery staple",
+		Tunnel:              tunnel,
+		PollInterval:        10 * time.Millisecond,
+		PreferredTransports: preferred,
+		AllowedTransports:   allowed,
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	return svc
+}
+
+func (h *testHub) setNodeTransports(id string, preferred types.Transport, caps []types.TransportCapability) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i := range h.nodes {
+		if h.nodes[i].Info.ID != id {
+			continue
+		}
+		h.nodes[i].Info.PreferredTransport = preferred
+		h.nodes[i].Info.Transports = append([]types.TransportCapability(nil), caps...)
+		return
+	}
+}
+
 // fundService runs the full purchase path so the service holds spendable sats.
 func fundService(t *testing.T, hub *testHub, svc *app.Service, amount uint64) {
 	t.Helper()
@@ -421,6 +465,9 @@ func TestConnectSpendsBothHopsAndBringsTunnelUp(t *testing.T) {
 	if ups[0].Entry.NodeWGPubkey != entry.wgPubkey {
 		t.Errorf("entry wg pubkey = %q, want %q", ups[0].Entry.NodeWGPubkey, entry.wgPubkey)
 	}
+	if ups[0].Transport != types.TransportWireGuard {
+		t.Errorf("transport = %q, want %q", ups[0].Transport, types.TransportWireGuard)
+	}
 
 	// The two hops must not have been paid with the same proofs: the hub burns
 	// proofs on redemption, so a shared set would have failed at the exit node.
@@ -430,6 +477,121 @@ func TestConnectSpendsBothHopsAndBringsTunnelUp(t *testing.T) {
 	}
 	if balance != 64 {
 		t.Errorf("balance = %d, want 64 remaining after spending 64", balance)
+	}
+}
+
+func TestConnectFailsFastForUnsupportedTransport(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	exit := hub.addNode(t, "exit-1", types.RoleExit)
+
+	hub.setNodeTransports("entry-1", types.TransportHysteria2, []types.TransportCapability{
+		{Transport: types.TransportWireGuard, Endpoint: "entry-1.example:51820", ConnectURL: entry.server.URL},
+		{Transport: types.TransportHysteria2, Endpoint: "entry-1.example:443", ConnectURL: entry.server.URL},
+	})
+	hub.setNodeTransports("exit-1", types.TransportHysteria2, []types.TransportCapability{
+		{Transport: types.TransportWireGuard, Endpoint: "exit-1.example:51820", ConnectURL: exit.server.URL},
+		{Transport: types.TransportHysteria2, Endpoint: "exit-1.example:443", ConnectURL: exit.server.URL},
+	})
+
+	tunnel := newFakeTunnel()
+	svc := newServiceWithTransports(
+		t,
+		tunnel,
+		[]types.Transport{types.TransportHysteria2, types.TransportWireGuard},
+		[]types.Transport{types.TransportWireGuard, types.TransportHysteria2},
+	)
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	before, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance before connect: %v", err)
+	}
+
+	_, err = svc.Connect(ctx, 32)
+	if !errors.Is(err, app.ErrTransportUnsupported) {
+		t.Fatalf("error = %v, want ErrTransportUnsupported", err)
+	}
+	if !strings.Contains(err.Error(), "selected=hysteria2") {
+		t.Fatalf("error should include selected transport, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "preferred=hysteria2,wireguard") {
+		t.Fatalf("error should include preferred policy, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "allowed=hysteria2,wireguard") {
+		t.Fatalf("error should include allowed policy, got %q", err)
+	}
+
+	if entry.connectCount() != 0 || exit.connectCount() != 0 {
+		t.Fatalf("node connect should not run for unsupported transport: entry=%d exit=%d", entry.connectCount(), exit.connectCount())
+	}
+	if len(tunnel.ups()) != 0 {
+		t.Fatal("tunnel should not be brought up for unsupported transport")
+	}
+	after, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance after connect: %v", err)
+	}
+	if before != after {
+		t.Fatalf("balance changed on unsupported transport: before=%d after=%d", before, after)
+	}
+}
+
+func TestConnectNoCompatiblePairIncludesTransportPolicyAndPreservesBalance(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	exit := hub.addNode(t, "exit-1", types.RoleExit)
+
+	hub.setNodeTransports("entry-1", types.TransportHysteria2, []types.TransportCapability{
+		{Transport: types.TransportHysteria2, Endpoint: "entry-1.example:443", ConnectURL: entry.server.URL},
+	})
+	hub.setNodeTransports("exit-1", types.TransportHysteria2, []types.TransportCapability{
+		{Transport: types.TransportHysteria2, Endpoint: "exit-1.example:443", ConnectURL: exit.server.URL},
+	})
+
+	svc := newServiceWithTransports(
+		t,
+		newFakeTunnel(),
+		[]types.Transport{types.TransportWireGuard},
+		[]types.Transport{types.TransportWireGuard},
+	)
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	before, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance before connect: %v", err)
+	}
+
+	_, err = svc.Connect(ctx, 32)
+	if !errors.Is(err, client.ErrNoCompatiblePair) {
+		t.Fatalf("error = %v, want ErrNoCompatiblePair", err)
+	}
+	if !strings.Contains(err.Error(), "preferred=wireguard") {
+		t.Fatalf("error should include preferred policy, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "allowed=wireguard") {
+		t.Fatalf("error should include allowed policy, got %q", err)
+	}
+	if entry.connectCount() != 0 || exit.connectCount() != 0 {
+		t.Fatalf("node connect should not run when no compatible pair exists: entry=%d exit=%d", entry.connectCount(), exit.connectCount())
+	}
+
+	after, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance after connect: %v", err)
+	}
+	if before != after {
+		t.Fatalf("balance changed on incompatible policy: before=%d after=%d", before, after)
 	}
 }
 
@@ -764,5 +926,134 @@ func TestConnectHubRejectsUnreachableHub(t *testing.T) {
 	}
 	if svc.HubURL() != "" {
 		t.Error("a failed ConnectHub must not record the hub")
+	}
+}
+
+// A 409 means the hub already burned the failing hop's proofs even though the
+// node gave no tunnel. Returning them to the wallet would make every retry pick
+// the same dead proof and fail again.
+func TestExitAlreadySpentDropsBurnedProofsInsteadOfRefunding(t *testing.T) {
+	hub := newTestHub(t)
+	hub.addNode(t, "entry-1", types.RoleEntry)
+	exit := hub.addNode(t, "exit-1", types.RoleExit)
+	exit.setBurnedReject()
+
+	svc := newService(t, newFakeTunnel())
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	if _, err := svc.Connect(ctx, 32); err == nil {
+		t.Fatal("expected connect to fail when the exit node reports proofs spent")
+	}
+
+	balance, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance: %v", err)
+	}
+	if balance != 64 {
+		t.Errorf("balance = %d, want 64 — entry (32) was burned and the exit's rejected proofs (32) must be dropped", balance)
+	}
+}
+
+func TestEntryAlreadySpentDropsItsProofsButRefundsTheExitHop(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	hub.addNode(t, "exit-1", types.RoleExit)
+	entry.setBurnedReject()
+
+	svc := newService(t, newFakeTunnel())
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	if _, err := svc.Connect(ctx, 32); err == nil {
+		t.Fatal("expected connect to fail when the entry node reports proofs spent")
+	}
+
+	balance, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance: %v", err)
+	}
+	if balance != 96 {
+		t.Errorf("balance = %d, want 96 — only the entry hop's proofs are burned; the exit hop never reached a node", balance)
+	}
+}
+
+// validatingTunnel is a fakeTunnel that can also refuse node endpoints, like the
+// real tunnel does.
+type validatingTunnel struct {
+	*fakeTunnel
+	endpointErr error
+}
+
+func (v *validatingTunnel) ValidateEndpoints(_, _ string) error { return v.endpointErr }
+
+// Endpoints come from node announcements. One the tunnel will refuse must be
+// caught before either node is paid, because a node that accepted its proofs
+// has already burned them.
+func TestConnectRejectsUnusableEndpointBeforeSpending(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	exit := hub.addNode(t, "exit-1", types.RoleExit)
+
+	tunnel := &validatingTunnel{fakeTunnel: newFakeTunnel(), endpointErr: errors.New("address 10.0.0.5 is a private address")}
+	svc := newService(t, tunnel)
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	_, err := svc.Connect(ctx, 32)
+	if err == nil || !strings.Contains(err.Error(), "unusable endpoint") {
+		t.Fatalf("expected an unusable endpoint error, got %v", err)
+	}
+
+	balance, berr := svc.Balance()
+	if berr != nil {
+		t.Fatalf("balance: %v", berr)
+	}
+	if balance != 128 {
+		t.Errorf("balance = %d, want 128 — nothing should be spent on an endpoint the tunnel will refuse", balance)
+	}
+	if entry.connectCount() != 0 || exit.connectCount() != 0 {
+		t.Errorf("a node was contacted (entry=%d exit=%d) despite the bad endpoint", entry.connectCount(), exit.connectCount())
+	}
+}
+
+// A supplied allowlist that names nothing supported (say, a typo) means nothing
+// is allowed. It must not fall back to allowing every transport.
+func TestInvalidAllowlistDoesNotWidenPolicy(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	hub.addNode(t, "exit-1", types.RoleExit)
+
+	svc := newServiceWithTransports(t, newFakeTunnel(), nil, []types.Transport{"hysteria-typo"})
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	_, err := svc.Connect(ctx, 32)
+	if !errors.Is(err, client.ErrNoCompatiblePair) {
+		t.Fatalf("got %v, want ErrNoCompatiblePair", err)
+	}
+
+	balance, berr := svc.Balance()
+	if berr != nil {
+		t.Fatalf("balance: %v", berr)
+	}
+	if balance != 128 || entry.connectCount() != 0 {
+		t.Errorf("balance=%d entryConnects=%d, want 128 and 0", balance, entry.connectCount())
 	}
 }

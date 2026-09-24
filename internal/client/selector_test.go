@@ -15,9 +15,9 @@ import (
 
 func TestPairNodes_HappyPath(t *testing.T) {
 	nodes := []types.NodeInfo{
-		{NostrPubkey: "entry1", Role: types.RoleEntry, ConnectURL: "http://e1:9091"},
-		{NostrPubkey: "exit1", Role: types.RoleExit, ConnectURL: "http://x1:9091"},
-		{NostrPubkey: "exit2", Role: types.RoleExit, ConnectURL: "http://x2:9091"},
+		{NostrPubkey: "entry1", Role: types.RoleEntry, Endpoint: "203.0.113.10:51820", ConnectURL: "http://e1:9091"},
+		{NostrPubkey: "exit1", Role: types.RoleExit, Endpoint: "203.0.113.11:51821", ConnectURL: "http://x1:9091"},
+		{NostrPubkey: "exit2", Role: types.RoleExit, Endpoint: "203.0.113.12:51821", ConnectURL: "http://x2:9091"},
 	}
 
 	pair, err := PairNodes(nodes)
@@ -30,6 +30,9 @@ func TestPairNodes_HappyPath(t *testing.T) {
 	if pair.Exit.Role != types.RoleExit {
 		t.Errorf("exit should have exit role, got %s", pair.Exit.Role)
 	}
+	if pair.Transport != types.TransportWireGuard {
+		t.Errorf("expected wireguard transport, got %s", pair.Transport)
+	}
 	// Entry and exit should differ when possible.
 	if pair.Entry.NostrPubkey == pair.Exit.NostrPubkey {
 		t.Error("entry and exit should differ when multiple nodes available")
@@ -38,8 +41,8 @@ func TestPairNodes_HappyPath(t *testing.T) {
 
 func TestPairNodes_BothRole(t *testing.T) {
 	nodes := []types.NodeInfo{
-		{NostrPubkey: "both1", Role: types.RoleBoth, ConnectURL: "http://b1:9091"},
-		{NostrPubkey: "both2", Role: types.RoleBoth, ConnectURL: "http://b2:9091"},
+		{NostrPubkey: "both1", Role: types.RoleBoth, Endpoint: "203.0.113.20:51820", ConnectURL: "http://b1:9091"},
+		{NostrPubkey: "both2", Role: types.RoleBoth, Endpoint: "203.0.113.21:51820", ConnectURL: "http://b2:9091"},
 	}
 
 	pair, err := PairNodes(nodes)
@@ -54,7 +57,7 @@ func TestPairNodes_BothRole(t *testing.T) {
 
 func TestPairNodes_SingleBothNode(t *testing.T) {
 	nodes := []types.NodeInfo{
-		{NostrPubkey: "only", Role: types.RoleBoth, ConnectURL: "http://only:9091"},
+		{NostrPubkey: "only", Role: types.RoleBoth, Endpoint: "203.0.113.22:51820", ConnectURL: "http://only:9091"},
 	}
 
 	pair, err := PairNodes(nodes)
@@ -104,17 +107,17 @@ func TestFetchNodes_FromHub(t *testing.T) {
 		resp := map[string]interface{}{
 			"nodes": []map[string]interface{}{
 				{
-					"info":      types.NodeInfo{NostrPubkey: "n1", Role: types.RoleEntry, ConnectURL: "http://n1:9091"},
+					"info":      types.NodeInfo{NostrPubkey: "n1", Role: types.RoleEntry, Endpoint: "203.0.113.30:51820", ConnectURL: "http://n1:9091"},
 					"online":    true,
 					"last_seen": "2025-01-01T00:00:00Z",
 				},
 				{
-					"info":      types.NodeInfo{NostrPubkey: "n2", Role: types.RoleExit, ConnectURL: "http://n2:9091"},
+					"info":      types.NodeInfo{NostrPubkey: "n2", Role: types.RoleExit, Endpoint: "203.0.113.31:51821", ConnectURL: "http://n2:9091"},
 					"online":    true,
 					"last_seen": "2025-01-01T00:00:00Z",
 				},
 				{
-					"info":      types.NodeInfo{NostrPubkey: "offline", Role: types.RoleBoth, ConnectURL: "http://off:9091"},
+					"info":      types.NodeInfo{NostrPubkey: "offline", Role: types.RoleBoth, Endpoint: "203.0.113.32:51820", ConnectURL: "http://off:9091"},
 					"online":    false,
 					"last_seen": "2024-12-01T00:00:00Z",
 				},
@@ -142,12 +145,12 @@ func TestSelectPair_IntegrationWithMockHub(t *testing.T) {
 		resp := map[string]interface{}{
 			"nodes": []map[string]interface{}{
 				{
-					"info":      types.NodeInfo{NostrPubkey: "e1", Role: types.RoleEntry, ConnectURL: "http://e1:9091"},
+					"info":      types.NodeInfo{NostrPubkey: "e1", Role: types.RoleEntry, Endpoint: "203.0.113.40:51820", ConnectURL: "http://e1:9091"},
 					"online":    true,
 					"last_seen": "2025-01-01T00:00:00Z",
 				},
 				{
-					"info":      types.NodeInfo{NostrPubkey: "x1", Role: types.RoleExit, ConnectURL: "http://x1:9091"},
+					"info":      types.NodeInfo{NostrPubkey: "x1", Role: types.RoleExit, Endpoint: "203.0.113.41:51821", ConnectURL: "http://x1:9091"},
 					"online":    true,
 					"last_seen": "2025-01-01T00:00:00Z",
 				},
@@ -169,6 +172,186 @@ func TestSelectPair_IntegrationWithMockHub(t *testing.T) {
 	}
 	if pair.Exit.NostrPubkey != "x1" {
 		t.Errorf("expected exit x1, got %s", pair.Exit.NostrPubkey)
+	}
+}
+
+func TestPairNodesWithPreferred_SelectsCommonPreferredTransport(t *testing.T) {
+	nodes := []types.NodeInfo{
+		{
+			NostrPubkey: "entry",
+			Role:        types.RoleEntry,
+			Endpoint:    "203.0.113.50:51820",
+			Transports: []types.TransportCapability{
+				{Transport: types.TransportWireGuard, Endpoint: "203.0.113.50:51820", ConnectURL: "http://203.0.113.50:9091"},
+				{Transport: types.TransportHysteria2, Endpoint: "203.0.113.50:443", ConnectURL: "http://203.0.113.50:9091"},
+			},
+		},
+		{
+			NostrPubkey: "exit",
+			Role:        types.RoleExit,
+			Endpoint:    "203.0.113.51:51821",
+			Transports: []types.TransportCapability{
+				{Transport: types.TransportWireGuard, Endpoint: "203.0.113.51:51821", ConnectURL: "http://203.0.113.51:9091"},
+				{Transport: types.TransportHysteria2, Endpoint: "203.0.113.51:443", ConnectURL: "http://203.0.113.51:9091"},
+			},
+		},
+	}
+
+	pair, err := PairNodesWithPreferred(nodes, []types.Transport{types.TransportHysteria2, types.TransportWireGuard})
+	if err != nil {
+		t.Fatalf("PairNodesWithPreferred: %v", err)
+	}
+	if pair.Transport != types.TransportHysteria2 {
+		t.Fatalf("expected hysteria2 transport, got %s", pair.Transport)
+	}
+}
+
+func TestPairNodesWithPreferred_NoCompatiblePair(t *testing.T) {
+	nodes := []types.NodeInfo{
+		{
+			NostrPubkey: "entry",
+			Role:        types.RoleEntry,
+			Endpoint:    "203.0.113.52:51820",
+			Transports: []types.TransportCapability{
+				{Transport: types.TransportHysteria2, Endpoint: "203.0.113.52:443", ConnectURL: "http://203.0.113.52:9091"},
+			},
+		},
+		{
+			NostrPubkey: "exit",
+			Role:        types.RoleExit,
+			Endpoint:    "203.0.113.53:51821",
+			Transports: []types.TransportCapability{
+				{Transport: types.TransportAmneziaWG, Endpoint: "203.0.113.53:51831", ConnectURL: "http://203.0.113.53:9091"},
+			},
+		},
+	}
+
+	_, err := PairNodesWithPreferred(nodes, []types.Transport{types.TransportWireGuard})
+	if err != ErrNoCompatiblePair {
+		t.Fatalf("expected ErrNoCompatiblePair, got %v", err)
+	}
+}
+
+func TestPairNodesWithPolicy_RespectsAllowedTransports(t *testing.T) {
+	nodes := []types.NodeInfo{
+		{
+			NostrPubkey: "entry",
+			Role:        types.RoleEntry,
+			Endpoint:    "203.0.113.60:51820",
+			Transports: []types.TransportCapability{
+				{Transport: types.TransportWireGuard, Endpoint: "203.0.113.60:51820", ConnectURL: "http://203.0.113.60:9091"},
+				{Transport: types.TransportHysteria2, Endpoint: "203.0.113.60:443", ConnectURL: "http://203.0.113.60:9091"},
+			},
+		},
+		{
+			NostrPubkey: "exit",
+			Role:        types.RoleExit,
+			Endpoint:    "203.0.113.61:51821",
+			Transports: []types.TransportCapability{
+				{Transport: types.TransportWireGuard, Endpoint: "203.0.113.61:51821", ConnectURL: "http://203.0.113.61:9091"},
+				{Transport: types.TransportHysteria2, Endpoint: "203.0.113.61:443", ConnectURL: "http://203.0.113.61:9091"},
+			},
+		},
+	}
+
+	pair, err := PairNodesWithPolicy(
+		nodes,
+		[]types.Transport{types.TransportHysteria2, types.TransportWireGuard},
+		map[types.Transport]struct{}{types.TransportWireGuard: {}},
+	)
+	if err != nil {
+		t.Fatalf("PairNodesWithPolicy: %v", err)
+	}
+	if pair.Transport != types.TransportWireGuard {
+		t.Fatalf("expected allowed wireguard transport, got %s", pair.Transport)
+	}
+}
+
+func TestPairNodesWithPreferred_ProjectsNodeEndpointsForSelectedTransport(t *testing.T) {
+	nodes := []types.NodeInfo{
+		{
+			NostrPubkey: "entry",
+			Role:        types.RoleEntry,
+			Endpoint:    "203.0.113.70:51820",
+			ConnectURL:  "http://203.0.113.70:9091",
+			Transports: []types.TransportCapability{
+				{Transport: types.TransportWireGuard, Endpoint: "203.0.113.70:51820", ConnectURL: "http://203.0.113.70:9091"},
+				{Transport: types.TransportHysteria2, Endpoint: "203.0.113.70:443", ConnectURL: "http://203.0.113.70:9092"},
+			},
+		},
+		{
+			NostrPubkey: "exit",
+			Role:        types.RoleExit,
+			Endpoint:    "203.0.113.71:51821",
+			ConnectURL:  "http://203.0.113.71:9091",
+			Transports: []types.TransportCapability{
+				{Transport: types.TransportWireGuard, Endpoint: "203.0.113.71:51821", ConnectURL: "http://203.0.113.71:9091"},
+				{Transport: types.TransportHysteria2, Endpoint: "203.0.113.71:443", ConnectURL: "http://203.0.113.71:9092"},
+			},
+		},
+	}
+	pair, err := PairNodesWithPreferred(nodes, []types.Transport{types.TransportHysteria2, types.TransportWireGuard})
+	if err != nil {
+		t.Fatalf("PairNodesWithPreferred: %v", err)
+	}
+	if pair.Transport != types.TransportHysteria2 {
+		t.Fatalf("expected hysteria2 transport, got %s", pair.Transport)
+	}
+	if pair.Entry.Endpoint != "203.0.113.70:443" || pair.Entry.ConnectURL != "http://203.0.113.70:9092" {
+		t.Fatalf("entry not projected to hysteria2 endpoint/connect: %+v", pair.Entry)
+	}
+	if pair.Exit.Endpoint != "203.0.113.71:443" || pair.Exit.ConnectURL != "http://203.0.113.71:9092" {
+		t.Fatalf("exit not projected to hysteria2 endpoint/connect: %+v", pair.Exit)
+	}
+}
+
+func TestPairNodesWithPolicy_PrioritizesHighestPreferredTransportBucket(t *testing.T) {
+	nodes := []types.NodeInfo{
+		{
+			NostrPubkey: "entry-h2",
+			Role:        types.RoleEntry,
+			Transports: []types.TransportCapability{
+				{Transport: types.TransportWireGuard, Endpoint: "203.0.113.81:51820", ConnectURL: "http://203.0.113.81:9091"},
+				{Transport: types.TransportHysteria2, Endpoint: "203.0.113.81:443", ConnectURL: "http://203.0.113.81:9091"},
+			},
+		},
+		{
+			NostrPubkey: "entry-wg-only",
+			Role:        types.RoleEntry,
+			Transports: []types.TransportCapability{
+				{Transport: types.TransportWireGuard, Endpoint: "203.0.113.82:51820", ConnectURL: "http://203.0.113.82:9091"},
+			},
+		},
+		{
+			NostrPubkey: "exit-h2",
+			Role:        types.RoleExit,
+			Transports: []types.TransportCapability{
+				{Transport: types.TransportWireGuard, Endpoint: "203.0.113.83:51820", ConnectURL: "http://203.0.113.83:9091"},
+				{Transport: types.TransportHysteria2, Endpoint: "203.0.113.83:443", ConnectURL: "http://203.0.113.83:9091"},
+			},
+		},
+		{
+			NostrPubkey: "exit-wg-only",
+			Role:        types.RoleExit,
+			Transports: []types.TransportCapability{
+				{Transport: types.TransportWireGuard, Endpoint: "203.0.113.84:51820", ConnectURL: "http://203.0.113.84:9091"},
+			},
+		},
+	}
+
+	pair, err := PairNodesWithPolicy(
+		nodes,
+		[]types.Transport{types.TransportHysteria2, types.TransportWireGuard},
+		map[types.Transport]struct{}{
+			types.TransportWireGuard: {},
+			types.TransportHysteria2: {},
+		},
+	)
+	if err != nil {
+		t.Fatalf("PairNodesWithPolicy: %v", err)
+	}
+	if pair.Transport != types.TransportHysteria2 {
+		t.Fatalf("expected hysteria2 to be prioritized, got %s", pair.Transport)
 	}
 }
 

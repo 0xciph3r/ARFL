@@ -45,6 +45,11 @@ type NodeConfig struct {
 	HubURL        string `json:"hub_url"`         // Hub API base URL (e.g. "http://hub:8080")
 	HubPubkeyFile string `json:"hub_pubkey_file"` // Path to hub's blind sig public key file
 	ConnectAddr   string `json:"connect_addr"`    // Public-facing /connect API listen address (e.g. "0.0.0.0:9091")
+
+	// Multi-transport foundation (transport negotiation metadata only).
+	EnabledTransports    []string          `json:"enabled_transports,omitempty"`      // e.g. ["wireguard","hysteria2","amneziawg"]
+	TransportEndpoints   map[string]string `json:"transport_endpoints,omitempty"`     // Public data-plane endpoint per transport
+	TransportConnectAddr map[string]string `json:"transport_connect_addrs,omitempty"` // Public connect API address per transport
 }
 
 // HubConfig holds configuration for an ARFL hub daemon.
@@ -77,8 +82,11 @@ type HubConfig struct {
 
 // ClientConfig holds configuration for the ARFL client.
 type ClientConfig struct {
-	HubURL     string   `json:"hub_url"`     // Hub discovery API URL
-	HubPubkeys []string `json:"hub_pubkeys"` // Trusted hub pubkeys for verification
+	HubURL              string   `json:"hub_url"`                                // Hub discovery API URL
+	HubPubkeys          []string `json:"hub_pubkeys"`                            // Trusted hub pubkeys for verification
+	PreferredTransports []string `json:"preferred_transports,omitempty"`         // Client transport preference order
+	AllowedTransports   []string `json:"allowed_transports,omitempty"`           // Optional client allowlist
+	RequireCommonHops   *bool    `json:"require_common_hop_transport,omitempty"` // Optional explicit flag; false rejects mixed-hop mode until supported
 }
 
 // SessionFile is the static session config read by the client in Phase 1.

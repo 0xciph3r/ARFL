@@ -11,6 +11,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,10 +24,11 @@ import (
 
 // Errors returned by the service.
 var (
-	ErrNoHub          = errors.New("no hub connected")
-	ErrAlreadyOn      = errors.New("already connected")
-	ErrNotConnected   = errors.New("not connected")
-	ErrAmountTooSmall = errors.New("amount must be greater than zero")
+	ErrNoHub                = errors.New("no hub connected")
+	ErrAlreadyOn            = errors.New("already connected")
+	ErrNotConnected         = errors.New("not connected")
+	ErrAmountTooSmall       = errors.New("amount must be greater than zero")
+	ErrTransportUnsupported = errors.New("selected transport is not supported by this runtime")
 )
 
 // State is the connection state machine exposed to the UI.
@@ -61,11 +64,19 @@ type Tunnel interface {
 	Down(ctx context.Context) error
 }
 
+// EndpointValidator is implemented by a Tunnel that can reject unusable node
+// endpoints up front. Connect calls it before reserving proofs, because a node
+// that has accepted its proofs has already burned them at the hub.
+type EndpointValidator interface {
+	ValidateEndpoints(entryEndpoint, exitEndpoint string) error
+}
+
 // TunnelConfig is everything a Tunnel needs to establish both hops.
 type TunnelConfig struct {
-	Entry     HopConfig `json:"entry"`
-	Exit      HopConfig `json:"exit"`
-	ClientKey string    `json:"client_key"`
+	Entry     HopConfig       `json:"entry"`
+	Exit      HopConfig       `json:"exit"`
+	ClientKey string          `json:"client_key"`
+	Transport types.Transport `json:"transport,omitempty"`
 }
 
 // HopConfig describes one leg of the two-hop tunnel.
@@ -117,6 +128,12 @@ type Config struct {
 	Tunnel Tunnel
 	// PollInterval controls how often a pending invoice is re-checked.
 	PollInterval time.Duration
+	// PreferredTransports controls node-pair transport negotiation order.
+	// Empty defaults to WireGuard-only.
+	PreferredTransports []types.Transport
+	// AllowedTransports restricts transports eligible for pair selection.
+	// Empty defaults to all known transports.
+	AllowedTransports []types.Transport
 }
 
 // Service is the headless ARFL client.
@@ -131,6 +148,8 @@ type Service struct {
 	connector *client.CashuConnector
 
 	pollInterval time.Duration
+	preferred    []types.Transport
+	allowed      map[types.Transport]struct{}
 
 	// Hub-scoped state, replaced wholesale by ConnectHub.
 	wallet   *wallet.Wallet
@@ -171,6 +190,8 @@ func New(cfg Config) (*Service, error) {
 		tunnel:       cfg.Tunnel,
 		connector:    client.NewCashuConnector(),
 		pollInterval: interval,
+		preferred:    sanitizePreferredTransports(cfg.PreferredTransports),
+		allowed:      sanitizeAllowedTransports(cfg.AllowedTransports),
 		state:        StateDisconnected,
 	}, nil
 }
@@ -199,7 +220,7 @@ func (s *Service) ConnectHub(ctx context.Context, hubURL string) (*HubStatus, er
 		return nil, err
 	}
 
-	selector := client.NewNodeSelector(mintClient.HubURL())
+	selector := client.NewNodeSelectorWithPolicy(mintClient.HubURL(), s.preferred, mapKeys(s.allowed))
 
 	s.mu.Lock()
 	if s.state != StateDisconnected {
@@ -309,6 +330,12 @@ func (s *Service) ListNodes(ctx context.Context) ([]types.NodeInfo, error) {
 // SelectPair picks an entry/exit pair client-side. The hub never learns the
 // choice, which is what keeps payment unlinkable from routing.
 func (s *Service) SelectPair(ctx context.Context) (*client.NodePair, error) {
+	// An allowlist that was supplied but names no supported transport means
+	// "nothing is allowed". The selector reads an empty set as "unrestricted",
+	// so this must be refused here rather than passed down.
+	if len(s.allowed) == 0 {
+		return nil, fmt.Errorf("%w (transport policy: allowed transports contain no supported transport)", client.ErrNoCompatiblePair)
+	}
 	sel, err := s.currentSelector()
 	if err != nil {
 		return nil, err
@@ -371,7 +398,22 @@ func (s *Service) Connect(ctx context.Context, perHopSats uint64) (*Session, err
 func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint64) (*Session, error) {
 	pair, err := s.SelectPair(ctx)
 	if err != nil {
+		if errors.Is(err, client.ErrNoCompatiblePair) {
+			return nil, fmt.Errorf("%w (transport policy: preferred=%s allowed=%s)", err, formatTransportList(s.preferred), formatTransportSet(s.allowed))
+		}
 		return nil, err
+	}
+	if pair.Transport == "" {
+		pair.Transport = types.TransportWireGuard
+	}
+	if pair.Transport != types.TransportWireGuard {
+		return nil, fmt.Errorf("%w: selected=%s (transport policy: preferred=%s allowed=%s)", ErrTransportUnsupported, pair.Transport, formatTransportList(s.preferred), formatTransportSet(s.allowed))
+	}
+	if pair.Entry.Endpoint == "" || pair.Exit.Endpoint == "" {
+		return nil, fmt.Errorf("selected pair missing endpoint for transport %s", pair.Transport)
+	}
+	if pair.Entry.ConnectURL == "" || pair.Exit.ConnectURL == "" {
+		return nil, fmt.Errorf("selected pair missing connect URL for transport %s", pair.Transport)
 	}
 
 	clientKey, err := s.clientPublicKey()
@@ -384,6 +426,12 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 	// once a node has accepted its proofs.
 	if err := s.tunnel.Preflight(); err != nil {
 		return nil, fmt.Errorf("cannot establish tunnel: %w", err)
+	}
+
+	if v, ok := s.tunnel.(EndpointValidator); ok {
+		if err := v.ValidateEndpoints(pair.Entry.Endpoint, pair.Exit.Endpoint); err != nil {
+			return nil, fmt.Errorf("selected pair has an unusable endpoint: %w", err)
+		}
 	}
 
 	entryProofs, err := w.Reserve(ctx, perHopSats)
@@ -405,11 +453,18 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 		// Only refund what was never handed over. If a node accepted its
 		// proofs they are already burned at the hub, and returning them to the
 		// store would show a balance the user cannot actually spend.
+		//
+		// A 409 means the failing hop's proofs were burned even though that node
+		// gave no tunnel. Refunding them would re-poison the wallet, so they are
+		// dropped. The failing hop is the entry when it returned no result,
+		// otherwise the exit.
+		var rejected *client.NodeRejectedError
+		burned := errors.As(err, &rejected) && rejected.ProofsBurned()
 		var unspent cashu.Proofs
-		if entryRes == nil {
+		if entryRes == nil && !burned {
 			unspent = append(unspent, entryProofs...)
 		}
-		if exitRes == nil {
+		if exitRes == nil && !(burned && entryRes != nil) {
 			unspent = append(unspent, exitProofs...)
 		}
 		if rerr := w.Release(unspent); rerr != nil {
@@ -420,6 +475,7 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 
 	cfg := TunnelConfig{
 		ClientKey: clientKey,
+		Transport: pair.Transport,
 		Entry: HopConfig{
 			NodeID:       pair.Entry.ID,
 			Endpoint:     pair.Entry.Endpoint,
@@ -435,7 +491,6 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 			BytesAllowed: exitRes.BytesAllowed,
 		},
 	}
-
 	if err := s.tunnel.Up(ctx, cfg); err != nil {
 		return nil, fmt.Errorf("bring tunnel up: %w", err)
 	}
@@ -534,4 +589,101 @@ func (s *Service) currentSelector() (*client.NodeSelector, error) {
 		return nil, ErrNoHub
 	}
 	return s.selector, nil
+}
+
+func sanitizePreferredTransports(in []types.Transport) []types.Transport {
+	if len(in) == 0 {
+		return []types.Transport{types.TransportWireGuard}
+	}
+	seen := make(map[types.Transport]struct{}, len(in))
+	out := make([]types.Transport, 0, len(in))
+	for _, t := range in {
+		switch t {
+		case types.TransportWireGuard, types.TransportHysteria2, types.TransportAmneziaWG:
+		default:
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	if len(out) == 0 {
+		return []types.Transport{types.TransportWireGuard}
+	}
+	return out
+}
+
+func sanitizeAllowedTransports(in []types.Transport) map[types.Transport]struct{} {
+	all := []types.Transport{
+		types.TransportWireGuard,
+		types.TransportHysteria2,
+		types.TransportAmneziaWG,
+	}
+	if len(in) == 0 {
+		out := make(map[types.Transport]struct{}, len(all))
+		for _, t := range all {
+			out[t] = struct{}{}
+		}
+		return out
+	}
+	out := make(map[types.Transport]struct{}, len(in))
+	for _, t := range in {
+		switch t {
+		case types.TransportWireGuard, types.TransportHysteria2, types.TransportAmneziaWG:
+			out[t] = struct{}{}
+		}
+	}
+	return out
+}
+
+func mapKeys(in map[types.Transport]struct{}) []types.Transport {
+	out := make([]types.Transport, 0, len(in))
+	for t := range in {
+		out = append(out, t)
+	}
+	if len(out) == 0 {
+		return []types.Transport{types.TransportWireGuard}
+	}
+	return out
+}
+
+func formatTransportList(in []types.Transport) string {
+	if len(in) == 0 {
+		return "(none)"
+	}
+	parts := make([]string, 0, len(in))
+	for _, t := range in {
+		if t == "" {
+			continue
+		}
+		parts = append(parts, string(t))
+	}
+	if len(parts) == 0 {
+		return "(none)"
+	}
+	return strings.Join(parts, ",")
+}
+
+func formatTransportSet(in map[types.Transport]struct{}) string {
+	if len(in) == 0 {
+		return "(none)"
+	}
+	out := make([]types.Transport, 0, len(in))
+	for t := range in {
+		if t == "" {
+			continue
+		}
+		out = append(out, t)
+	}
+	if len(out) == 0 {
+		return "(none)"
+	}
+	slices.Sort(out)
+	parts := make([]string, 0, len(out))
+	for _, t := range out {
+		parts = append(parts, string(t))
+	}
+	return strings.Join(parts, ",")
 }

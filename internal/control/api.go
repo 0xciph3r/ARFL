@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/credentials"
 	"github.com/Radi-Labs/ARFL/internal/node"
@@ -38,6 +39,10 @@ type Server struct {
 
 	// Cashu gate (optional — set via EnableCashuGate).
 	redeemer *node.HubRedeemer
+
+	// peerMu serialises granting and removing peers so the reaper cannot tear
+	// down a peer that reconnected while it was being reaped.
+	peerMu sync.Mutex
 }
 
 // NewServer creates a new admin API server.
@@ -115,12 +120,16 @@ func (s *Server) handleRemovePeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.peerMu.Lock()
+	defer s.peerMu.Unlock()
+
 	if err := s.wgMgr.RemovePeer(s.iface, pubkey); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("remove peer: %v", err))
 		return
 	}
+	s.releasePeerResources(pubkey)
 
-	log.Printf("[admin] removed peer %s", pubkey[:16]+"...")
+	log.Printf("[admin] removed peer %s", shortKey(pubkey))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -211,25 +220,25 @@ func (s *Server) HandleConnect(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if s.gate == nil {
-		writeError(w, http.StatusServiceUnavailable, "token verification not configured")
+		s.rejectConnect(w, r, "connect", http.StatusServiceUnavailable, "token verification not configured", "")
 		return
 	}
 
 	var req ConnectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		s.rejectConnect(w, r, "connect", http.StatusBadRequest, "invalid request body", req.WGPubkey)
 		return
 	}
 
 	if req.WGPubkey == "" {
-		writeError(w, http.StatusBadRequest, "missing wg_pubkey")
+		s.rejectConnect(w, r, "connect", http.StatusBadRequest, "missing wg_pubkey", req.WGPubkey)
 		return
 	}
 
 	// Parse the token from the request.
 	token, err := parseConnectToken(&req.Token)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid token: %v", err))
+		s.rejectConnect(w, r, "connect", http.StatusBadRequest, fmt.Sprintf("invalid token: %v", err), req.WGPubkey)
 		return
 	}
 
@@ -241,47 +250,30 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[connect] hub unreachable, falling back to VerifyOnly: %v", err)
 		spend, err = s.gate.VerifyOnly(token)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "token verification failed")
+			s.rejectConnect(w, r, "connect", http.StatusInternalServerError, "token verification failed", req.WGPubkey)
 			return
 		}
 	}
 
 	if !spend.Valid {
-		writeError(w, http.StatusUnauthorized, "invalid token")
+		s.rejectConnect(w, r, "connect", http.StatusUnauthorized, "invalid token", req.WGPubkey)
 		return
 	}
 
 	if !spend.FirstSpend {
-		writeError(w, http.StatusConflict, "token already spent")
+		s.rejectConnect(w, r, "connect", http.StatusConflict, "token already spent", req.WGPubkey)
 		return
 	}
 
 	// Token is valid and first-spend. Grant WireGuard access.
-	tunnelIP, err := s.ipPool.Allocate(req.WGPubkey)
+	tunnelIP, status, err := s.grantPeer(req.WGPubkey, spend.BytesPerToken)
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("no IPs available: %v", err))
+		s.rejectConnect(w, r, "connect", status, err.Error(), req.WGPubkey)
 		return
 	}
 
-	if err := s.wgMgr.AddPeer(s.iface, wg.PeerConfig{
-		PublicKey:  req.WGPubkey,
-		AllowedIPs: []string{tunnelIP + "/32"},
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("add peer: %v", err))
-		return
-	}
-
-	// Set quota to the token's bandwidth allowance.
-	if err := s.quotaMgr.SetQuota(tunnelIP, spend.BytesPerToken); err != nil {
-		log.Printf("[connect] warning: set quota for %s: %v", tunnelIP, err)
-	}
-
-	pubkeyLog := req.WGPubkey
-	if len(pubkeyLog) > 16 {
-		pubkeyLog = pubkeyLog[:16] + "..."
-	}
 	log.Printf("[connect] peer %s connected (ip=%s, bytes=%d)",
-		pubkeyLog, tunnelIP, spend.BytesPerToken)
+		shortKey(req.WGPubkey), tunnelIP, spend.BytesPerToken)
 
 	writeJSON(w, http.StatusOK, ConnectResponse{
 		Status:       "connected",
@@ -319,28 +311,46 @@ func parseConnectToken(ct *ConnectToken) (*credentials.BlindToken, error) {
 // to prevent collisions when IPs wrap or peers disconnect.
 // Thread-safe for concurrent /connect requests.
 type tunnelIPPool struct {
-	subnet    string         // e.g. "10.100.0"
-	allocated map[int]string // IP suffix → peer pubkey
+	subnet    string            // e.g. "10.100.0"
+	allocated map[int]string    // IP suffix → peer pubkey
+	since     map[int]time.Time // IP suffix → when it was last granted
 	mu        sync.Mutex
+}
+
+// poolEntry is a snapshot of one allocation.
+type poolEntry struct {
+	IP     string
+	Pubkey string
+	Since  time.Time
 }
 
 func newTunnelIPPool(subnet string) *tunnelIPPool {
 	return &tunnelIPPool{
 		subnet:    subnet,
 		allocated: make(map[int]string),
+		since:     make(map[int]time.Time),
 	}
 }
 
-// Allocate assigns the next available IP to a peer, returning "subnet.N".
+// Allocate assigns an IP to a peer, returning "subnet.N". A peer that already
+// holds an IP keeps it, so reconnecting does not consume a new slot each time.
 // Returns an error if the pool is exhausted (253 peers).
 func (p *tunnelIPPool) Allocate(peerPubkey string) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	for i, holder := range p.allocated {
+		if holder == peerPubkey {
+			p.since[i] = time.Now()
+			return fmt.Sprintf("%s.%d", p.subnet, i), nil
+		}
+	}
+
 	// Scan .2 through .254 for an unallocated slot.
 	for i := 2; i <= 254; i++ {
 		if _, taken := p.allocated[i]; !taken {
 			p.allocated[i] = peerPubkey
+			p.since[i] = time.Now()
 			return fmt.Sprintf("%s.%d", p.subnet, i), nil
 		}
 	}
@@ -360,6 +370,38 @@ func (p *tunnelIPPool) Release(ip string) {
 	var n int
 	fmt.Sscanf(parts[3], "%d", &n)
 	delete(p.allocated, n)
+	delete(p.since, n)
+}
+
+// ReleasePubkey frees the IP held by a peer and returns it.
+func (p *tunnelIPPool) ReleasePubkey(peerPubkey string) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for i, holder := range p.allocated {
+		if holder == peerPubkey {
+			delete(p.allocated, i)
+			delete(p.since, i)
+			return fmt.Sprintf("%s.%d", p.subnet, i), true
+		}
+	}
+	return "", false
+}
+
+// Entries returns a snapshot of all current allocations.
+func (p *tunnelIPPool) Entries() []poolEntry {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	out := make([]poolEntry, 0, len(p.allocated))
+	for i, holder := range p.allocated {
+		out = append(out, poolEntry{
+			IP:     fmt.Sprintf("%s.%d", p.subnet, i),
+			Pubkey: holder,
+			Since:  p.since[i],
+		})
+	}
+	return out
 }
 
 // Count returns how many IPs are currently allocated.
@@ -402,26 +444,26 @@ func (s *Server) HandleCashuConnect(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCashuConnect(w http.ResponseWriter, r *http.Request) {
 	if s.redeemer == nil {
-		writeError(w, http.StatusServiceUnavailable, "cashu verification not configured")
+		s.rejectConnect(w, r, "cashu-connect", http.StatusServiceUnavailable, "cashu verification not configured", "")
 		return
 	}
 
 	var req CashuConnectRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		s.rejectConnect(w, r, "cashu-connect", http.StatusBadRequest, "invalid request body", req.WGPubkey)
 		return
 	}
 
 	if req.WGPubkey == "" {
-		writeError(w, http.StatusBadRequest, "missing wg_pubkey")
+		s.rejectConnect(w, r, "cashu-connect", http.StatusBadRequest, "missing wg_pubkey", req.WGPubkey)
 		return
 	}
 	if len(req.Proofs) == 0 {
-		writeError(w, http.StatusBadRequest, "no proofs provided")
+		s.rejectConnect(w, r, "cashu-connect", http.StatusBadRequest, "no proofs provided", req.WGPubkey)
 		return
 	}
 	if len(req.Proofs) > maxCashuConnectProofs {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many proofs (max %d)", maxCashuConnectProofs))
+		s.rejectConnect(w, r, "cashu-connect", http.StatusBadRequest, fmt.Sprintf("too many proofs (max %d)", maxCashuConnectProofs), req.WGPubkey)
 		return
 	}
 
@@ -430,45 +472,29 @@ func (s *Server) handleCashuConnect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, node.ErrRedeemAlreadySpent):
-			writeError(w, http.StatusConflict, "proofs already spent")
+			s.rejectConnect(w, r, "cashu-connect", http.StatusConflict, "proofs already spent", req.WGPubkey)
 		case errors.Is(err, node.ErrRedeemInvalidProof):
-			writeError(w, http.StatusUnauthorized, "invalid proofs")
+			s.rejectConnect(w, r, "cashu-connect", http.StatusUnauthorized, "invalid proofs", req.WGPubkey)
 		case errors.Is(err, node.ErrRedeemRateLimited):
-			writeError(w, http.StatusTooManyRequests, "hub rate-limited — try later")
+			s.rejectConnect(w, r, "cashu-connect", http.StatusTooManyRequests, "hub rate-limited — try later", req.WGPubkey)
 		case errors.Is(err, node.ErrRedeemCircuitOpen):
-			writeError(w, http.StatusServiceUnavailable, "hub payment system temporarily down")
+			s.rejectConnect(w, r, "cashu-connect", http.StatusServiceUnavailable, "hub payment system temporarily down", req.WGPubkey)
 		default:
 			log.Printf("[cashu-connect] hub redeem error: %v", err)
-			writeError(w, http.StatusBadGateway, "hub verification failed")
+			s.rejectConnect(w, r, "cashu-connect", http.StatusBadGateway, "hub verification failed", req.WGPubkey)
 		}
 		return
 	}
 
 	// Proofs verified and burned. Grant WireGuard access.
-	tunnelIP, err := s.ipPool.Allocate(req.WGPubkey)
+	tunnelIP, status, err := s.grantPeer(req.WGPubkey, result.BytesAllowed)
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("no IPs available: %v", err))
+		s.rejectConnect(w, r, "cashu-connect", status, err.Error(), req.WGPubkey)
 		return
 	}
 
-	if err := s.wgMgr.AddPeer(s.iface, wg.PeerConfig{
-		PublicKey:  req.WGPubkey,
-		AllowedIPs: []string{tunnelIP + "/32"},
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("add peer: %v", err))
-		return
-	}
-
-	if err := s.quotaMgr.SetQuota(tunnelIP, result.BytesAllowed); err != nil {
-		log.Printf("[cashu-connect] warning: set quota for %s: %v", tunnelIP, err)
-	}
-
-	pubkeyLog := req.WGPubkey
-	if len(pubkeyLog) > 16 {
-		pubkeyLog = pubkeyLog[:16] + "..."
-	}
 	log.Printf("[cashu-connect] peer %s connected (ip=%s, bytes=%d, sats=%d)",
-		pubkeyLog, tunnelIP, result.BytesAllowed, result.SatsRedeemed)
+		shortKey(req.WGPubkey), tunnelIP, result.BytesAllowed, result.SatsRedeemed)
 
 	writeJSON(w, http.StatusOK, ConnectResponse{
 		Status:       "connected",

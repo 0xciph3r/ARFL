@@ -122,6 +122,7 @@ func main() {
 
 	// Start admin API
 	adminServer := control.NewServer(wgMgr, quotaMgr, cfg.Interface)
+	adminServer.StartReaper(ctx, control.DefaultPeerIdleTimeout)
 
 	// Wire token-gated /connect if hub_url and hub_pubkey_file are configured.
 	connectAddr := cfg.ConnectAddr

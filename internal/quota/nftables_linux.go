@@ -21,18 +21,21 @@ func NewNftablesEnforcer(iface string) *NftablesEnforcer {
 }
 
 func (e *NftablesEnforcer) Init() error {
-	// Create the arfl table and quota chain
+	// Each client gets its own named quota object, looked up by source IP
+	// through a map. The drop rule fires only once that client's quota is
+	// exceeded. Deleting any existing table first clears the older set-based
+	// layout, which nft rejects when merged with a map of the same name.
 	script := fmt.Sprintf(`
+add table inet arfl
+delete table inet arfl
 table inet arfl {
-	set quotas {
-		type ipv4_addr
-		flags dynamic,timeout
-		timeout 30m
+	map quotas {
+		type ipv4_addr : quota
 	}
 
 	chain forward {
 		type filter hook forward priority 0; policy accept;
-		iifname "%s" ip saddr @quotas counter drop comment "arfl: over quota"
+		iifname "%s" quota name ip saddr map @quotas counter drop comment "arfl: over quota"
 	}
 }
 `, e.iface)
@@ -40,22 +43,34 @@ table inet arfl {
 	return nftRun(script)
 }
 
+func quotaObjectName(tunnelIP string) string {
+	return "q_" + strings.ReplaceAll(tunnelIP, ".", "_")
+}
+
 func (e *NftablesEnforcer) SetQuota(tunnelIP string, bytes int64) error {
-	cmd := fmt.Sprintf(
-		"add element inet arfl quotas { %s : quota over %d bytes }",
-		tunnelIP, bytes,
-	)
-	return nftCmd(cmd)
+	name := quotaObjectName(tunnelIP)
+	_ = e.RemoveQuota(tunnelIP)
+	if err := nftCmd(fmt.Sprintf("add quota inet arfl %s { over %d bytes }", name, bytes)); err != nil {
+		return err
+	}
+	if err := nftCmd(fmt.Sprintf("add element inet arfl quotas { %s : \"%s\" }", tunnelIP, name)); err != nil {
+		_ = nftCmd(fmt.Sprintf("delete quota inet arfl %s", name))
+		return err
+	}
+	return nil
 }
 
 func (e *NftablesEnforcer) RefreshQuota(tunnelIP string, bytes int64) error {
-	// Delete existing, then re-add with fresh quota
-	_ = nftCmd(fmt.Sprintf("delete element inet arfl quotas { %s }", tunnelIP))
 	return e.SetQuota(tunnelIP, bytes)
 }
 
 func (e *NftablesEnforcer) RemoveQuota(tunnelIP string) error {
-	return nftCmd(fmt.Sprintf("delete element inet arfl quotas { %s }", tunnelIP))
+	elemErr := nftCmd(fmt.Sprintf("delete element inet arfl quotas { %s }", tunnelIP))
+	objErr := nftCmd(fmt.Sprintf("delete quota inet arfl %s", quotaObjectName(tunnelIP)))
+	if elemErr != nil {
+		return elemErr
+	}
+	return objErr
 }
 
 func (e *NftablesEnforcer) Close() error {

@@ -50,7 +50,7 @@ ARFL is a **privacy-respecting bandwidth marketplace** — not an untraceable VP
 - The residential node economics model works for flat-rate fiber operators. Commercial cloud hosting is explicitly not viable at current pricing.
 - Two-hop routing means every GB costs 2x bandwidth. At $5/250GB, nodes clear ~$0.008/GB each — viable for unmetered pipes, not cloud servers.
 - The hub cannot link buyers to sessions, but a compromised hub could potentially correlate timing. Future work: client-side node pairing from the Nostr relay index.
-- Token delivery in the current client is a direct HTTPS call to each node's `/cashu-connect` endpoint, made before the tunnel is up — so the nodes see the client's IP during setup. The NIP-44 Nostr delivery path exists but is not yet wired into the client.
+- Token delivery in the current client is a direct HTTPS call to each node's `/cashu-connect` endpoint, made before the tunnel is up — so the nodes see the client's IP during setup. The NIP-44 Nostr delivery path exists but is not yet wired into the client or node. The client also uses the same WireGuard key on both hops, so colluding entry and exit operators could link a session. These are tracked under [Protocol v2](#protocol-v2-privacy-hardening) in the Roadmap.
 - Tunnels route IPv4 only (`0.0.0.0/1` and `128.0.0.0/1`). IPv6 traffic is not encapsulated; disable IPv6 at the OS level to avoid leaking around the tunnel.
 
 ## Installation
@@ -423,13 +423,22 @@ go vet ./...
 - [x] **Phase 6** — Token→connect flow, LND adapter, Docker testnet
 - [x] **Phase 9** — Client-side node selection + Cashu token redemption
 - [x] **Phase 10** — Node-side Cashu gate + hub redeemer
-- [x] **Phase 11** — NIP-44 encrypted token delivery via Nostr
+- [x] **Phase 11** — NIP-44 token envelope, sender and receiver (library only; not yet wired into the client or node — see Protocol v2 below)
 - [x] **Phase 12** — E2E integration test (full privacy chain)
 - [x] **Phase 13** — VPS deployment (3 servers, systemd)
 - [x] **Phase 14** — Performance engineering (benchmarks, pprof, load test, optimization)
 - [ ] **Phase 15** — LNbits extension (wallet integration)
 - [ ] **Phase 16** — Mobile app (gomobile bindings)
 - [ ] **Phase 17** — Multi-hop routing (>2 hops)
+
+### Protocol v2: privacy hardening
+
+[Whitepaper v0.4](ARFL_Whitepaper_v0.4.pdf) documents these as known limitations. They are planned, not yet built:
+
+- [ ] **Setup-time IP exposure** — route the exit-node connect through the outer tunnel so the exit never sees the client's IP ([#46](https://github.com/0xciph3r/ARFL/issues/46))
+- [ ] **NIP-44 delivery end to end** — wire the sender and receiver and add a node-to-client reply channel ([#47](https://github.com/0xciph3r/ARFL/issues/47))
+- [ ] **Per-hop WireGuard keys** — a separate key per hop, reset after failed connects ([#48](https://github.com/0xciph3r/ARFL/issues/48))
+- [ ] **Hub timing correlation** — client-side node pairing from the Nostr index, without hub mediation ([#49](https://github.com/0xciph3r/ARFL/issues/49))
 
 ## Performance
 

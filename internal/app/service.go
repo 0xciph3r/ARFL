@@ -434,11 +434,18 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 		// Only refund what was never handed over. If a node accepted its
 		// proofs they are already burned at the hub, and returning them to the
 		// store would show a balance the user cannot actually spend.
+		//
+		// A 409 means the failing hop's proofs were burned even though that node
+		// gave no tunnel. Refunding them would re-poison the wallet, so they are
+		// dropped. The failing hop is the entry when it returned no result,
+		// otherwise the exit.
+		var rejected *client.NodeRejectedError
+		burned := errors.As(err, &rejected) && rejected.ProofsBurned()
 		var unspent cashu.Proofs
-		if entryRes == nil {
+		if entryRes == nil && !burned {
 			unspent = append(unspent, entryProofs...)
 		}
-		if exitRes == nil {
+		if exitRes == nil && !(burned && entryRes != nil) {
 			unspent = append(unspent, exitProofs...)
 		}
 		if rerr := w.Release(unspent); rerr != nil {

@@ -119,12 +119,22 @@ type testNode struct {
 
 	mu        sync.Mutex
 	rejectAll bool
+	rejectAs  int
 	connects  int
 }
 
 func (n *testNode) setReject(reject bool) {
 	n.mu.Lock()
 	n.rejectAll = reject
+	n.mu.Unlock()
+}
+
+// setBurnedReject makes the node answer 409, as a real node does when the hub
+// reports the presented proofs as already spent.
+func (n *testNode) setBurnedReject() {
+	n.mu.Lock()
+	n.rejectAll = true
+	n.rejectAs = http.StatusConflict
 	n.mu.Unlock()
 }
 
@@ -147,10 +157,14 @@ func (n *testNode) handleConnect(w http.ResponseWriter, r *http.Request) {
 	n.mu.Lock()
 	n.connects++
 	reject := n.rejectAll
+	status := n.rejectAs
 	n.mu.Unlock()
 
 	if reject {
-		w.WriteHeader(http.StatusPaymentRequired)
+		if status == 0 {
+			status = http.StatusPaymentRequired
+		}
+		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "node offline"})
 		return
 	}
@@ -912,5 +926,62 @@ func TestConnectHubRejectsUnreachableHub(t *testing.T) {
 	}
 	if svc.HubURL() != "" {
 		t.Error("a failed ConnectHub must not record the hub")
+	}
+}
+
+// A 409 means the hub already burned the failing hop's proofs even though the
+// node gave no tunnel. Returning them to the wallet would make every retry pick
+// the same dead proof and fail again.
+func TestExitAlreadySpentDropsBurnedProofsInsteadOfRefunding(t *testing.T) {
+	hub := newTestHub(t)
+	hub.addNode(t, "entry-1", types.RoleEntry)
+	exit := hub.addNode(t, "exit-1", types.RoleExit)
+	exit.setBurnedReject()
+
+	svc := newService(t, newFakeTunnel())
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	if _, err := svc.Connect(ctx, 32); err == nil {
+		t.Fatal("expected connect to fail when the exit node reports proofs spent")
+	}
+
+	balance, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance: %v", err)
+	}
+	if balance != 64 {
+		t.Errorf("balance = %d, want 64 — entry (32) was burned and the exit's rejected proofs (32) must be dropped", balance)
+	}
+}
+
+func TestEntryAlreadySpentDropsItsProofsButRefundsTheExitHop(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	hub.addNode(t, "exit-1", types.RoleExit)
+	entry.setBurnedReject()
+
+	svc := newService(t, newFakeTunnel())
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	if _, err := svc.Connect(ctx, 32); err == nil {
+		t.Fatal("expected connect to fail when the entry node reports proofs spent")
+	}
+
+	balance, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance: %v", err)
+	}
+	if balance != 96 {
+		t.Errorf("balance = %d, want 96 — only the entry hop's proofs are burned; the exit hop never reached a node", balance)
 	}
 }

@@ -470,6 +470,7 @@ go vet ./...
 - [ ] **Phase 15** — LNbits extension (wallet integration)
 - [ ] **Phase 16** — Mobile app (gomobile bindings)
 - [ ] **Phase 17** — Multi-hop routing (>2 hops)
+- [ ] **Paid-bandwidth lifetime** — redeemed bytes are currently forfeited after 30 minutes idle or a node restart; define, persist and surface the rule ([#51](https://github.com/0xciph3r/ARFL/issues/51))
 
 ### Protocol v2: privacy hardening
 

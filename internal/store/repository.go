@@ -2,12 +2,18 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/credentials"
 )
+
+// ErrInvoiceNotFound is returned when an invoice is not in the ticket
+// purchase table. The hub's Lightning node also settles invoices created for
+// Cashu mints, which never appear here.
+var ErrInvoiceNotFound = errors.New("invoice not found")
 
 // --- Invoice operations (insert + status transition only) ---
 
@@ -41,7 +47,7 @@ func (s *Store) SettleInvoice(paymentHash string) error {
 		var status string
 		err := s.db.QueryRow(`SELECT status FROM invoices WHERE payment_hash = ?`, paymentHash).Scan(&status)
 		if err != nil {
-			return fmt.Errorf("invoice %s not found", paymentHash)
+			return fmt.Errorf("invoice %s: %w", paymentHash, ErrInvoiceNotFound)
 		}
 		if status == "settled" {
 			return nil // idempotent — already settled

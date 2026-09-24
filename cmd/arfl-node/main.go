@@ -126,6 +126,13 @@ func main() {
 
 	// Wire token-gated /connect if hub_url and hub_pubkey_file are configured.
 	connectAddr := cfg.ConnectAddr
+	caps := buildTransportCapabilities(cfg, derivePublicConnectURL(cfg.Endpoint, connectAddr))
+	if err := checkTransportConfig(cfg, caps); err != nil {
+		log.Fatalf("node config: %v", err)
+	}
+	for _, msg := range unadvertisedTransports(cfg, caps) {
+		log.Printf("[node] warning: %s", msg)
+	}
 	if cfg.HubURL != "" && cfg.HubPubkeyFile != "" {
 		pubKey, err := credentials.LoadPublicKey(cfg.HubPubkeyFile)
 		if err != nil {
@@ -427,4 +434,37 @@ func parseTransport(raw string) (types.Transport, bool) {
 	default:
 		return "", false
 	}
+}
+
+// checkTransportConfig rejects a config that names transports but yields none
+// to advertise. Without this the node would publish an empty capability list,
+// which the client reads as a legacy WireGuard node — so a node configured for
+// Hysteria2 only, with its endpoint missing, would silently be sold as WireGuard.
+func checkTransportConfig(cfg *config.NodeConfig, caps []types.TransportCapability) error {
+	if len(cfg.EnabledTransports) > 0 && len(caps) == 0 {
+		return fmt.Errorf("enabled_transports %v produced no advertisable transport: each needs a known name and an endpoint in transport_endpoints (wireguard falls back to endpoint)", cfg.EnabledTransports)
+	}
+	return nil
+}
+
+// unadvertisedTransports describes each configured transport that was dropped,
+// so a partly valid config is visible at startup instead of silently shrinking.
+func unadvertisedTransports(cfg *config.NodeConfig, caps []types.TransportCapability) []string {
+	advertised := make(map[types.Transport]struct{}, len(caps))
+	for _, c := range caps {
+		advertised[c.Transport] = struct{}{}
+	}
+
+	var out []string
+	for _, raw := range cfg.EnabledTransports {
+		t, ok := parseTransport(raw)
+		if !ok {
+			out = append(out, fmt.Sprintf("enabled_transports entry %q is not a known transport and is ignored", raw))
+			continue
+		}
+		if _, ok := advertised[t]; !ok {
+			out = append(out, fmt.Sprintf("transport %q is enabled but has no endpoint in transport_endpoints, so it is not advertised", t))
+		}
+	}
+	return out
 }

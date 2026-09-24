@@ -118,3 +118,53 @@ func TestDerivePublicConnectURL_IPv6(t *testing.T) {
 		t.Fatalf("unexpected connect URL for IPv6: %q", got)
 	}
 }
+
+// A node configured only for a transport that has no endpoint must not start,
+// because it would otherwise announce an empty list and be read as WireGuard.
+func TestCheckTransportConfig_RejectsExplicitButEmpty(t *testing.T) {
+	cfg := &config.NodeConfig{
+		Endpoint:          "203.0.113.10:51820",
+		ConnectAddr:       "0.0.0.0:9091",
+		EnabledTransports: []string{"hysteria2"},
+	}
+	caps := buildTransportCapabilities(cfg, derivePublicConnectURL(cfg.Endpoint, cfg.ConnectAddr))
+	if len(caps) != 0 {
+		t.Fatalf("setup: expected no capabilities, got %+v", caps)
+	}
+	if err := checkTransportConfig(cfg, caps); err == nil {
+		t.Fatal("expected an error for hysteria2 with no endpoint")
+	}
+}
+
+func TestCheckTransportConfig_AllowsDefaultsAndValidConfigs(t *testing.T) {
+	defaults := &config.NodeConfig{Endpoint: "203.0.113.10:51820", ConnectAddr: "0.0.0.0:9091"}
+	caps := buildTransportCapabilities(defaults, derivePublicConnectURL(defaults.Endpoint, defaults.ConnectAddr))
+	if err := checkTransportConfig(defaults, caps); err != nil {
+		t.Fatalf("default config rejected: %v", err)
+	}
+
+	explicit := &config.NodeConfig{
+		Endpoint:           "203.0.113.10:51820",
+		ConnectAddr:        "0.0.0.0:9091",
+		EnabledTransports:  []string{"hysteria2"},
+		TransportEndpoints: map[string]string{"hysteria2": "203.0.113.10:443"},
+	}
+	caps = buildTransportCapabilities(explicit, derivePublicConnectURL(explicit.Endpoint, explicit.ConnectAddr))
+	if err := checkTransportConfig(explicit, caps); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+}
+
+func TestUnadvertisedTransports_ReportsDroppedEntries(t *testing.T) {
+	cfg := &config.NodeConfig{
+		Endpoint:          "203.0.113.10:51820",
+		ConnectAddr:       "0.0.0.0:9091",
+		EnabledTransports: []string{"wireguard", "hysteria2", "carrier-pigeon"},
+	}
+	caps := buildTransportCapabilities(cfg, derivePublicConnectURL(cfg.Endpoint, cfg.ConnectAddr))
+
+	got := unadvertisedTransports(cfg, caps)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 warnings (hysteria2 missing endpoint, unknown name), got %v", got)
+	}
+}

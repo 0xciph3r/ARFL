@@ -148,6 +148,18 @@ func (t *Tunnel) Preflight() error {
 	return checkPrivileges()
 }
 
+// ValidateEndpoints reports whether the two node endpoints could be used to
+// build the tunnel, without changing anything.
+//
+// app.Service calls this before it reserves or presents any proofs. Endpoints
+// come from node announcements, so a malformed or non-routable one would
+// otherwise only be caught in Up, after both nodes had already burned the
+// user's proofs.
+func (t *Tunnel) ValidateEndpoints(entryEndpoint, exitEndpoint string) error {
+	_, _, err := resolveEndpoints(entryEndpoint, exitEndpoint)
+	return err
+}
+
 // Up establishes the nested tunnel.
 func (t *Tunnel) Up(ctx context.Context, cfg app.TunnelConfig) error {
 	t.mu.Lock()
@@ -163,28 +175,9 @@ func (t *Tunnel) Up(ctx context.Context, cfg app.TunnelConfig) error {
 		return err
 	}
 
-	entryIP, err := hostOf(cfg.Entry.Endpoint)
+	entryIP, exitIP, err := resolveEndpoints(cfg.Entry.Endpoint, cfg.Exit.Endpoint)
 	if err != nil {
-		return fmt.Errorf("entry endpoint: %w", err)
-	}
-	exitIP, err := hostOf(cfg.Exit.Endpoint)
-	if err != nil {
-		return fmt.Errorf("exit endpoint: %w", err)
-	}
-
-	// Both hops resolving to one host defeats the point of having two.
-	//
-	// validate() rejects a shared key and an identical endpoint string, but a
-	// hostile hub can hand out two keys on one machine at different ports, or
-	// two hostnames pointing at the same address. That machine would terminate
-	// the outer tunnel, seeing the client's real address, and the inner tunnel,
-	// seeing where the traffic goes — the exact correlation the second hop
-	// exists to prevent. Comparing after resolution catches both forms.
-	//
-	// An operator with two addresses can still run both hops; that is a
-	// discovery and reputation problem, not one the client can settle here.
-	if entryIP == exitIP {
-		return fmt.Errorf("entry and exit both resolve to %s: a single host would see the client and the destination, defeating the two-hop guarantee", entryIP)
+		return err
 	}
 
 	// Capture the current default route first: once the tunnel takes over the
@@ -204,6 +197,33 @@ func (t *Tunnel) Up(ctx context.Context, cfg app.TunnelConfig) error {
 
 	t.active = state
 	return nil
+}
+
+// resolveEndpoints resolves both hop endpoints and rejects the combinations
+// that would collapse the two-hop guarantee.
+//
+// validate() rejects a shared key and an identical endpoint string, but a
+// hostile hub can hand out two keys on one machine at different ports, or
+// two hostnames pointing at the same address. That machine would terminate
+// the outer tunnel, seeing the client's real address, and the inner tunnel,
+// seeing where the traffic goes — the exact correlation the second hop
+// exists to prevent. Comparing after resolution catches both forms.
+//
+// An operator with two addresses can still run both hops; that is a
+// discovery and reputation problem, not one the client can settle here.
+func resolveEndpoints(entryEndpoint, exitEndpoint string) (entryIP, exitIP string, err error) {
+	entryIP, err = hostOf(entryEndpoint)
+	if err != nil {
+		return "", "", fmt.Errorf("entry endpoint: %w", err)
+	}
+	exitIP, err = hostOf(exitEndpoint)
+	if err != nil {
+		return "", "", fmt.Errorf("exit endpoint: %w", err)
+	}
+	if entryIP == exitIP {
+		return "", "", fmt.Errorf("entry and exit both resolve to %s: a single host would see the client and the destination, defeating the two-hop guarantee", entryIP)
+	}
+	return entryIP, exitIP, nil
 }
 
 func (t *Tunnel) bringUp(

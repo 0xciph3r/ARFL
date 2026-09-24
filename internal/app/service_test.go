@@ -985,3 +985,75 @@ func TestEntryAlreadySpentDropsItsProofsButRefundsTheExitHop(t *testing.T) {
 		t.Errorf("balance = %d, want 96 — only the entry hop's proofs are burned; the exit hop never reached a node", balance)
 	}
 }
+
+// validatingTunnel is a fakeTunnel that can also refuse node endpoints, like the
+// real tunnel does.
+type validatingTunnel struct {
+	*fakeTunnel
+	endpointErr error
+}
+
+func (v *validatingTunnel) ValidateEndpoints(_, _ string) error { return v.endpointErr }
+
+// Endpoints come from node announcements. One the tunnel will refuse must be
+// caught before either node is paid, because a node that accepted its proofs
+// has already burned them.
+func TestConnectRejectsUnusableEndpointBeforeSpending(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	exit := hub.addNode(t, "exit-1", types.RoleExit)
+
+	tunnel := &validatingTunnel{fakeTunnel: newFakeTunnel(), endpointErr: errors.New("address 10.0.0.5 is a private address")}
+	svc := newService(t, tunnel)
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	_, err := svc.Connect(ctx, 32)
+	if err == nil || !strings.Contains(err.Error(), "unusable endpoint") {
+		t.Fatalf("expected an unusable endpoint error, got %v", err)
+	}
+
+	balance, berr := svc.Balance()
+	if berr != nil {
+		t.Fatalf("balance: %v", berr)
+	}
+	if balance != 128 {
+		t.Errorf("balance = %d, want 128 — nothing should be spent on an endpoint the tunnel will refuse", balance)
+	}
+	if entry.connectCount() != 0 || exit.connectCount() != 0 {
+		t.Errorf("a node was contacted (entry=%d exit=%d) despite the bad endpoint", entry.connectCount(), exit.connectCount())
+	}
+}
+
+// A supplied allowlist that names nothing supported (say, a typo) means nothing
+// is allowed. It must not fall back to allowing every transport.
+func TestInvalidAllowlistDoesNotWidenPolicy(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	hub.addNode(t, "exit-1", types.RoleExit)
+
+	svc := newServiceWithTransports(t, newFakeTunnel(), nil, []types.Transport{"hysteria-typo"})
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	_, err := svc.Connect(ctx, 32)
+	if !errors.Is(err, client.ErrNoCompatiblePair) {
+		t.Fatalf("got %v, want ErrNoCompatiblePair", err)
+	}
+
+	balance, berr := svc.Balance()
+	if berr != nil {
+		t.Fatalf("balance: %v", berr)
+	}
+	if balance != 128 || entry.connectCount() != 0 {
+		t.Errorf("balance=%d entryConnects=%d, want 128 and 0", balance, entry.connectCount())
+	}
+}

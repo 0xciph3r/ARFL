@@ -64,6 +64,13 @@ type Tunnel interface {
 	Down(ctx context.Context) error
 }
 
+// EndpointValidator is implemented by a Tunnel that can reject unusable node
+// endpoints up front. Connect calls it before reserving proofs, because a node
+// that has accepted its proofs has already burned them at the hub.
+type EndpointValidator interface {
+	ValidateEndpoints(entryEndpoint, exitEndpoint string) error
+}
+
 // TunnelConfig is everything a Tunnel needs to establish both hops.
 type TunnelConfig struct {
 	Entry     HopConfig       `json:"entry"`
@@ -323,6 +330,12 @@ func (s *Service) ListNodes(ctx context.Context) ([]types.NodeInfo, error) {
 // SelectPair picks an entry/exit pair client-side. The hub never learns the
 // choice, which is what keeps payment unlinkable from routing.
 func (s *Service) SelectPair(ctx context.Context) (*client.NodePair, error) {
+	// An allowlist that was supplied but names no supported transport means
+	// "nothing is allowed". The selector reads an empty set as "unrestricted",
+	// so this must be refused here rather than passed down.
+	if len(s.allowed) == 0 {
+		return nil, fmt.Errorf("%w (transport policy: allowed transports contain no supported transport)", client.ErrNoCompatiblePair)
+	}
 	sel, err := s.currentSelector()
 	if err != nil {
 		return nil, err
@@ -413,6 +426,12 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 	// once a node has accepted its proofs.
 	if err := s.tunnel.Preflight(); err != nil {
 		return nil, fmt.Errorf("cannot establish tunnel: %w", err)
+	}
+
+	if v, ok := s.tunnel.(EndpointValidator); ok {
+		if err := v.ValidateEndpoints(pair.Entry.Endpoint, pair.Exit.Endpoint); err != nil {
+			return nil, fmt.Errorf("selected pair has an unusable endpoint: %w", err)
+		}
 	}
 
 	entryProofs, err := w.Reserve(ctx, perHopSats)
@@ -613,11 +632,6 @@ func sanitizeAllowedTransports(in []types.Transport) map[types.Transport]struct{
 	for _, t := range in {
 		switch t {
 		case types.TransportWireGuard, types.TransportHysteria2, types.TransportAmneziaWG:
-			out[t] = struct{}{}
-		}
-	}
-	if len(out) == 0 {
-		for _, t := range all {
 			out[t] = struct{}{}
 		}
 	}

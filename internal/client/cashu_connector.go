@@ -39,6 +39,22 @@ func NewCashuConnector() *CashuConnector {
 	}
 }
 
+// NodeRejectedError is returned when a node refuses the presented proofs.
+type NodeRejectedError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *NodeRejectedError) Error() string {
+	return fmt.Sprintf("node rejected proofs (%d): %s", e.StatusCode, e.Message)
+}
+
+// ProofsBurned reports whether the rejection means the proofs are spent and
+// must never be returned to the wallet.
+func (e *NodeRejectedError) ProofsBurned() bool {
+	return e.StatusCode == http.StatusConflict
+}
+
 // CashuConnectRequest is sent to the node's /cashu-connect endpoint.
 type CashuConnectRequest struct {
 	Proofs   cashu.Proofs `json:"proofs"`
@@ -101,7 +117,7 @@ func (cc *CashuConnector) ConnectWithProofs(
 				msg = errResp.Detail
 			}
 			if msg != "" {
-				return nil, fmt.Errorf("node rejected proofs (%d): %s", resp.StatusCode, msg)
+				return nil, &NodeRejectedError{StatusCode: resp.StatusCode, Message: msg}
 			}
 		}
 		return nil, fmt.Errorf("node connect error (%d): %s", resp.StatusCode, string(body))

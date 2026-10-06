@@ -93,3 +93,49 @@ func TestCashuConnectorReportsGateErrors(t *testing.T) {
 		t.Errorf("error %q should carry the status and the node's reason", err)
 	}
 }
+
+func TestNodeRejectedError_ProofsBurned(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		err    NodeRejectedError
+		burned bool
+	}{
+		{
+			name:   "already spent 409",
+			err:    NodeRejectedError{StatusCode: http.StatusConflict, Message: "proofs already spent"},
+			burned: true,
+		},
+		{
+			name:   "grant peer failure 500",
+			err:    NodeRejectedError{StatusCode: http.StatusInternalServerError, Message: "add peer: interface down"},
+			burned: true,
+		},
+		{
+			name:   "pool exhausted 503",
+			err:    NodeRejectedError{StatusCode: http.StatusServiceUnavailable, Message: "no IPs available: exhausted"},
+			burned: true,
+		},
+		{
+			name:   "hub unavailable 503",
+			err:    NodeRejectedError{StatusCode: http.StatusServiceUnavailable, Message: "hub payment system temporarily down"},
+			burned: false,
+		},
+		{
+			name:   "hub verify failed 502",
+			err:    NodeRejectedError{StatusCode: http.StatusBadGateway, Message: "hub verification failed"},
+			burned: false,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.err.ProofsBurned(); got != tc.burned {
+				t.Fatalf("ProofsBurned()=%v, want %v", got, tc.burned)
+			}
+		})
+	}
+}

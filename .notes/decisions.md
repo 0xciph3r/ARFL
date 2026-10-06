@@ -1554,6 +1554,46 @@ listener) while preserving transport negotiation metadata for future adapter pha
 
 ---
 
+### Decision 111: Add a setup-first productization surface (`arfl init`, `arfl doctor`, `setup-hub.sh`)
+
+**Date:** 2026-10-06  
+**Context:** The product goal shifted from protocol-only experimentation to operator
+marketplace usability, with an explicit requirement that hub/node setup be "fun" and
+require no manual JSON editing for first run.
+
+**Decision:** Introduce a dedicated setup UX layer without breaking existing config:
+- New `cmd/arfl` helper binary with:
+  - `arfl init hub` (generates secure `hub.json` + secrets),
+  - `arfl init node` (generates `node.json` + WireGuard/Nostr keys),
+  - `arfl doctor hub|node` (guided validation with actionable hints).
+- Add `deployments/setup-hub.sh` to provide parity with existing node bootstrap.
+- Protect existing operators by default:
+  - `arfl init` refuses overwrite unless `--force` is set (with backup),
+  - `setup-hub.sh` preserves existing `/opt/arfl/data/hub.json` unless explicitly re-initialized.
+
+**Rationale:** This gives operators a guided, low-friction onboarding path while preserving
+backward compatibility for existing scripts/config files and keeping runtime behavior unchanged.
+
+---
+
+### Decision 112: Use Charm stack for setup UX (`Bubble Tea`, `Huh`, `Lip Gloss`)
+
+**Date:** 2026-10-06  
+**Context:** Setup helper commands now define the first-run product experience for hub and node
+operators. Plain stdin prompts worked functionally but did not meet the intended polished UX bar.
+
+**Decision:** Interactive `arfl init` flows now use Charm libraries:
+- `Huh` forms for guided, validated field entry,
+- `Bubble Tea` program options for terminal-driven interaction,
+- `Lip Gloss` styling for doctor output state readability (pass/warn/fail).
+
+Non-interactive automation remains supported via `--non-interactive` and explicit flags.
+
+**Rationale:** This keeps scripting workflows stable while delivering a product-grade terminal UX
+for human operators and aligns the setup path with the project's marketplace positioning.
+
+---
+
 ### Decision 63: UNIQUE constraint on payouts(settlement_entry_id)
 
 **Context:** Without uniqueness, concurrent settlement cycles or bugs could create

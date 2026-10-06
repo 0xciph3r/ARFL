@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/elnosh/gonuts/cashu"
@@ -52,7 +53,19 @@ func (e *NodeRejectedError) Error() string {
 // ProofsBurned reports whether the rejection means the proofs are spent and
 // must never be returned to the wallet.
 func (e *NodeRejectedError) ProofsBurned() bool {
-	return e.StatusCode == http.StatusConflict
+	if e.StatusCode == http.StatusConflict {
+		return true
+	}
+	// The node burns proofs at the hub before grantPeer(). Failures in grantPeer
+	// return 5xx and still consume proofs.
+	if e.StatusCode == http.StatusInternalServerError {
+		return true
+	}
+	if e.StatusCode == http.StatusServiceUnavailable {
+		msg := strings.ToLower(e.Message)
+		return strings.Contains(msg, "no ips available")
+	}
+	return false
 }
 
 // CashuConnectRequest is sent to the node's /cashu-connect endpoint.

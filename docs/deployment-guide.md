@@ -24,6 +24,40 @@ Step-by-step guide to deploy a full ARFL network: hub, entry node, exit node, an
 | Entry Node | First WireGuard hop | 51820/udp, 9091/tcp |
 | Exit Node | Second WireGuard hop, NAT to internet | 51821/udp, 9091/tcp |
 
+## 0. One-command bootstrap (recommended first run)
+
+Use setup scripts to avoid manual JSON editing:
+
+```bash
+# Hub server
+sudo bash deployments/setup-hub.sh
+
+# Entry/Exit node servers
+sudo bash deployments/setup-node.sh
+```
+
+After bootstrap, run hub diagnostics:
+
+```bash
+arfl doctor hub --config /opt/arfl/data/hub.json --url http://127.0.0.1:8080
+```
+
+`arfl init` uses Charm interactive forms (Bubble Tea + Huh) when run in a terminal.
+`arfl doctor` provides Lip Gloss-styled diagnostics output. For unattended scripts, pass
+`--non-interactive` to `arfl init`.
+
+`setup-hub.sh` keeps an existing `/opt/arfl/data/hub.json` by default to avoid rotating
+hub identity and credential secrets during routine reruns. Set
+`ARFL_REGENERATE_HUB_CONFIG=1` only for intentional re-initialisation.
+
+`setup-node.sh` currently prepares host prerequisites (WireGuard, nftables, Go). Node
+configuration is still generated with `arfl init node` after binaries are built in step 2.
+Run node diagnostics after creating `node.json`:
+
+```bash
+arfl doctor node --config /opt/arfl/data/node.json --hub-url http://<hub-ip>:8080
+```
+
 ---
 
 ## 1. Install Dependencies (all servers)
@@ -54,7 +88,8 @@ git fetch origin --prune
 git checkout -q main
 git reset --hard origin/main
 
-# Build both binaries
+# Build setup helper + runtime binaries
+/usr/local/go/bin/go build -o /usr/local/bin/arfl ./cmd/arfl
 /usr/local/go/bin/go build -o /usr/local/bin/arfl-hub ./cmd/arfl-hub
 /usr/local/go/bin/go build -o /usr/local/bin/arfl-node ./cmd/arfl-node
 ```

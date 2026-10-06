@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte'
+  import { Events } from '@wailsio/runtime'
   import { api, type HubStatus, type Session, type StatusView } from '../lib/api'
   import { isLight, prefs } from '../lib/prefs.svelte'
   import { cue } from '../lib/sound'
@@ -155,10 +156,21 @@
     now = Date.now()
     if (connected) sampleUsage()
   }, 1000)
+  // The tray popover can open a drawer here, or connect and disconnect.
+  const offOpen = Events.On('arfl:open', (e) => {
+    const name = e.data as Overlay
+    if (name) overlay = name
+  })
+  const offState = Events.On('arfl:state', () => {
+    session = null
+    onChanged()
+  })
   onDestroy(() => {
     clearTimers()
     clearInterval(clock)
     clearInterval(hubTimer)
+    offOpen()
+    offState()
   })
 
   const connected = $derived(status.state === 'connected')

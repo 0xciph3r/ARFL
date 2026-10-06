@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=ARFL
+Comment=Two-hop bandwidth paid in bitcoin, with no accounts
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/arfl-desktop %u
+Terminal=false
+Type=Application
+Icon=arfl-desktop
+Categories=Utility;
+StartupWMClass=arfl-desktop
+
+ 

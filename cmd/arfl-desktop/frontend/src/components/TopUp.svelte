@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte'
   import QRCode from 'qrcode'
-  import { BrowserOpenURL, ClipboardSetText } from '../../wailsjs/runtime/runtime'
+  import { Browser, Clipboard } from '@wailsio/runtime'
   import { api, type Invoice } from '../lib/api'
   import { cue } from '../lib/sound'
   import { TOKEN_SATS, gbFromTokens } from '../lib/units'
@@ -94,7 +94,7 @@
 
   async function copy() {
     if (!invoice) return
-    await ClipboardSetText(invoice.bolt11)
+    await Clipboard.SetText(invoice.bolt11)
     copied = true
     timers.push(setTimeout(() => (copied = false), 1500))
   }
@@ -147,7 +147,7 @@
     <div class="mono bolt">{invoice.bolt11}</div>
     <div class="row2">
       <button class="secondary" onclick={copy}>{copied ? 'Copied' : 'Copy'}</button>
-      <button class="secondary" onclick={() => invoice && BrowserOpenURL('lightning:' + invoice.bolt11)}>Open wallet</button>
+      <button class="secondary" onclick={() => invoice && Browser.OpenURL('lightning:' + invoice.bolt11)}>Open wallet</button>
     </div>
     {#if waiting}
       <div class="waiting"><span class="pulse arfl-tick"></span>Waiting for payment · expires in {expiresIn}</div>

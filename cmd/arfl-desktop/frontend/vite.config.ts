@@ -1,5 +1,6 @@
 import {defineConfig} from 'vite'
 import {svelte} from '@sveltejs/vite-plugin-svelte'
+import wails from '@wailsio/runtime/plugins/vite'
 
 // Everything in public/ is copied verbatim into dist/ on each build.
 //
@@ -12,5 +13,10 @@ import {svelte} from '@sveltejs/vite-plugin-svelte'
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [svelte()]
+  server: {
+    host: '127.0.0.1',
+    port: Number(process.env.WAILS_VITE_PORT) || 9245,
+    strictPort: true,
+  },
+  plugins: [svelte(), wails('./bindings')],
 })

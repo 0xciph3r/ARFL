@@ -19,6 +19,7 @@ import (
 	"github.com/Radi-Labs/ARFL/internal/tunnel"
 	"github.com/Radi-Labs/ARFL/internal/wallet"
 	"github.com/Radi-Labs/ARFL/pkg/types"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // Bridge exposes the ARFL client to the UI.
@@ -33,6 +34,12 @@ type Bridge struct {
 	// tunErr records why privileged networking was unavailable, so the UI can
 	// explain the disabled Connect button instead of failing silently.
 	tunErr string
+
+	// Window and tray handles, set once at startup.
+	app        *application.App
+	mainWin    *application.WebviewWindow
+	trayWin    *application.WebviewWindow
+	setTrayIcn func(connected bool)
 }
 
 // NewBridge returns a locked bridge. The wallet stays sealed until the user
@@ -42,16 +49,18 @@ func NewBridge() *Bridge {
 	return &Bridge{}
 }
 
-// Startup captures the Wails context used for lifecycle-aware calls.
-func (b *Bridge) Startup(ctx context.Context) {
+// ServiceStartup captures the application context for lifecycle-aware calls.
+func (b *Bridge) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
 	b.mu.Lock()
 	b.ctx = ctx
 	b.mu.Unlock()
+	return nil
 }
 
 // Shutdown tears down any active session so the machine is not left with a
 // half-configured tunnel after the window closes.
-func (b *Bridge) Shutdown(ctx context.Context) {
+func (b *Bridge) ServiceShutdown() error {
+	ctx := context.Background()
 	svc := b.service()
 	if svc != nil {
 		if err := svc.Close(ctx); err != nil {
@@ -71,6 +80,7 @@ func (b *Bridge) Shutdown(ctx context.Context) {
 			fmt.Printf("arfl-desktop: close tunnel: %v\n", err)
 		}
 	}
+	return nil
 }
 
 // StatusView is the snapshot the UI renders on every state change.
@@ -423,7 +433,9 @@ func (b *Bridge) Connect(perHopSats uint64) (*app.Session, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	return svc.Connect(ctx, perHopSats)
+	session, err := svc.Connect(ctx, perHopSats)
+	b.stateChanged(err == nil)
+	return session, err
 }
 
 // PinPair makes later connects use the chosen entry and exit nodes.
@@ -468,7 +480,9 @@ func (b *Bridge) Disconnect() error {
 	if err != nil {
 		return err
 	}
-	return svc.Disconnect(ctx)
+	err = svc.Disconnect(ctx)
+	b.stateChanged(false)
+	return err
 }
 
 // status builds a snapshot. Callers must hold b.mu.

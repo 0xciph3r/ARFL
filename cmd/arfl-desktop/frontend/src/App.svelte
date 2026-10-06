@@ -2,6 +2,10 @@
   import { api, type HubStatus, type SetupView, type StatusView } from './lib/api'
   import Onboarding from './components/Onboarding.svelte'
   import Home from './components/Home.svelte'
+  import Tray from './components/Tray.svelte'
+
+  // The menu bar popover loads this same app at #tray.
+  const isTray = location.hash === '#tray'
 
   let setup = $state<SetupView | null>(null)
   let status = $state<StatusView | null>(null)
@@ -38,7 +42,7 @@
   }
 
   $effect(() => {
-    boot()
+    if (!isTray) boot()
   })
 
   async function switchHub(url: string) {
@@ -54,7 +58,9 @@
 </script>
 
 <main>
-  {#if error}
+  {#if isTray}
+    <Tray />
+  {:else if error}
     <div class="fatal" role="alert">{error}</div>
   {:else if setup && onboarding}
     <Onboarding {setup} startStep={setup.has_key ? 2 : 0} onDone={finish} />

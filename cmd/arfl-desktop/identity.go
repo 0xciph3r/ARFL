@@ -15,7 +15,7 @@ import (
 	"github.com/Radi-Labs/ARFL/internal/config"
 	"github.com/Radi-Labs/ARFL/internal/wallet"
 	"github.com/elnosh/gonuts/cashu"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/zalando/go-keyring"
 )
 
@@ -256,11 +256,11 @@ func (b *Bridge) ExportBackup(passphrase string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	path, err := runtime.SaveFileDialog(b.context(), runtime.SaveDialogOptions{
-		Title:           "Save your ARFL backup",
-		DefaultFilename: "arfl-backup-" + time.Now().Format("2006-01-02") + ".arflbak",
-		Filters:         []runtime.FileFilter{{DisplayName: "ARFL backup", Pattern: "*.arflbak"}},
-	})
+	path, err := application.Get().Dialog.SaveFile().
+		SetMessage("Save your ARFL backup").
+		SetFilename("arfl-backup-"+time.Now().Format("2006-01-02")+".arflbak").
+		AddFilter("ARFL backup", "*.arflbak").
+		PromptForSingleSelection()
 	if err != nil || path == "" {
 		return "", err
 	}
@@ -272,10 +272,11 @@ func (b *Bridge) ExportBackup(passphrase string) (string, error) {
 
 // ChooseBackupFile asks the user for a backup to restore. "" means cancelled.
 func (b *Bridge) ChooseBackupFile() (string, error) {
-	return runtime.OpenFileDialog(b.context(), runtime.OpenDialogOptions{
-		Title:   "Choose your ARFL backup",
-		Filters: []runtime.FileFilter{{DisplayName: "ARFL backup", Pattern: "*.arflbak"}},
-	})
+	return application.Get().Dialog.OpenFile().
+		SetTitle("Choose your ARFL backup").
+		CanChooseFiles(true).
+		AddFilter("ARFL backup", "*.arflbak").
+		PromptForSingleSelection()
 }
 
 // RestoreBackup brings a backed-up key and its tokens to this device. Each

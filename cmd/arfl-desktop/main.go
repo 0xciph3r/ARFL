@@ -24,12 +24,11 @@ func main() {
 
 	err := wails.Run(&options.App{
 		Title:            "ARFL",
-		Width:            420,
-		Height:           680,
-		DisableResize:    true,
-		MinWidth:         380,
-		MinHeight:        560,
-		BackgroundColour: &options.RGBA{R: 12, G: 14, B: 20, A: 1},
+		Width:            960,
+		Height:           640,
+		MinWidth:         720,
+		MinHeight:        600,
+		BackgroundColour: &options.RGBA{R: 13, G: 12, B: 16, A: 1},
 		AssetServer:      &assetserver.Options{Assets: assets},
 		OnStartup:        bridge.Startup,
 		OnShutdown:       bridge.Shutdown,

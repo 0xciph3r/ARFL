@@ -10,6 +10,10 @@ export function Balance() {
   return window['go']['main']['Bridge']['Balance']();
 }
 
+export function ChooseBackupFile() {
+  return window['go']['main']['Bridge']['ChooseBackupFile']();
+}
+
 export function Connect(arg1) {
   return window['go']['main']['Bridge']['Connect'](arg1);
 }
@@ -18,8 +22,40 @@ export function ConnectHub(arg1) {
   return window['go']['main']['Bridge']['ConnectHub'](arg1);
 }
 
+export function CreateKey() {
+  return window['go']['main']['Bridge']['CreateKey']();
+}
+
+export function DisableIPv6() {
+  return window['go']['main']['Bridge']['DisableIPv6']();
+}
+
 export function Disconnect() {
   return window['go']['main']['Bridge']['Disconnect']();
+}
+
+export function ExportBackup(arg1) {
+  return window['go']['main']['Bridge']['ExportBackup'](arg1);
+}
+
+export function Fingerprint() {
+  return window['go']['main']['Bridge']['Fingerprint']();
+}
+
+export function HeldSats() {
+  return window['go']['main']['Bridge']['HeldSats']();
+}
+
+export function IPv6Exposed() {
+  return window['go']['main']['Bridge']['IPv6Exposed']();
+}
+
+export function KeyTransfer() {
+  return window['go']['main']['Bridge']['KeyTransfer']();
+}
+
+export function KnownHubs() {
+  return window['go']['main']['Bridge']['KnownHubs']();
 }
 
 export function ListNodes() {
@@ -30,16 +66,52 @@ export function Locked() {
   return window['go']['main']['Bridge']['Locked']();
 }
 
+export function OpenAtLogin() {
+  return window['go']['main']['Bridge']['OpenAtLogin']();
+}
+
+export function OpenWallet() {
+  return window['go']['main']['Bridge']['OpenWallet']();
+}
+
+export function PinPair(arg1, arg2) {
+  return window['go']['main']['Bridge']['PinPair'](arg1, arg2);
+}
+
+export function PinnedPair() {
+  return window['go']['main']['Bridge']['PinnedPair']();
+}
+
+export function PreviewHub(arg1) {
+  return window['go']['main']['Bridge']['PreviewHub'](arg1);
+}
+
 export function Purchase(arg1) {
   return window['go']['main']['Bridge']['Purchase'](arg1);
+}
+
+export function RecommendedHubs() {
+  return window['go']['main']['Bridge']['RecommendedHubs']();
 }
 
 export function ResetVault() {
   return window['go']['main']['Bridge']['ResetVault']();
 }
 
+export function RestoreBackup(arg1, arg2) {
+  return window['go']['main']['Bridge']['RestoreBackup'](arg1, arg2);
+}
+
 export function Session() {
   return window['go']['main']['Bridge']['Session']();
+}
+
+export function SetOpenAtLogin(arg1) {
+  return window['go']['main']['Bridge']['SetOpenAtLogin'](arg1);
+}
+
+export function Setup() {
+  return window['go']['main']['Bridge']['Setup']();
 }
 
 export function Status() {
@@ -48,6 +120,18 @@ export function Status() {
 
 export function Unlock(arg1) {
   return window['go']['main']['Bridge']['Unlock'](arg1);
+}
+
+export function UnpinPair() {
+  return window['go']['main']['Bridge']['UnpinPair']();
+}
+
+export function UpgradeLegacy(arg1) {
+  return window['go']['main']['Bridge']['UpgradeLegacy'](arg1);
+}
+
+export function Usage() {
+  return window['go']['main']['Bridge']['Usage']();
 }
 
 export function VaultState() {

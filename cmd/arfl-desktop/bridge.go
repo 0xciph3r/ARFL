@@ -109,6 +109,12 @@ func (b *Bridge) Unlock(passphrase string) (*StatusView, error) {
 	if passphrase == "" {
 		return nil, fmt.Errorf("a passphrase is required to unlock the wallet")
 	}
+	return b.openLocked(passphrase)
+}
+
+// openLocked builds the service over the vault sealed with secret. Callers
+// must hold b.mu and have checked that no service is open.
+func (b *Bridge) openLocked(secret string) (*StatusView, error) {
 
 	// Privileged networking is optional. Without it the wallet still mints,
 	// holds balance and browses nodes, so a user without root gets a working
@@ -139,7 +145,7 @@ func (b *Bridge) Unlock(passphrase string) (*StatusView, error) {
 	}
 
 	svc, err := app.New(app.Config{
-		Passphrase:          passphrase,
+		Passphrase:          secret,
 		PreferredTransports: preferred,
 		AllowedTransports:   allowed,
 		NostrRelays:         relays,
@@ -420,6 +426,33 @@ func (b *Bridge) Connect(perHopSats uint64) (*app.Session, error) {
 	return svc.Connect(ctx, perHopSats)
 }
 
+// PinPair makes later connects use the chosen entry and exit nodes.
+func (b *Bridge) PinPair(entryID, exitID string) error {
+	svc, _, err := b.ready()
+	if err != nil {
+		return err
+	}
+	return svc.SetPinnedPair(&app.PinnedPair{EntryID: entryID, ExitID: exitID})
+}
+
+// UnpinPair goes back to a random pair chosen at connect time.
+func (b *Bridge) UnpinPair() error {
+	svc, _, err := b.ready()
+	if err != nil {
+		return err
+	}
+	return svc.SetPinnedPair(nil)
+}
+
+// PinnedPair returns the user's chosen pair, or nil when pairing is random.
+func (b *Bridge) PinnedPair() *app.PinnedPair {
+	svc := b.service()
+	if svc == nil {
+		return nil
+	}
+	return svc.PinnedPair()
+}
+
 // Session returns the active session, or nil when disconnected.
 func (b *Bridge) Session() *app.Session {
 	svc := b.service()
@@ -478,4 +511,58 @@ func (b *Bridge) ready() (*app.Service, context.Context, error) {
 		ctx = context.Background()
 	}
 	return b.svc, ctx, nil
+}
+
+// UsageView is live traffic through the tunnel.
+type UsageView struct {
+	Connected bool  `json:"connected"`
+	RxBytes   int64 `json:"rx_bytes"`
+	TxBytes   int64 `json:"tx_bytes"`
+	// Seconds since the last handshake with each node; -1 before the first.
+	EntryIdleSecs int64 `json:"entry_idle_secs"`
+	ExitIdleSecs  int64 `json:"exit_idle_secs"`
+}
+
+func idleSecs(t time.Time) int64 {
+	if t.IsZero() {
+		return -1
+	}
+	return int64(time.Since(t).Seconds())
+}
+
+// Usage reports bytes carried by the tunnel this session.
+func (b *Bridge) Usage() (*UsageView, error) {
+	b.mu.Lock()
+	tun := b.tun
+	b.mu.Unlock()
+	if tun == nil {
+		return &UsageView{}, nil
+	}
+	u, ok, err := tun.Usage()
+	if err != nil {
+		return nil, err
+	}
+	return &UsageView{
+		Connected:     ok,
+		RxBytes:       u.RxBytes,
+		TxBytes:       u.TxBytes,
+		EntryIdleSecs: idleSecs(u.EntryHandshake),
+		ExitIdleSecs:  idleSecs(u.ExitHandshake),
+	}, nil
+}
+
+// IPv6Exposed reports whether this machine has IPv6 the tunnel does not cover.
+func (b *Bridge) IPv6Exposed() (bool, error) {
+	return tunnel.IPv6Exposed()
+}
+
+// DisableIPv6 turns IPv6 off until the session ends.
+func (b *Bridge) DisableIPv6() error {
+	b.mu.Lock()
+	tun := b.tun
+	b.mu.Unlock()
+	if tun == nil {
+		return fmt.Errorf("the tunnel is unavailable on this device")
+	}
+	return tun.DisableIPv6()
 }

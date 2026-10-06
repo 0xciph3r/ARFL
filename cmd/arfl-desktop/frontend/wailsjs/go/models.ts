@@ -81,10 +81,28 @@ export namespace app {
 		    return a;
 		}
 	}
+	export class PinnedPair {
+	    entry_id: string;
+	    exit_id: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PinnedPair(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.entry_id = source["entry_id"];
+	        this.exit_id = source["exit_id"];
+	    }
+	}
 	export class TunnelConfig {
 	    entry: HopConfig;
 	    exit: HopConfig;
 	    client_key: string;
+	    entry_client_key?: string;
+	    exit_client_key?: string;
+	    outer_pinned_endpoints?: string[];
+	    transport?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new TunnelConfig(source);
@@ -95,6 +113,10 @@ export namespace app {
 	        this.entry = this.convertValues(source["entry"], HopConfig);
 	        this.exit = this.convertValues(source["exit"], HopConfig);
 	        this.client_key = source["client_key"];
+	        this.entry_client_key = source["entry_client_key"];
+	        this.exit_client_key = source["exit_client_key"];
+	        this.outer_pinned_endpoints = source["outer_pinned_endpoints"];
+	        this.transport = source["transport"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -157,6 +179,84 @@ export namespace app {
 
 export namespace main {
 	
+	export class HubPreview {
+	    url: string;
+	    name: string;
+	    margin_pct: number;
+	    node_count: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HubPreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.name = source["name"];
+	        this.margin_pct = source["margin_pct"];
+	        this.node_count = source["node_count"];
+	    }
+	}
+	export class KnownHub {
+	    url: string;
+	    name: string;
+	    margin_pct: number;
+	    node_count: number;
+	    sats: number;
+	    reachable: boolean;
+	    custom: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new KnownHub(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.name = source["name"];
+	        this.margin_pct = source["margin_pct"];
+	        this.node_count = source["node_count"];
+	        this.sats = source["sats"];
+	        this.reachable = source["reachable"];
+	        this.custom = source["custom"];
+	    }
+	}
+	export class RestoredHub {
+	    hub_url: string;
+	    name: string;
+	    sats: number;
+	    dropped_sats: number;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RestoredHub(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hub_url = source["hub_url"];
+	        this.name = source["name"];
+	        this.sats = source["sats"];
+	        this.dropped_sats = source["dropped_sats"];
+	        this.error = source["error"];
+	    }
+	}
+	export class SetupView {
+	    has_key: boolean;
+	    fingerprint?: string;
+	    legacy_vault: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SetupView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.has_key = source["has_key"];
+	        this.fingerprint = source["fingerprint"];
+	        this.legacy_vault = source["legacy_vault"];
+	    }
+	}
 	export class StatusView {
 	    unlocked: boolean;
 	    hub_url: string;
@@ -181,6 +281,26 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
+	export class UsageView {
+	    connected: boolean;
+	    rx_bytes: number;
+	    tx_bytes: number;
+	    entry_idle_secs: number;
+	    exit_idle_secs: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new UsageView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connected = source["connected"];
+	        this.rx_bytes = source["rx_bytes"];
+	        this.tx_bytes = source["tx_bytes"];
+	        this.entry_idle_secs = source["entry_idle_secs"];
+	        this.exit_idle_secs = source["exit_idle_secs"];
+	    }
+	}
 	export class VaultStateView {
 	    exists: boolean;
 	
@@ -198,12 +318,29 @@ export namespace main {
 
 export namespace types {
 	
+	export class TransportCapability {
+	    transport: string;
+	    endpoint?: string;
+	    connect_url?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TransportCapability(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.transport = source["transport"];
+	        this.endpoint = source["endpoint"];
+	        this.connect_url = source["connect_url"];
+	    }
+	}
 	export class NodeInfo {
 	    id: string;
 	    nostr_pubkey: string;
 	    wg_pubkey: string;
 	    endpoint: string;
 	    connect_url?: string;
+	    transports?: TransportCapability[];
 	    lnurl: string;
 	    deposit_sats: number;
 	    upload_mbps: number;
@@ -212,6 +349,7 @@ export namespace types {
 	    capacity: number;
 	    role: string;
 	    version: string;
+	    preferred_transport?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new NodeInfo(source);
@@ -224,6 +362,7 @@ export namespace types {
 	        this.wg_pubkey = source["wg_pubkey"];
 	        this.endpoint = source["endpoint"];
 	        this.connect_url = source["connect_url"];
+	        this.transports = this.convertValues(source["transports"], TransportCapability);
 	        this.lnurl = source["lnurl"];
 	        this.deposit_sats = source["deposit_sats"];
 	        this.upload_mbps = source["upload_mbps"];
@@ -232,7 +371,26 @@ export namespace types {
 	        this.capacity = source["capacity"];
 	        this.role = source["role"];
 	        this.version = source["version"];
+	        this.preferred_transport = source["preferred_transport"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }

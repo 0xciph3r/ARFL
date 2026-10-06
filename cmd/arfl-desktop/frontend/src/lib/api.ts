@@ -5,12 +5,33 @@
 // funnels through call() so the UI always receives a real Error.
 import {
   AwaitPurchase,
+  ChooseBackupFile,
+  DisableIPv6,
+  HeldSats,
+  KeyTransfer,
+  OpenAtLogin,
+  SetOpenAtLogin,
+  IPv6Exposed,
+  KnownHubs,
+  Usage,
+  CreateKey,
+  ExportBackup,
+  Fingerprint,
+  OpenWallet,
+  PreviewHub,
+  RecommendedHubs,
+  RestoreBackup,
+  Setup,
+  UpgradeLegacy,
   Balance,
   Connect,
   ConnectHub,
   Disconnect,
   ListNodes,
   Locked,
+  PinPair,
+  PinnedPair,
+  UnpinPair,
   Purchase,
   ResetVault,
   Session,
@@ -34,6 +55,12 @@ export type Invoice = app.Invoice
 export type NodeInfo = types.NodeInfo
 export type Session = app.Session
 export type VaultStateView = main.VaultStateView
+export type Pinned = app.PinnedPair
+export type SetupView = main.SetupView
+export type HubPreview = main.HubPreview
+export type RestoredHub = main.RestoredHub
+export type KnownHub = main.KnownHub
+export type UsageView = main.UsageView
 
 export const api = {
   locked: () => call(() => Locked()),
@@ -49,4 +76,25 @@ export const api = {
   connect: (perHopSats: number) => call(() => Connect(perHopSats)),
   session: () => call(() => Session()),
   disconnect: () => call(() => Disconnect()),
+  pinPair: (entryId: string, exitId: string) => call(() => PinPair(entryId, exitId)),
+  unpinPair: () => call(() => UnpinPair()),
+  pinnedPair: () => call(() => PinnedPair()),
+  setup: () => call(() => Setup()),
+  knownHubs: () => call(() => KnownHubs()),
+  usage: () => call(() => Usage()),
+  ipv6Exposed: () => call(() => IPv6Exposed()),
+  disableIPv6: () => call(() => DisableIPv6()),
+  heldSats: () => call(() => HeldSats()),
+  keyTransfer: () => call(() => KeyTransfer()),
+  openAtLogin: () => call(() => OpenAtLogin()),
+  setOpenAtLogin: (on: boolean) => call(() => SetOpenAtLogin(on)),
+  createKey: () => call(() => CreateKey()),
+  openWallet: () => call(() => OpenWallet()),
+  upgradeLegacy: (passphrase: string) => call(() => UpgradeLegacy(passphrase)),
+  fingerprint: () => call(() => Fingerprint()),
+  recommendedHubs: () => call(() => RecommendedHubs()),
+  previewHub: (url: string) => call(() => PreviewHub(url)),
+  exportBackup: (passphrase: string) => call(() => ExportBackup(passphrase)),
+  chooseBackupFile: () => call(() => ChooseBackupFile()),
+  restoreBackup: (path: string, passphrase: string) => call(() => RestoreBackup(path, passphrase)),
 }

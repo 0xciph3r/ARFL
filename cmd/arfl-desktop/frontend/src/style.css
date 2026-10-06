@@ -1,43 +1,100 @@
-/* Design tokens.
- *
- * The palette is Meyer's brand purple. Bitcoin orange is deliberately NOT the
- * accent: it is reserved for sats and Lightning amounts (--sats), so orange in
- * this UI always means "this is money". Using it for ordinary buttons as well
- * would spend that signal on things that are not payments.
- */
+@import '@fontsource/geist/400.css';
+@import '@fontsource/geist/500.css';
+@import '@fontsource/geist/600.css';
+@import '@fontsource/geist/700.css';
+@import '@fontsource/geist-mono/400.css';
+@import '@fontsource/geist-mono/500.css';
+
+/* Tokens from the ARFL Desktop design canvas. Fonts are bundled rather than
+ * fetched from Google so the app makes no third-party request at launch. */
+:root,
+:root[data-theme='dark'] {
+  --bg: #0d0c10;
+  --panel: #121016;
+  --surf: #17141d;
+  --surf2: #1d1a24;
+  --line: #272330;
+  --line2: #3a3544;
+  --muted: #9a93a8;
+  --text2: #cdc6d9;
+  --text: #ece8f2;
+  --cyan: #27d3e8;
+  --cyanBg: #0e2a30;
+  --amber: #f0b04a;
+  --amberBtn: #f0b04a;
+  --red: #ff7070;
+  --warnBg: #2a2010;
+  --warnLine: #5a4416;
+  --warnText: #e6dcc4;
+  --brandMuted: #a08cb8;
+  --scrim: rgba(5, 6, 8, 0.62);
+  --hoverF: brightness(1.18);
+  --qrbg: #ece8f2;
+  --btn: #c42a45;
+  --onBtn: #ffffff;
+  --alt: #b48cf2;
+  --accent: #9b7bff;
+  --accentT: #9b7bff;
+  --glow: rgba(139, 92, 246, 0.5);
+  --eyesOff: grayscale(1) brightness(0.5);
+  --eyesOffO: 0.9;
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg: #f2ede3;
+  --panel: #f8f4ec;
+  --surf: #ebe5d9;
+  --surf2: #e2dacb;
+  --line: #ddd4c4;
+  --line2: #c6bba6;
+  --muted: #6b6252;
+  --text2: #41392d;
+  --text: #1c1812;
+  --cyan: #076a78;
+  --cyanBg: #d3e7e4;
+  --amber: #8f5200;
+  --amberBtn: #f0b04a;
+  --red: #c4262e;
+  --warnBg: #f3e4c4;
+  --warnLine: #dcc283;
+  --warnText: #5a4416;
+  --brandMuted: #7a6896;
+  --scrim: rgba(36, 28, 16, 0.34);
+  --hoverF: brightness(0.93);
+  --qrbg: #fbf8f1;
+  --btn: #8a1a30;
+  --onBtn: #ffffff;
+  --alt: #6a2fc0;
+  --accent: #9b7bff;
+  --accentT: #604c9e;
+  --glow: rgba(109, 74, 224, 0.4);
+  --eyesOff: grayscale(1) brightness(1.08);
+  --eyesOffO: 0.4;
+  color-scheme: light;
+}
+
+/* Older screens still read these names until each is restyled. */
 :root {
-  --bg: #0b0910;
-  --bg-tint: #171128;
-  --panel: #16121f;
-  --panel-2: #1e1829;
-  --border: #2b2338;
-  --border-soft: #221b2e;
-  --text: #ece7f2;
-  --muted: #948aa6;
-
-  /* Brand purple, from the logo artwork. */
-  --accent: #9d7bb0;
-  --accent-bright: #b795c7;
-  --accent-dim: #7d5f91;
-  --accent-deep: #5d456c;
-  --accent-wash: rgba(157, 123, 176, 0.12);
-  --accent-glow: rgba(157, 123, 176, 0.28);
-
-  /* Money only. */
-  --sats: #f7931a;
-
-  --ok: #3ddc84;
-  --err: #ff6b6b;
-
+  --border: var(--line);
+  --border-soft: var(--line);
+  --panel-2: var(--surf);
+  --accent-bright: var(--accent);
+  --accent-dim: var(--accent);
+  --accent-deep: var(--line2);
+  --accent-wash: color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-glow: var(--glow);
+  --sats: var(--amber);
+  --ok: var(--cyan);
+  --err: var(--red);
   --radius: 10px;
   --radius-lg: 14px;
+  --mono: 'Geist Mono', ui-monospace, Menlo, monospace;
 
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
-    "Helvetica Neue", sans-serif;
+  font-family: 'Geist', system-ui, sans-serif;
   font-size: 14px;
   color: var(--text);
   background: var(--bg);
-
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -56,146 +113,158 @@ body {
   overflow: hidden;
 }
 
-/* A single light source behind the whole window. Flat panels on a flat
- * background read as unfinished; this gives the surfaces something to sit on. */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(70% 55% at 50% -10%, rgba(157, 123, 176, 0.16), transparent 70%),
-    radial-gradient(50% 40% at 100% 100%, rgba(125, 95, 145, 0.10), transparent 70%);
-  z-index: 0;
-}
-
 #app {
-  position: relative;
-  z-index: 1;
   height: 100vh;
   display: flex;
   flex-direction: column;
 }
 
-/* The wordmark is masked rather than drawn, so it takes the brand colour
- * exactly instead of being approximated by a filter chain over a near-white
- * PNG. The artwork is a flat silhouette, so nothing is lost. Callers set
- * --wordmark-h; the width follows the artwork's 480x172 aspect ratio. */
-.wordmark {
-  --wordmark-h: 24px;
-  height: var(--wordmark-h);
-  width: calc(var(--wordmark-h) * 2.79);
-  flex-shrink: 0;
-  background: linear-gradient(180deg, var(--accent-bright), var(--accent-dim));
-  -webkit-mask: url(./assets/wordmark.png) center / contain no-repeat;
-  mask: url(./assets/wordmark.png) center / contain no-repeat;
-}
-
 button {
   font: inherit;
   cursor: pointer;
-  border: none;
-  border-radius: var(--radius);
+  border: 0;
   padding: 10px 14px;
-  background: linear-gradient(180deg, var(--accent-bright), var(--accent-dim));
-  color: #17101d;
+  border-radius: 10px;
+  color: var(--onBtn);
+  background: var(--btn);
   font-weight: 600;
-  letter-spacing: 0.2px;
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.18) inset,
-    0 6px 16px -8px var(--accent-glow);
-  transition: filter 120ms ease, transform 120ms ease, box-shadow 120ms ease;
 }
 
 button:hover:not(:disabled) {
-  filter: brightness(1.08);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.22) inset,
-    0 10px 22px -8px var(--accent-glow);
-}
-
-button:active:not(:disabled) {
-  transform: translateY(1px);
+  filter: var(--hoverF);
 }
 
 button:disabled {
-  opacity: 0.4;
   cursor: not-allowed;
-  box-shadow: none;
+  opacity: 0.4;
 }
 
 button.secondary {
-  background: var(--panel-2);
+  background: transparent;
   color: var(--text);
-  border: 1px solid var(--border);
+  border: 1px solid var(--line2);
   font-weight: 500;
-  box-shadow: none;
 }
 
-button.secondary:hover:not(:disabled) {
-  border-color: var(--accent-deep);
-  filter: none;
-  box-shadow: none;
+/* Plain controls inside the new design opt out of the default button look. */
+button.bare {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+  font-weight: inherit;
+  text-align: left;
 }
 
-/* Focus has to survive the custom backgrounds above, and keyboard users need
- * it on every control, not just inputs. */
+button.bare:disabled {
+  opacity: 1;
+}
+
 :focus-visible {
-  outline: 2px solid var(--accent-bright);
+  outline: 2px solid var(--text);
   outline-offset: 2px;
 }
 
 input {
   font: inherit;
   width: 100%;
-  padding: 10px 12px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: var(--panel-2);
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line2);
+  background: var(--bg);
   color: var(--text);
   outline: none;
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-
-input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-wash);
 }
 
 input::placeholder {
   color: var(--muted);
 }
 
-code {
-  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
-  font-size: 12px;
+code,
+.mono {
+  font-family: var(--mono);
 }
 
 ::selection {
-  background: var(--accent-glow);
+  background: var(--glow);
   color: var(--text);
 }
 
-/* Scrollbars default to a pale grey that breaks the dark surface. */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--line);
   border-radius: 6px;
   border: 3px solid transparent;
   background-clip: content-box;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: var(--accent-deep);
-  background-clip: content-box;
-}
-
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+@keyframes arfl-tick {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes arfl-blink {
+  0% {
+    transform: scaleY(1);
+  }
+  40%,
+  60% {
+    transform: scaleY(0.06);
+  }
+  100% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes arfl-wake {
+  0% {
+    transform: scaleY(0.06);
+  }
+  100% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes arfl-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.arfl-tick {
+  animation: arfl-tick 1.6s ease-in-out infinite;
+}
+
+.arfl-close {
+  animation: arfl-blink 0.9s ease-in-out 1;
+}
+
+.arfl-wake {
+  animation: arfl-wake 0.55s ease-out 1;
+}
+
+/* The Settings switch and the OS setting both remove every animation. */
+:root.reduce-motion *,
+:root.reduce-motion *::before {
+  animation: none !important;
+  transition: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {

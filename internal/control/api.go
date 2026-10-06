@@ -388,6 +388,19 @@ func (p *tunnelIPPool) ReleasePubkey(peerPubkey string) (string, bool) {
 	return "", false
 }
 
+// AllocationForPubkey returns the currently allocated IP for a peer.
+func (p *tunnelIPPool) AllocationForPubkey(peerPubkey string) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for i, holder := range p.allocated {
+		if holder == peerPubkey {
+			return fmt.Sprintf("%s.%d", p.subnet, i), true
+		}
+	}
+	return "", false
+}
+
 // Entries returns a snapshot of all current allocations.
 func (p *tunnelIPPool) Entries() []poolEntry {
 	p.mu.Lock()

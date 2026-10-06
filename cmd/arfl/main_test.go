@@ -4,8 +4,10 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/Radi-Labs/ARFL/internal/config"
 	"github.com/Radi-Labs/ARFL/internal/nostr"
 	"github.com/Radi-Labs/ARFL/internal/wg"
 )
@@ -198,4 +200,69 @@ func TestWriteJSONEnforcesPermissions(t *testing.T) {
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("expected permissions 0600, got %o", got)
 	}
+}
+
+func TestValidateNodeConfig_EnabledTransportsDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	kp, err := wg.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+
+	base := &config.NodeConfig{
+		Role:          "entry",
+		ListenPort:    51820,
+		PrivateKey:    kp.PrivateKey,
+		Endpoint:      "203.0.113.10:51820",
+		ConnectAddr:   "0.0.0.0:9091",
+		HubURL:        "http://127.0.0.1:8080",
+		HubPubkeyFile: "/tmp/missing.pub.json",
+		Relays:        []string{"wss://relay.damus.io"},
+	}
+
+	t.Run("all invalid fails", func(t *testing.T) {
+		cfg := *base
+		cfg.EnabledTransports = []string{"carrier-pigeon"}
+		check := findCheckByName(validateNodeConfig(&cfg), "enabled_transports")
+		if check == nil || check.Status != doctorFail {
+			t.Fatalf("expected fail status, got %#v", check)
+		}
+	})
+
+	t.Run("partially valid warns", func(t *testing.T) {
+		cfg := *base
+		cfg.EnabledTransports = []string{"wireguard", "hysteria2"}
+		cfg.TransportEndpoints = map[string]string{
+			"wireguard": "203.0.113.10:51820",
+		}
+		check := findCheckByName(validateNodeConfig(&cfg), "enabled_transports")
+		if check == nil || check.Status != doctorWarn {
+			t.Fatalf("expected warn status, got %#v", check)
+		}
+		if !strings.Contains(check.Detail, "hysteria2") {
+			t.Fatalf("expected dropped transport detail, got %#v", check)
+		}
+	})
+
+	t.Run("valid passes", func(t *testing.T) {
+		cfg := *base
+		cfg.EnabledTransports = []string{"wireguard"}
+		cfg.TransportEndpoints = map[string]string{
+			"wireguard": "203.0.113.10:51820",
+		}
+		check := findCheckByName(validateNodeConfig(&cfg), "enabled_transports")
+		if check == nil || check.Status != doctorPass {
+			t.Fatalf("expected pass status, got %#v", check)
+		}
+	})
+}
+
+func findCheckByName(checks []doctorCheck, name string) *doctorCheck {
+	for i := range checks {
+		if checks[i].Name == name {
+			return &checks[i]
+		}
+	}
+	return nil
 }

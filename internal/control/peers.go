@@ -39,6 +39,8 @@ func (s *Server) grantPeer(wgPubkey string, quotaBytes int64) (string, int, erro
 	s.peerMu.Lock()
 	defer s.peerMu.Unlock()
 
+	_, hadAllocation := s.ipPool.AllocationForPubkey(wgPubkey)
+
 	tunnelIP, err := s.ipPool.Allocate(wgPubkey)
 	if err != nil {
 		return "", http.StatusServiceUnavailable, fmt.Errorf("no IPs available: %v", err)
@@ -48,12 +50,22 @@ func (s *Server) grantPeer(wgPubkey string, quotaBytes int64) (string, int, erro
 		PublicKey:  wgPubkey,
 		AllowedIPs: []string{tunnelIP + "/32"},
 	}); err != nil {
-		s.ipPool.Release(tunnelIP)
+		// A reconnect reuses its existing IP allocation; if AddPeer fails we
+		// must not drop that allocation or we can assign a live /32 to another
+		// peer.
+		if !hadAllocation {
+			s.ipPool.Release(tunnelIP)
+		}
 		return "", http.StatusInternalServerError, fmt.Errorf("add peer: %v", err)
 	}
 
 	if err := s.quotaMgr.SetQuota(tunnelIP, quotaBytes); err != nil {
-		log.Printf("[admin] warning: set quota for %s: %v", tunnelIP, err)
+		// Fail closed: a paid connect with no quota would grant unlimited data.
+		if rmErr := s.wgMgr.RemovePeer(s.iface, wgPubkey); rmErr != nil {
+			log.Printf("[admin] warning: remove peer after quota failure for %s: %v", shortKey(wgPubkey), rmErr)
+		}
+		s.releasePeerResources(wgPubkey)
+		return "", http.StatusInternalServerError, fmt.Errorf("set quota: %v", err)
 	}
 	return tunnelIP, http.StatusOK, nil
 }

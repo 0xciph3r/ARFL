@@ -47,7 +47,10 @@ func (s *Store) SettleInvoice(paymentHash string) error {
 		var status string
 		err := s.db.QueryRow(`SELECT status FROM invoices WHERE payment_hash = ?`, paymentHash).Scan(&status)
 		if err != nil {
-			return fmt.Errorf("invoice %s: %w", paymentHash, ErrInvoiceNotFound)
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("invoice %s: %w", paymentHash, ErrInvoiceNotFound)
+			}
+			return fmt.Errorf("invoice %s lookup failed: %w", paymentHash, err)
 		}
 		if status == "settled" {
 			return nil // idempotent — already settled

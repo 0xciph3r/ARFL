@@ -3,6 +3,7 @@ package control
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Radi-Labs/ARFL/internal/node"
+	"github.com/Radi-Labs/ARFL/internal/quota"
+	"github.com/Radi-Labs/ARFL/internal/wg"
 	"github.com/elnosh/gonuts/cashu"
 )
 
@@ -27,6 +31,56 @@ func connectAs(t *testing.T, srv *Server, pubkey string) int {
 	rr := httptest.NewRecorder()
 	srv.handleCashuConnect(rr, httptest.NewRequest("POST", "/cashu-connect", bytes.NewReader(body)))
 	return rr.Code
+}
+
+type failingAddWG struct {
+	*wg.MockManager
+	failAdd bool
+}
+
+func (m *failingAddWG) AddPeer(iface string, peer wg.PeerConfig) error {
+	if m.failAdd {
+		return fmt.Errorf("injected add peer failure")
+	}
+	return m.MockManager.AddPeer(iface, peer)
+}
+
+type failingSetQuota struct {
+	*quota.NoopEnforcer
+	failSet bool
+}
+
+func (q *failingSetQuota) SetQuota(tunnelIP string, bytes int64) error {
+	if q.failSet {
+		return fmt.Errorf("injected quota failure")
+	}
+	return q.NoopEnforcer.SetQuota(tunnelIP, bytes)
+}
+
+func setupCustomCashuEnv(
+	t *testing.T,
+	wgMgr wg.Manager,
+	q quota.Enforcer,
+	hubHandler http.HandlerFunc,
+) *Server {
+	t.Helper()
+	kp, err := wg.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate mock interface key: %v", err)
+	}
+	if err := wgMgr.CreateInterface(wg.InterfaceConfig{
+		Name:       "wg-test",
+		PrivateKey: kp.PrivateKey,
+		ListenPort: 51820,
+		Address:    "10.100.0.1/24",
+	}); err != nil {
+		t.Fatalf("create mock interface: %v", err)
+	}
+	srv := NewServer(wgMgr, q, "wg-test")
+	hub := mockHubRedeem(t, hubHandler)
+	redeemer := node.NewHubRedeemer(hub.URL, "test-node-pubkey")
+	srv.EnableCashuGate(redeemer, "fakeNodePubkey==", "10.100.0")
+	return srv
 }
 
 func TestIPPool_ReconnectKeepsSameIP(t *testing.T) {
@@ -66,6 +120,51 @@ func TestCashuConnect_ReconnectDoesNotLeakIPs(t *testing.T) {
 	}
 	if srv.ipPool.Count() != 1 {
 		t.Errorf("pool holds %d IPs after 3 reconnects, want 1", srv.ipPool.Count())
+	}
+}
+
+func TestGrantPeer_ReconnectAddPeerFailureKeepsAllocation(t *testing.T) {
+	wgMgr := &failingAddWG{MockManager: wg.NewMockManager()}
+	srv := setupCustomCashuEnv(t, wgMgr, quota.NewNoopEnforcer(), okRedeem)
+
+	const pubkey = "same-client=="
+	if code := connectAs(t, srv, pubkey); code != http.StatusOK {
+		t.Fatalf("initial connect status %d, want 200", code)
+	}
+	firstIP, ok := srv.ipPool.AllocationForPubkey(pubkey)
+	if !ok {
+		t.Fatal("expected initial allocation")
+	}
+
+	wgMgr.failAdd = true
+	if code := connectAs(t, srv, pubkey); code != http.StatusInternalServerError {
+		t.Fatalf("reconnect status %d, want 500", code)
+	}
+	afterIP, ok := srv.ipPool.AllocationForPubkey(pubkey)
+	if !ok {
+		t.Fatal("reconnect failure should keep existing allocation")
+	}
+	if afterIP != firstIP {
+		t.Fatalf("allocation changed from %s to %s on failed reconnect", firstIP, afterIP)
+	}
+	if srv.ipPool.Count() != 1 {
+		t.Fatalf("pool count = %d, want 1", srv.ipPool.Count())
+	}
+}
+
+func TestGrantPeer_QuotaFailureFailsClosed(t *testing.T) {
+	wgMgr := wg.NewMockManager()
+	quotaMgr := &failingSetQuota{NoopEnforcer: quota.NewNoopEnforcer(), failSet: true}
+	srv := setupCustomCashuEnv(t, wgMgr, quotaMgr, okRedeem)
+
+	if code := connectAs(t, srv, "quota-client=="); code != http.StatusInternalServerError {
+		t.Fatalf("connect status %d, want 500", code)
+	}
+	if wgMgr.PeerCount("wg-test") != 0 {
+		t.Fatalf("peer should be removed on quota failure, count=%d", wgMgr.PeerCount("wg-test"))
+	}
+	if srv.ipPool.Count() != 0 {
+		t.Fatalf("IP allocation should be released on quota failure, count=%d", srv.ipPool.Count())
 	}
 }
 

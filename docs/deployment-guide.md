@@ -44,7 +44,7 @@ arfl doctor hub --config /opt/arfl/data/hub.json --url http://127.0.0.1:8080
 
 `arfl init` uses Charm interactive forms (Bubble Tea + Huh) when run in a terminal.
 `arfl doctor` provides Lip Gloss-styled diagnostics output. For unattended scripts, pass
-`--non-interactive`.
+`--non-interactive` to `arfl init`.
 
 `setup-hub.sh` keeps an existing `/opt/arfl/data/hub.json` by default to avoid rotating
 hub identity and credential secrets during routine reruns. Set

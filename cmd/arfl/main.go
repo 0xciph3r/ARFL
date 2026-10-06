@@ -1172,14 +1172,102 @@ func validateNodeConfig(cfg *config.NodeConfig) []doctorCheck {
 			Hint:   "set enabled_transports to include wireguard",
 		})
 	} else {
-		checks = append(checks, doctorCheck{
-			Name:   "enabled_transports",
-			Status: doctorPass,
-			Detail: strings.Join(cfg.EnabledTransports, ", "),
-		})
+		analysis := analyzeEnabledTransports(cfg)
+		switch {
+		case len(analysis.advertised) == 0:
+			checks = append(checks, doctorCheck{
+				Name:   "enabled_transports",
+				Status: doctorFail,
+				Detail: "no advertisable transport (node startup will fail)",
+				Hint:   analysis.hint(),
+			})
+		case len(analysis.unknown) > 0 || len(analysis.missingEndpoint) > 0:
+			checks = append(checks, doctorCheck{
+				Name:   "enabled_transports",
+				Status: doctorWarn,
+				Detail: fmt.Sprintf("advertising: %s; dropped: %s", strings.Join(analysis.advertised, ","), analysis.droppedSummary()),
+				Hint:   analysis.hint(),
+			})
+		default:
+			checks = append(checks, doctorCheck{
+				Name:   "enabled_transports",
+				Status: doctorPass,
+				Detail: strings.Join(analysis.advertised, ", "),
+			})
+		}
 	}
 
 	return checks
+}
+
+type transportDoctorResult struct {
+	advertised      []string
+	unknown         []string
+	missingEndpoint []string
+}
+
+func (r transportDoctorResult) droppedSummary() string {
+	dropped := make([]string, 0, len(r.unknown)+len(r.missingEndpoint))
+	for _, u := range r.unknown {
+		dropped = append(dropped, fmt.Sprintf("%s (unknown)", u))
+	}
+	for _, m := range r.missingEndpoint {
+		dropped = append(dropped, fmt.Sprintf("%s (missing endpoint)", m))
+	}
+	if len(dropped) == 0 {
+		return "(none)"
+	}
+	return strings.Join(dropped, ", ")
+}
+
+func (r transportDoctorResult) hint() string {
+	parts := make([]string, 0, 2)
+	if len(r.unknown) > 0 {
+		parts = append(parts, "use known names: wireguard, hysteria2, amneziawg")
+	}
+	if len(r.missingEndpoint) > 0 {
+		parts = append(parts, "add transport_endpoints entries for enabled transports (wireguard may use endpoint)")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "; ")
+}
+
+func analyzeEnabledTransports(cfg *config.NodeConfig) transportDoctorResult {
+	known := map[string]struct{}{
+		"wireguard": {},
+		"hysteria2": {},
+		"amneziawg": {},
+	}
+	advertised := make(map[string]struct{})
+	var out transportDoctorResult
+
+	for _, raw := range cfg.EnabledTransports {
+		name := strings.ToLower(strings.TrimSpace(raw))
+		if name == "" {
+			continue
+		}
+		if _, ok := known[name]; !ok {
+			out.unknown = append(out.unknown, name)
+			continue
+		}
+		endpoint := strings.TrimSpace(cfg.TransportEndpoints[name])
+		if endpoint == "" && name == "wireguard" {
+			endpoint = strings.TrimSpace(cfg.Endpoint)
+		}
+		if endpoint == "" {
+			out.missingEndpoint = append(out.missingEndpoint, name)
+			continue
+		}
+		if _, exists := advertised[name]; exists {
+			continue
+		}
+		advertised[name] = struct{}{}
+		out.advertised = append(out.advertised, name)
+	}
+
+	return out
 }
 
 func fileCheck(name, p string) []doctorCheck {

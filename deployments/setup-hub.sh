@@ -33,14 +33,32 @@ apt-get install -y -qq \
 
 echo "[3/6] Installing Go..."
 GO_VERSION="1.26.3"
-if ! command -v go >/dev/null 2>&1; then
-  curl -sL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+GO_TARBALL="go${GO_VERSION}.linux-amd64.tar.gz"
+if [[ ! -x /usr/local/go/bin/go ]] && ! command -v go >/dev/null 2>&1; then
+  GO_SHA="$(curl -fsSL 'https://go.dev/dl/?mode=json&include=all' | jq -r --arg f "$GO_TARBALL" '.[] | .files[]? | select(.filename==$f) | .sha256' | head -n 1)"
+  if [[ -z "$GO_SHA" || "$GO_SHA" == "null" ]]; then
+    echo "Could not resolve checksum for $GO_TARBALL"
+    exit 1
+  fi
+  curl -fsSL "https://go.dev/dl/${GO_TARBALL}" -o "/tmp/${GO_TARBALL}"
+  echo "${GO_SHA}  /tmp/${GO_TARBALL}" | sha256sum -c -
+  rm -rf /usr/local/go
+  tar -C /usr/local -xzf "/tmp/${GO_TARBALL}"
+  rm -f "/tmp/${GO_TARBALL}"
   cat >/etc/profile.d/go.sh <<'EOF'
 export PATH=$PATH:/usr/local/go/bin
 EOF
   export PATH="$PATH:/usr/local/go/bin"
 fi
-echo "  Go installed: $(go version)"
+if [[ -x /usr/local/go/bin/go ]]; then
+  GO_BIN="/usr/local/go/bin/go"
+elif command -v go >/dev/null 2>&1; then
+  GO_BIN="$(command -v go)"
+else
+  echo "Go is required but was not found after installation."
+  exit 1
+fi
+echo "  Go installed: $($GO_BIN version)"
 
 echo "[4/6] Cloning/updating ARFL source..."
 mkdir -p /opt/arfl/src
@@ -53,8 +71,8 @@ git checkout -q main
 git reset --hard origin/main
 
 echo "[5/6] Building binaries..."
-/usr/local/go/bin/go build -o /usr/local/bin/arfl-hub ./cmd/arfl-hub
-/usr/local/go/bin/go build -o /usr/local/bin/arfl ./cmd/arfl
+"$GO_BIN" build -o /usr/local/bin/arfl-hub ./cmd/arfl-hub
+"$GO_BIN" build -o /usr/local/bin/arfl ./cmd/arfl
 chmod 755 /usr/local/bin/arfl-hub /usr/local/bin/arfl
 
 echo "[6/6] Generating /opt/arfl/data/hub.json..."
@@ -70,18 +88,18 @@ RELAYS="${ARFL_RELAYS:-wss://relay.damus.io,wss://nos.lol}"
 LISTEN_ADDR="${ARFL_LISTEN_ADDR:-0.0.0.0:8080}"
 DB_PATH="${ARFL_DB_PATH:-/opt/arfl/data/arfl.db}"
 
-if [[ -z "$LND_HOST" ]]; then
-  read -r -p "LND host (example: your-node.m.voltageapp.io): " LND_HOST
-fi
-if [[ -z "$LND_HOST" ]]; then
-  echo "LND host is required."
-  exit 1
-fi
-
 if [[ -f /opt/arfl/data/hub.json && "${ARFL_REGENERATE_HUB_CONFIG:-0}" != "1" ]]; then
   echo "  Existing /opt/arfl/data/hub.json detected; keeping current hub identity and keys."
   echo "  Set ARFL_REGENERATE_HUB_CONFIG=1 only if you intentionally want new hub secrets."
 else
+  if [[ -z "$LND_HOST" ]]; then
+    read -r -p "LND host (example: your-node.m.voltageapp.io): " LND_HOST
+  fi
+  if [[ -z "$LND_HOST" ]]; then
+    echo "LND host is required."
+    exit 1
+  fi
+
   INIT_ARGS=()
   if [[ "${ARFL_REGENERATE_HUB_CONFIG:-0}" == "1" ]]; then
     INIT_ARGS+=(--force)

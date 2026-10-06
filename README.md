@@ -27,7 +27,7 @@ Users pay per-gigabyte via Lightning. Node operators earn passive income on band
 1. **Client** pays a Lightning invoice for bandwidth (e.g., 500 sats for 1 GB)
 2. **Hub** mints Cashu ecash tokens — blind-signed via BDHKE (Blind Diffie-Hellman Key Exchange)
 3. **Client** unblinds tokens locally — Hub mathematically cannot link tokens to the buyer
-4. **Client** delivers tokens to the **Node** — the desktop client posts proofs to the node's `/cashu-connect` endpoint today; NIP-44 encrypted delivery over Nostr is implemented but not yet wired in
+4. **Client** delivers tokens to the **Node** — either direct `/cashu-connect` HTTP (`token_delivery: "http"`) or NIP-44 encrypted Nostr request/reply (`token_delivery: "nip44"`)
 5. **Node** verifies proofs with the Hub's `/v1/redeem`, grants WireGuard access
 6. Traffic flows through a **nested two-hop WireGuard tunnel** (entry → exit → internet)
 
@@ -36,7 +36,7 @@ Users pay per-gigabyte via Lightning. Node operators earn passive income on band
 | Property | How |
 |---|---|
 | **Buyer-session unlinkability** | Cashu BDHKE — Hub signs blinded messages, cannot link tokens to buyers |
-| **Token delivery privacy** | NIP-44 encryption — Hub cannot read token contents in transit (implemented in `internal/client/token_sender.go`; see the threat model for the client's current path) |
+| **Token delivery privacy** | NIP-44 encrypted request/reply events — Hub and relays cannot read token contents in transit (`internal/client/token_sender.go`, `internal/node/token_receiver.go`) |
 | **Entry node can't see destinations** | Inner WireGuard tunnel encrypts traffic end-to-end to the exit |
 | **Exit node can't see client IP** | Only sees the entry node's IP (NAT'd) |
 | **No accounts or identity** | Lightning payments require no personal information |
@@ -49,8 +49,9 @@ ARFL is a **privacy-respecting bandwidth marketplace** — not an untraceable VP
 - The Hub is the real-time arbiter for double-spend detection. Nodes must contact it for `/v1/redeem` checks.
 - The residential node economics model works for flat-rate fiber operators. Commercial cloud hosting is explicitly not viable at current pricing.
 - Two-hop routing means every GB costs 2x bandwidth. At $5/250GB, nodes clear ~$0.008/GB each — viable for unmetered pipes, not cloud servers.
-- The hub cannot link buyers to sessions, but a compromised hub could potentially correlate timing. Future work: client-side node pairing from the Nostr relay index.
-- Token delivery in the current client is a direct HTTPS call to each node's `/cashu-connect` endpoint, made before the tunnel is up — so the nodes see the client's IP during setup. The NIP-44 Nostr delivery path exists but is not yet wired into the client or node. The client also uses the same WireGuard key on both hops, so colluding entry and exit operators could link a session. These are tracked under [Protocol v2](#protocol-v2-privacy-hardening) in the Roadmap.
+- Hub observability is reduced (not eliminated): with `discovery_source: "nostr"` the client builds its node list from relay announcements and pairs hops locally without a hub `/nodes` fetch timing anchor. The hub still sees `/v1/redeem` timing and values.
+- Token delivery mode is explicit in `client.json`: `http` (default) or `nip44`. In `http` mode, the entry node sees the client source IP by design, while the exit provisioning request is routed through the outer tunnel. In `nip44` mode, proof delivery and connect replies happen over encrypted Nostr events, so clients do not call node `/cashu-connect` endpoints directly.
+- The client now uses distinct WireGuard keys per hop and rotates them after failed connect attempts; this removes key-reuse linkage between entry and exit for retries and active sessions.
 - Tunnels route IPv4 only (`0.0.0.0/1` and `128.0.0.0/1`). IPv6 traffic is not encapsulated; disable IPv6 at the OS level to avoid leaking around the tunnel.
 
 ## Installation
@@ -317,6 +318,10 @@ sudo ./arfl-client --discover http://<hub-ip>:8080 \
 ```json
 {
   "hub_url": "http://<hub-ip>:8080",
+  "hub_pubkeys": ["<trusted-hub-nostr-pubkey>"],
+  "discovery_source": "nostr",
+  "token_delivery": "nip44",
+  "relays": ["wss://relay.damus.io", "wss://nos.lol"],
   "preferred_transports": ["hysteria2", "wireguard"],
   "allowed_transports": ["wireguard", "hysteria2"],
   "require_common_hop_transport": true
@@ -327,6 +332,8 @@ Desktop loads this policy from `client.json` in the current working directory by
 `ARFL_CLIENT_CONFIG=/path/to/client.json` when set.
 Unknown transport names in `preferred_transports` / `allowed_transports` are treated as configuration errors.
 If `require_common_hop_transport` is explicitly set to `false`, `arfl-desktop` rejects the policy until mixed-hop adapters are implemented.
+Unknown `token_delivery` values are treated as configuration errors.
+Unknown `discovery_source` values are treated as configuration errors. `discovery_source: "nostr"` requires both `relays` and `hub_pubkeys`.
 
 ### Bandwidth Tiers
 
@@ -501,7 +508,7 @@ go vet ./...
 - [x] **Phase 6** — Token→connect flow, LND adapter, Docker testnet
 - [x] **Phase 9** — Client-side node selection + Cashu token redemption
 - [x] **Phase 10** — Node-side Cashu gate + hub redeemer
-- [x] **Phase 11** — NIP-44 token envelope, sender and receiver (library only; not yet wired into the client or node — see Protocol v2 below)
+- [x] **Phase 11** — NIP-44 token envelope, sender and receiver, wired request/reply delivery path
 - [x] **Phase 12** — E2E integration test (full privacy chain)
 - [x] **Phase 13** — VPS deployment (3 servers, systemd)
 - [x] **Phase 14** — Performance engineering (benchmarks, pprof, load test, optimization)
@@ -512,12 +519,12 @@ go vet ./...
 
 ### Protocol v2: privacy hardening
 
-[Whitepaper v0.4](ARFL_Whitepaper_v0.4.pdf) documents these as known limitations. They are planned, not yet built:
+[Whitepaper v0.4](ARFL_Whitepaper_v0.4.pdf) documents these privacy hardening items; current implementation status:
 
-- [ ] **Setup-time IP exposure** — route the exit-node connect through the outer tunnel so the exit never sees the client's IP ([#46](https://github.com/0xciph3r/ARFL/issues/46))
-- [ ] **NIP-44 delivery end to end** — wire the sender and receiver and add a node-to-client reply channel ([#47](https://github.com/0xciph3r/ARFL/issues/47))
-- [ ] **Per-hop WireGuard keys** — a separate key per hop, reset after failed connects ([#48](https://github.com/0xciph3r/ARFL/issues/48))
-- [ ] **Hub timing correlation** — client-side node pairing from the Nostr index, without hub mediation ([#49](https://github.com/0xciph3r/ARFL/issues/49))
+- [x] **Setup-time IP exposure** — HTTP-mode exit provisioning is routed through the outer tunnel so the exit never sees the client's IP ([#46](https://github.com/0xciph3r/ARFL/issues/46))
+- [x] **NIP-44 delivery end to end** — sender and receiver are wired with encrypted node-to-client replies (`token_delivery: "nip44"`) ([#47](https://github.com/0xciph3r/ARFL/issues/47))
+- [x] **Per-hop WireGuard keys** — a separate key per hop, reset after failed connects ([#48](https://github.com/0xciph3r/ARFL/issues/48))
+- [x] **Hub timing correlation mitigation** — optional client-side node pairing from the Nostr relay index (`discovery_source: "nostr"`), without hub `/nodes` mediation ([#49](https://github.com/0xciph3r/ARFL/issues/49))
 
 ## Performance
 

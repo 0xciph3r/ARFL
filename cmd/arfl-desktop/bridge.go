@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/app"
+	"github.com/Radi-Labs/ARFL/internal/client"
 	"github.com/Radi-Labs/ARFL/internal/config"
 	"github.com/Radi-Labs/ARFL/internal/tunnel"
 	"github.com/Radi-Labs/ARFL/internal/wallet"
@@ -129,7 +130,7 @@ func (b *Bridge) Unlock(passphrase string) (*StatusView, error) {
 		b.tunErr = tunErr.Error()
 	}
 
-	preferred, allowed, err := loadTransportPolicyFromClientConfig()
+	preferred, allowed, relays, trustedHubPubkeys, delivery, discoverySource, err := loadTransportPolicyFromClientConfig()
 	if err != nil {
 		if tun != nil {
 			tun.Close()
@@ -141,6 +142,10 @@ func (b *Bridge) Unlock(passphrase string) (*StatusView, error) {
 		Passphrase:          passphrase,
 		PreferredTransports: preferred,
 		AllowedTransports:   allowed,
+		NostrRelays:         relays,
+		TrustedHubPubkeys:   trustedHubPubkeys,
+		TokenDelivery:       delivery,
+		DiscoverySource:     discoverySource,
 		// A nil *tunnel.Tunnel in an interface is not nil, so pass the
 		// interface explicitly as nil when setup failed.
 		Tunnel:       tunnelOrNil(tun),
@@ -207,7 +212,7 @@ func tunnelOrNil(t *tunnel.Tunnel) app.Tunnel {
 	return t
 }
 
-func loadTransportPolicyFromClientConfig() ([]types.Transport, []types.Transport, error) {
+func loadTransportPolicyFromClientConfig() ([]types.Transport, []types.Transport, []string, []string, client.TokenDeliveryMode, string, error) {
 	cfgPath := strings.TrimSpace(os.Getenv("ARFL_CLIENT_CONFIG"))
 	if cfgPath == "" {
 		cfgPath = "client.json"
@@ -215,17 +220,17 @@ func loadTransportPolicyFromClientConfig() ([]types.Transport, []types.Transport
 
 	if _, err := os.Stat(cfgPath); err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil, nil
+			return nil, nil, nil, nil, client.TokenDeliveryHTTP, app.DiscoverySourceHub, nil
 		}
-		return nil, nil, fmt.Errorf("read client config path %q: %w", cfgPath, err)
+		return nil, nil, nil, nil, "", "", fmt.Errorf("read client config path %q: %w", cfgPath, err)
 	}
 
 	cfg, err := config.LoadClientConfig(cfgPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("load client config %q: %w", cfgPath, err)
+		return nil, nil, nil, nil, "", "", fmt.Errorf("load client config %q: %w", cfgPath, err)
 	}
 	if cfg.RequireCommonHops != nil && !*cfg.RequireCommonHops {
-		return nil, nil, fmt.Errorf(
+		return nil, nil, nil, nil, "", "", fmt.Errorf(
 			"client config %q: require_common_hop_transport=false is not yet supported by arfl-desktop (mixed-hop adapters are not implemented); set require_common_hop_transport=true",
 			cfgPath,
 		)
@@ -233,13 +238,62 @@ func loadTransportPolicyFromClientConfig() ([]types.Transport, []types.Transport
 
 	preferred, err := parseTransportNames("preferred_transports", cfg.PreferredTransports)
 	if err != nil {
-		return nil, nil, fmt.Errorf("client config %q: %w", cfgPath, err)
+		return nil, nil, nil, nil, "", "", fmt.Errorf("client config %q: %w", cfgPath, err)
 	}
 	allowed, err := parseTransportNames("allowed_transports", cfg.AllowedTransports)
 	if err != nil {
-		return nil, nil, fmt.Errorf("client config %q: %w", cfgPath, err)
+		return nil, nil, nil, nil, "", "", fmt.Errorf("client config %q: %w", cfgPath, err)
 	}
-	return preferred, allowed, nil
+
+	mode := client.TokenDeliveryHTTP
+	switch strings.ToLower(strings.TrimSpace(cfg.TokenDelivery)) {
+	case "", string(client.TokenDeliveryHTTP):
+		mode = client.TokenDeliveryHTTP
+	case string(client.TokenDeliveryNIP44):
+		mode = client.TokenDeliveryNIP44
+	default:
+		return nil, nil, nil, nil, "", "", fmt.Errorf("client config %q: token_delivery has unsupported value %q", cfgPath, cfg.TokenDelivery)
+	}
+
+	discoverySource := strings.ToLower(strings.TrimSpace(cfg.DiscoverySource))
+	switch discoverySource {
+	case "", app.DiscoverySourceHub:
+		discoverySource = app.DiscoverySourceHub
+	case app.DiscoverySourceNostr:
+		// accepted
+	default:
+		return nil, nil, nil, nil, "", "", fmt.Errorf("client config %q: discovery_source has unsupported value %q", cfgPath, cfg.DiscoverySource)
+	}
+
+	relays := make([]string, 0, len(cfg.Relays))
+	seen := make(map[string]struct{}, len(cfg.Relays))
+	for _, relay := range cfg.Relays {
+		relay = strings.TrimSpace(relay)
+		if relay == "" {
+			continue
+		}
+		if _, ok := seen[relay]; ok {
+			continue
+		}
+		seen[relay] = struct{}{}
+		relays = append(relays, relay)
+	}
+
+	hubPubkeys := make([]string, 0, len(cfg.HubPubkeys))
+	seenPubkeys := make(map[string]struct{}, len(cfg.HubPubkeys))
+	for _, pubkey := range cfg.HubPubkeys {
+		pubkey = strings.TrimSpace(pubkey)
+		if pubkey == "" {
+			continue
+		}
+		if _, ok := seenPubkeys[pubkey]; ok {
+			continue
+		}
+		seenPubkeys[pubkey] = struct{}{}
+		hubPubkeys = append(hubPubkeys, pubkey)
+	}
+
+	return preferred, allowed, relays, hubPubkeys, mode, discoverySource, nil
 }
 
 func parseTransportNames(field string, in []string) ([]types.Transport, error) {

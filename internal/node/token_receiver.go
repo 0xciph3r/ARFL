@@ -15,27 +15,38 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 
 	"github.com/Radi-Labs/ARFL/internal/nostr"
+	"github.com/elnosh/gonuts/cashu"
 )
 
 // ConnectCallback is called when valid tokens are received and verified.
 // The implementation should add a WireGuard peer and return the tunnel config.
-type ConnectCallback func(wgPubkey string, bytesAllowed int64) error
+type ConnectCallback func(wgPubkey string, bytesAllowed int64) (*CashuConnectResult, int, error)
+
+type proofRedeemer interface {
+	Redeem(ctx context.Context, proofs cashu.Proofs) (*CashuRedeemResult, error)
+}
 
 // TokenReceiver listens on Nostr relays for encrypted token events.
 type TokenReceiver struct {
 	nodeKP    *nostr.KeyPair
-	redeemer  *HubRedeemer
-	pool      *nostr.RelayPool
+	redeemer  proofRedeemer
+	pool      relayClient
 	onConnect ConnectCallback
+}
+
+type relayClient interface {
+	Publish(ctx context.Context, event *nostr.Event) (int, error)
+	Subscribe(ctx context.Context, subID string, filters ...nostr.Filter) (<-chan *nostr.Event, error)
 }
 
 // NewTokenReceiver creates a receiver for the given node identity.
 func NewTokenReceiver(
 	nodeKP *nostr.KeyPair,
-	redeemer *HubRedeemer,
-	pool *nostr.RelayPool,
+	redeemer proofRedeemer,
+	pool relayClient,
 	onConnect ConnectCallback,
 ) *TokenReceiver {
 	return &TokenReceiver{
@@ -80,6 +91,12 @@ func (tr *TokenReceiver) Listen(ctx context.Context) error {
 
 // handleEvent processes a single token envelope event.
 func (tr *TokenReceiver) handleEvent(ctx context.Context, event *nostr.Event) {
+	if err := event.Verify(); err != nil {
+		log.Printf("[token-receiver] dropped event with invalid signature (sender=%s): %v",
+			truncate(event.Pubkey), err)
+		return
+	}
+
 	// Decrypt the NIP-44 envelope.
 	payload, err := nostr.OpenTokenEnvelope(event, tr.nodeKP)
 	if err != nil {
@@ -92,28 +109,85 @@ func (tr *TokenReceiver) handleEvent(ctx context.Context, event *nostr.Event) {
 		log.Printf("[token-receiver] unknown payload version %d", payload.Version)
 		return
 	}
-
-	if len(payload.Proofs) == 0 || payload.WGPubkey == "" {
-		log.Printf("[token-receiver] incomplete payload (proofs=%d, wg=%q)",
-			len(payload.Proofs), payload.WGPubkey)
+	if payload.RequestID == "" {
+		log.Printf("[token-receiver] payload missing request_id (sender=%s)", truncate(event.Pubkey))
+		return
+	}
+	if len(payload.Proofs) == 0 || payload.WGPubkey == "" || (payload.Role != "entry" && payload.Role != "exit") {
+		log.Printf("[token-receiver] incomplete payload (proofs=%d, wg=%q, role=%q)",
+			len(payload.Proofs), payload.WGPubkey, payload.Role)
+		tr.sendReply(ctx, event.Pubkey, &nostr.TokenReplyPayload{
+			RequestID:  payload.RequestID,
+			OK:         false,
+			Error:      "invalid token payload",
+			StatusCode: http.StatusBadRequest,
+			Version:    1,
+		})
 		return
 	}
 
 	// Verify and burn proofs with hub.
 	result, err := tr.redeemer.Redeem(ctx, payload.Proofs)
 	if err != nil {
+		status, msg, known := RedeemErrorResponse(err)
+		if !known {
+			status = http.StatusBadGateway
+			msg = "hub verification failed"
+		}
 		log.Printf("[token-receiver] redeem failed: %v", err)
+		tr.sendReply(ctx, event.Pubkey, &nostr.TokenReplyPayload{
+			RequestID:  payload.RequestID,
+			OK:         false,
+			Error:      msg,
+			StatusCode: status,
+			Version:    1,
+		})
 		return
 	}
 
 	// Trigger WireGuard peer setup.
-	if err := tr.onConnect(payload.WGPubkey, result.BytesAllowed); err != nil {
-		log.Printf("[token-receiver] connect callback failed: %v", err)
+	connectResult, status, err := tr.onConnect(payload.WGPubkey, result.BytesAllowed)
+	if err != nil {
+		if status == 0 {
+			status = http.StatusInternalServerError
+		}
+		log.Printf("[token-receiver] connect callback failed (status=%d): %v", status, err)
+		tr.sendReply(ctx, event.Pubkey, &nostr.TokenReplyPayload{
+			RequestID:  payload.RequestID,
+			OK:         false,
+			Error:      err.Error(),
+			StatusCode: status,
+			Version:    1,
+		})
 		return
 	}
 
-	log.Printf("[token-receiver] peer connected via Nostr (wg=%s, bytes=%d, role=%s)",
-		truncate(payload.WGPubkey), result.BytesAllowed, payload.Role)
+	tr.sendReply(ctx, event.Pubkey, &nostr.TokenReplyPayload{
+		RequestID:    payload.RequestID,
+		OK:           true,
+		TunnelIP:     connectResult.TunnelIP,
+		NodeWGPubkey: connectResult.NodeWGPubkey,
+		BytesAllowed: connectResult.BytesAllowed,
+		Version:      1,
+	})
+	log.Printf("[token-receiver] peer connected via Nostr (wg=%s, bytes=%d, role=%s, request=%s)",
+		truncate(payload.WGPubkey), result.BytesAllowed, payload.Role, payload.RequestID)
+}
+
+func (tr *TokenReceiver) sendReply(ctx context.Context, recipientPubkey string, reply *nostr.TokenReplyPayload) {
+	event, err := nostr.SealTokenReplyEnvelope(tr.nodeKP, recipientPubkey, reply)
+	if err != nil {
+		log.Printf("[token-receiver] seal reply failed: %v", err)
+		return
+	}
+	accepted, err := tr.pool.Publish(ctx, event)
+	if err != nil {
+		log.Printf("[token-receiver] publish reply failed: %v", err)
+		return
+	}
+	if accepted == 0 {
+		log.Printf("[token-receiver] reply not accepted by any relay")
+	}
 }
 
 func truncate(s string) string {

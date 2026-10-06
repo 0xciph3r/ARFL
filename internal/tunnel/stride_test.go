@@ -263,7 +263,7 @@ func TestSTRIDE_InfoDisclosure_PrivateKeyNeverLeaksIntoErrors(t *testing.T) {
 	if _, err := tun.PublicKey(); err != nil {
 		t.Fatalf("public key: %v", err)
 	}
-	priv := tun.keys.PrivateKey
+	priv := tun.entryKeys.PrivateKey
 
 	err := tun.Up(context.Background(), validConfig())
 	if err == nil {
@@ -515,7 +515,7 @@ func TestMisuse_ConnectingBeforeGeneratingAKeyIsRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("Up without a keypair must be rejected")
 	}
-	if !strings.Contains(err.Error(), "PublicKey") {
+	if !strings.Contains(err.Error(), "PrepareHopKeys") {
 		t.Fatalf("error should tell the caller what to do, got %q", err)
 	}
 	assertNothingApplied(t, fwg, fnet)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/Radi-Labs/ARFL/internal/app"
 	"github.com/Radi-Labs/ARFL/internal/wg"
+	"github.com/Radi-Labs/ARFL/pkg/protocol"
 )
 
 // fakeWG records interface and peer operations instead of touching the kernel.
@@ -163,6 +164,138 @@ func TestUpCreatesBothHops(t *testing.T) {
 	}
 	if fnet.dnsSet != 1 {
 		t.Errorf("DNS set %d times, want 1", fnet.dnsSet)
+	}
+}
+
+func TestUpOuterCreatesOnlyOuterHop(t *testing.T) {
+	fwg, fnet := newFakeWG(), newFakeNet()
+	tun := newReadyTunnel(t, fwg, fnet)
+
+	if err := tun.UpOuter(context.Background(), validConfig()); err != nil {
+		t.Fatalf("up outer: %v", err)
+	}
+
+	if len(fwg.created) != 1 || fwg.created[0].Name != OuterInterface {
+		t.Fatalf("created interfaces = %#v, want only %q", fwg.created, OuterInterface)
+	}
+	if len(fwg.peers[OuterInterface]) != 1 {
+		t.Fatalf("outer peers = %d, want 1", len(fwg.peers[OuterInterface]))
+	}
+	if len(fwg.peers[InnerInterface]) != 0 {
+		t.Fatalf("inner peers = %d, want 0 before inner bring-up", len(fwg.peers[InnerInterface]))
+	}
+	for _, r := range fnet.added {
+		if r.cidr == "0.0.0.0/1" || r.cidr == "128.0.0.0/1" {
+			t.Fatalf("default half-route %s must not exist before UpInner", r.cidr)
+		}
+	}
+	if fnet.dnsSet != 0 {
+		t.Fatalf("DNS set %d times during UpOuter, want 0", fnet.dnsSet)
+	}
+}
+
+func TestUpOuterPinsAdditionalRouteTargets(t *testing.T) {
+	fwg, fnet := newFakeWG(), newFakeNet()
+	tun := newReadyTunnel(t, fwg, fnet)
+	cfg := validConfig()
+	cfg.Exit.Endpoint = "198.51.100.90:443"                // HTTP provisioning endpoint host
+	cfg.OuterPinnedEndpoints = []string{"198.51.100.20:1"} // real exit WireGuard endpoint host
+
+	if err := tun.UpOuter(context.Background(), cfg); err != nil {
+		t.Fatalf("up outer: %v", err)
+	}
+
+	peer := fwg.peers[OuterInterface][0]
+	gotAllowed := map[string]bool{}
+	for _, cidr := range peer.AllowedIPs {
+		gotAllowed[cidr] = true
+	}
+	for _, want := range []string{protocol.OuterTunnelSubnet, "198.51.100.90/32", "198.51.100.20/32"} {
+		if !gotAllowed[want] {
+			t.Fatalf("missing AllowedIPs entry %q in %v", want, peer.AllowedIPs)
+		}
+	}
+
+	var hasProvisionRoute, hasExitWGRoute bool
+	for _, r := range fnet.added {
+		if r.cidr == "198.51.100.90/32" && r.iface == OuterInterface {
+			hasProvisionRoute = true
+		}
+		if r.cidr == "198.51.100.20/32" && r.iface == OuterInterface {
+			hasExitWGRoute = true
+		}
+	}
+	if !hasProvisionRoute || !hasExitWGRoute {
+		t.Fatalf("outer pinned routes missing: provision=%v exitwg=%v routes=%v", hasProvisionRoute, hasExitWGRoute, fnet.added)
+	}
+}
+
+func TestUpOuterRejectsPinnedTargetOnEntryHost(t *testing.T) {
+	fwg, fnet := newFakeWG(), newFakeNet()
+	tun := newReadyTunnel(t, fwg, fnet)
+	cfg := validConfig()
+	cfg.OuterPinnedEndpoints = []string{"203.0.113.10:80"}
+
+	err := tun.UpOuter(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected UpOuter to reject pinned endpoint on entry host")
+	}
+	if !strings.Contains(err.Error(), "entry node host") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestUpInnerRequiresOuter(t *testing.T) {
+	tun := newReadyTunnel(t, newFakeWG(), newFakeNet())
+	if err := tun.UpInner(context.Background(), validConfig()); err == nil {
+		t.Fatal("expected UpInner without UpOuter to fail")
+	}
+}
+
+func TestUpInnerCompletesStagedBringUp(t *testing.T) {
+	fwg, fnet := newFakeWG(), newFakeNet()
+	tun := newReadyTunnel(t, fwg, fnet)
+	cfg := validConfig()
+
+	if err := tun.UpOuter(context.Background(), cfg); err != nil {
+		t.Fatalf("up outer: %v", err)
+	}
+	if err := tun.UpInner(context.Background(), cfg); err != nil {
+		t.Fatalf("up inner: %v", err)
+	}
+
+	if len(fwg.created) != 2 {
+		t.Fatalf("created %d interfaces, want 2 after staged bring-up", len(fwg.created))
+	}
+	if got := len(fwg.peers[InnerInterface]); got != 1 {
+		t.Fatalf("inner peers = %d, want 1 after UpInner", got)
+	}
+	if fnet.dnsSet != 1 {
+		t.Fatalf("DNS set %d times, want 1", fnet.dnsSet)
+	}
+}
+
+func TestUpInnerFailureRollsBackOuterState(t *testing.T) {
+	fwg, fnet := newFakeWG(), newFakeNet()
+	fwg.failOn = "peer:" + InnerInterface
+	tun := newReadyTunnel(t, fwg, fnet)
+	cfg := validConfig()
+
+	if err := tun.UpOuter(context.Background(), cfg); err != nil {
+		t.Fatalf("up outer: %v", err)
+	}
+	if err := tun.UpInner(context.Background(), cfg); err == nil {
+		t.Fatal("expected UpInner to fail")
+	}
+
+	if len(fwg.deleted) != len(fwg.created) {
+		t.Fatalf("deleted interfaces=%d created=%d, expected full rollback", len(fwg.deleted), len(fwg.created))
+	}
+	if len(fnet.deleted) != len(fnet.added) {
+		t.Fatalf("deleted routes=%d added=%d, expected full rollback", len(fnet.deleted), len(fnet.added))
+	}
+	if tun.active != nil {
+		t.Fatal("active state should be cleared after staged failure rollback")
 	}
 }
 
@@ -377,6 +510,46 @@ func TestUpWithoutKeypairIsRejected(t *testing.T) {
 	tun := newTunnel(newFakeWG(), newFakeNet())
 	if err := tun.Up(context.Background(), validConfig()); err == nil {
 		t.Fatal("expected bring-up without a keypair to fail")
+	}
+}
+
+func TestPrepareHopKeysUsesDistinctKeysPerHop(t *testing.T) {
+	fwg, fnet := newFakeWG(), newFakeNet()
+	tun := newTunnel(fwg, fnet)
+
+	entryPub, exitPub, err := tun.PrepareHopKeys()
+	if err != nil {
+		t.Fatalf("prepare hop keys: %v", err)
+	}
+	if entryPub == exitPub {
+		t.Fatal("prepare hop keys returned identical entry and exit pubkeys")
+	}
+
+	if err := tun.Up(context.Background(), validConfig()); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if len(fwg.created) != 2 {
+		t.Fatalf("created %d interfaces, want 2", len(fwg.created))
+	}
+	if fwg.created[0].PrivateKey == fwg.created[1].PrivateKey {
+		t.Fatal("outer and inner interfaces were created with the same private key")
+	}
+}
+
+func TestResetHopKeysForcesFreshPrepare(t *testing.T) {
+	tun := newTunnel(newFakeWG(), newFakeNet())
+
+	firstEntry, firstExit, err := tun.PrepareHopKeys()
+	if err != nil {
+		t.Fatalf("prepare hop keys: %v", err)
+	}
+	tun.ResetHopKeys()
+	secondEntry, secondExit, err := tun.PrepareHopKeys()
+	if err != nil {
+		t.Fatalf("prepare hop keys: %v", err)
+	}
+	if firstEntry == secondEntry && firstExit == secondExit {
+		t.Fatal("ResetHopKeys reused the same keypair set")
 	}
 }
 

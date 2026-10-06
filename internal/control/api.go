@@ -3,7 +3,6 @@ package control
 import (
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -483,37 +482,30 @@ func (s *Server) handleCashuConnect(w http.ResponseWriter, r *http.Request) {
 	// Forward proofs to hub for verification + spend-marking.
 	result, err := s.redeemer.Redeem(r.Context(), req.Proofs)
 	if err != nil {
-		switch {
-		case errors.Is(err, node.ErrRedeemAlreadySpent):
-			s.rejectConnect(w, r, "cashu-connect", http.StatusConflict, "proofs already spent", req.WGPubkey)
-		case errors.Is(err, node.ErrRedeemInvalidProof):
-			s.rejectConnect(w, r, "cashu-connect", http.StatusUnauthorized, "invalid proofs", req.WGPubkey)
-		case errors.Is(err, node.ErrRedeemRateLimited):
-			s.rejectConnect(w, r, "cashu-connect", http.StatusTooManyRequests, "hub rate-limited — try later", req.WGPubkey)
-		case errors.Is(err, node.ErrRedeemCircuitOpen):
-			s.rejectConnect(w, r, "cashu-connect", http.StatusServiceUnavailable, "hub payment system temporarily down", req.WGPubkey)
-		default:
-			log.Printf("[cashu-connect] hub redeem error: %v", err)
-			s.rejectConnect(w, r, "cashu-connect", http.StatusBadGateway, "hub verification failed", req.WGPubkey)
+		if status, msg, ok := node.RedeemErrorResponse(err); ok {
+			s.rejectConnect(w, r, "cashu-connect", status, msg, req.WGPubkey)
+			return
 		}
+		log.Printf("[cashu-connect] hub redeem error: %v", err)
+		s.rejectConnect(w, r, "cashu-connect", http.StatusBadGateway, "hub verification failed", req.WGPubkey)
 		return
 	}
 
 	// Proofs verified and burned. Grant WireGuard access.
-	tunnelIP, status, err := s.grantPeer(req.WGPubkey, result.BytesAllowed)
+	connResult, status, err := s.GrantCashuPeer(req.WGPubkey, result.BytesAllowed)
 	if err != nil {
 		s.rejectConnect(w, r, "cashu-connect", status, err.Error(), req.WGPubkey)
 		return
 	}
 
 	log.Printf("[cashu-connect] peer %s connected (ip=%s, bytes=%d, sats=%d)",
-		shortKey(req.WGPubkey), tunnelIP, result.BytesAllowed, result.SatsRedeemed)
+		shortKey(req.WGPubkey), connResult.TunnelIP, result.BytesAllowed, result.SatsRedeemed)
 
 	writeJSON(w, http.StatusOK, ConnectResponse{
 		Status:       "connected",
-		TunnelIP:     tunnelIP + "/32",
-		NodeWGPubkey: s.wgPubkey,
-		BytesAllowed: result.BytesAllowed,
+		TunnelIP:     connResult.TunnelIP,
+		NodeWGPubkey: connResult.NodeWGPubkey,
+		BytesAllowed: connResult.BytesAllowed,
 		FirstSpend:   true,
 	})
 }

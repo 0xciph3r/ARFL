@@ -31,6 +31,14 @@ type CashuConnector struct {
 	httpClient *http.Client
 }
 
+// TokenDeliveryMode controls how proofs are delivered to nodes.
+type TokenDeliveryMode string
+
+const (
+	TokenDeliveryHTTP  TokenDeliveryMode = "http"
+	TokenDeliveryNIP44 TokenDeliveryMode = "nip44"
+)
+
 // NewCashuConnector creates a connector with sensible defaults.
 func NewCashuConnector() *CashuConnector {
 	return &CashuConnector{

@@ -194,14 +194,15 @@ tasks:
     summary: Generates Windows `.ico` and Mac `.icns` from an image; on macOS, `-iconcomposerinput appicon.icon -macassetdir darwin` also produces `Assets.car` from a `.icon` file (skipped on other platforms).
     run: once
     dir: build
-    sources:
-      - "appicon.png"
-    generates:
-      - "darwin/icons.icns"
+    # Both icons are committed: windows/icon.ico is the ARFL icon pack's,
+    # hand-tuned at 16-32 px, and darwin/icons.icns is generated from
+    # appicon.png. The generator always writes a Windows icon too, so it runs
+    # only when the macOS one is missing; delete it after changing appicon.png.
+    # The Windows output goes to bin/, which is ignored.
+    status:
+      - test -f darwin/icons.icns
     cmds:
-      # windows/icon.ico comes from the ARFL icon pack, which hand-tunes the
-      # 16-32 px sizes, so only the macOS icon is generated here.
-      - wails3 generate icons -input appicon.png -macfilename darwin/icons.icns
+      - wails3 generate icons -input appicon.png -macfilename darwin/icons.icns -windowsfilename ../bin/generated-icon.ico
 
   dev:frontend:
     summary: Runs the frontend in development mode

@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 
 	"github.com/Radi-Labs/ARFL/internal/nostr"
 	"github.com/elnosh/gonuts/cashu"
@@ -35,6 +36,8 @@ type TokenReceiver struct {
 	redeemer  proofRedeemer
 	pool      relayClient
 	onConnect ConnectCallback
+	cacheMu   sync.Mutex
+	replies   map[string]nostr.TokenReplyPayload
 }
 
 type relayClient interface {
@@ -54,6 +57,7 @@ func NewTokenReceiver(
 		redeemer:  redeemer,
 		pool:      pool,
 		onConnect: onConnect,
+		replies:   make(map[string]nostr.TokenReplyPayload),
 	}
 }
 
@@ -113,10 +117,15 @@ func (tr *TokenReceiver) handleEvent(ctx context.Context, event *nostr.Event) {
 		log.Printf("[token-receiver] payload missing request_id (sender=%s)", truncate(event.Pubkey))
 		return
 	}
+	requestKey := replyCacheKey(event.Pubkey, payload.RequestID)
+	if cached, ok := tr.cachedReply(requestKey); ok {
+		tr.sendReply(ctx, event.Pubkey, cached)
+		return
+	}
 	if len(payload.Proofs) == 0 || payload.WGPubkey == "" || (payload.Role != "entry" && payload.Role != "exit") {
 		log.Printf("[token-receiver] incomplete payload (proofs=%d, wg=%q, role=%q)",
 			len(payload.Proofs), payload.WGPubkey, payload.Role)
-		tr.sendReply(ctx, event.Pubkey, &nostr.TokenReplyPayload{
+		tr.sendReplyAndCache(ctx, event.Pubkey, requestKey, &nostr.TokenReplyPayload{
 			RequestID:  payload.RequestID,
 			OK:         false,
 			Error:      "invalid token payload",
@@ -135,7 +144,7 @@ func (tr *TokenReceiver) handleEvent(ctx context.Context, event *nostr.Event) {
 			msg = "hub verification failed"
 		}
 		log.Printf("[token-receiver] redeem failed: %v", err)
-		tr.sendReply(ctx, event.Pubkey, &nostr.TokenReplyPayload{
+		tr.sendReplyAndCache(ctx, event.Pubkey, requestKey, &nostr.TokenReplyPayload{
 			RequestID:  payload.RequestID,
 			OK:         false,
 			Error:      msg,
@@ -152,7 +161,7 @@ func (tr *TokenReceiver) handleEvent(ctx context.Context, event *nostr.Event) {
 			status = http.StatusInternalServerError
 		}
 		log.Printf("[token-receiver] connect callback failed (status=%d): %v", status, err)
-		tr.sendReply(ctx, event.Pubkey, &nostr.TokenReplyPayload{
+		tr.sendReplyAndCache(ctx, event.Pubkey, requestKey, &nostr.TokenReplyPayload{
 			RequestID:  payload.RequestID,
 			OK:         false,
 			Error:      err.Error(),
@@ -162,7 +171,7 @@ func (tr *TokenReceiver) handleEvent(ctx context.Context, event *nostr.Event) {
 		return
 	}
 
-	tr.sendReply(ctx, event.Pubkey, &nostr.TokenReplyPayload{
+	tr.sendReplyAndCache(ctx, event.Pubkey, requestKey, &nostr.TokenReplyPayload{
 		RequestID:    payload.RequestID,
 		OK:           true,
 		TunnelIP:     connectResult.TunnelIP,
@@ -172,6 +181,31 @@ func (tr *TokenReceiver) handleEvent(ctx context.Context, event *nostr.Event) {
 	})
 	log.Printf("[token-receiver] peer connected via Nostr (wg=%s, bytes=%d, role=%s, request=%s)",
 		truncate(payload.WGPubkey), result.BytesAllowed, payload.Role, payload.RequestID)
+}
+
+func replyCacheKey(senderPubkey, requestID string) string {
+	return senderPubkey + ":" + requestID
+}
+
+func (tr *TokenReceiver) cachedReply(key string) (*nostr.TokenReplyPayload, bool) {
+	tr.cacheMu.Lock()
+	defer tr.cacheMu.Unlock()
+	reply, ok := tr.replies[key]
+	if !ok {
+		return nil, false
+	}
+	copy := reply
+	return &copy, true
+}
+
+func (tr *TokenReceiver) sendReplyAndCache(ctx context.Context, recipientPubkey string, key string, reply *nostr.TokenReplyPayload) {
+	if reply == nil {
+		return
+	}
+	tr.cacheMu.Lock()
+	tr.replies[key] = *reply
+	tr.cacheMu.Unlock()
+	tr.sendReply(ctx, recipientPubkey, reply)
 }
 
 func (tr *TokenReceiver) sendReply(ctx context.Context, recipientPubkey string, reply *nostr.TokenReplyPayload) {

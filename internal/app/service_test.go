@@ -296,6 +296,17 @@ func (f *fakeTunnel) Up(_ context.Context, cfg app.TunnelConfig) error {
 	return nil
 }
 
+func (f *fakeTunnel) UpOuter(_ context.Context, cfg app.TunnelConfig) error {
+	// Default staged behavior for tests: record only final full config in Up().
+	// This keeps legacy assertions stable while allowing service-level checks
+	// that require staged-tunnel support in HTTP mode.
+	return nil
+}
+
+func (f *fakeTunnel) UpInner(ctx context.Context, cfg app.TunnelConfig) error {
+	return f.Up(ctx, cfg)
+}
+
 func (f *fakeTunnel) Down(context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -313,6 +324,31 @@ func (f *fakeTunnel) downs() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.downCall
+}
+
+// unstagedFakeTunnel intentionally does not implement app.StagedTunnel.
+type unstagedFakeTunnel struct {
+	base *fakeTunnel
+}
+
+func newUnstagedFakeTunnel() *unstagedFakeTunnel {
+	return &unstagedFakeTunnel{base: newFakeTunnel()}
+}
+
+func (u *unstagedFakeTunnel) Preflight() error {
+	return u.base.Preflight()
+}
+
+func (u *unstagedFakeTunnel) PublicKey() (string, error) {
+	return u.base.PublicKey()
+}
+
+func (u *unstagedFakeTunnel) Up(ctx context.Context, cfg app.TunnelConfig) error {
+	return u.base.Up(ctx, cfg)
+}
+
+func (u *unstagedFakeTunnel) Down(ctx context.Context) error {
+	return u.base.Down(ctx)
 }
 
 type stagedFakeTunnel struct {
@@ -876,6 +912,44 @@ func TestConnectInnerStageFailureCleansUpAndKeepsSpentBalance(t *testing.T) {
 	}
 	if balance != 64 {
 		t.Fatalf("balance=%d, want 64 (both hops were already spent)", balance)
+	}
+}
+
+func TestConnectHTTPRequiresStagedTunnelSupport(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	exit := hub.addNode(t, "exit-1", types.RoleExit)
+
+	tunnel := newUnstagedFakeTunnel()
+	svc := newService(t, tunnel)
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	before, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance before connect: %v", err)
+	}
+
+	_, err = svc.Connect(ctx, 32)
+	if err == nil {
+		t.Fatal("expected connect to fail without staged tunnel support in http mode")
+	}
+	if !strings.Contains(err.Error(), "requires staged tunnel support") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if entry.connectCount() != 0 || exit.connectCount() != 0 {
+		t.Fatalf("node connect should not run when staged support is missing: entry=%d exit=%d", entry.connectCount(), exit.connectCount())
+	}
+	after, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance after connect: %v", err)
+	}
+	if before != after {
+		t.Fatalf("balance changed despite fail-closed staged requirement: before=%d after=%d", before, after)
 	}
 }
 

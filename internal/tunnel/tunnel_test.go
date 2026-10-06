@@ -245,6 +245,75 @@ func TestUpOuterRejectsPinnedTargetOnEntryHost(t *testing.T) {
 	}
 }
 
+func TestResolveOuterRouteIPsIncludesAllResolvedAddresses(t *testing.T) {
+	origLookup := lookupHost
+	lookupHost = func(host string) ([]string, error) {
+		switch host {
+		case "entry.example":
+			return []string{"203.0.113.10", "203.0.113.11"}, nil
+		case "exit.example":
+			return []string{"198.51.100.20", "198.51.100.21"}, nil
+		case "provision.example":
+			return []string{"198.51.100.90", "198.51.100.91"}, nil
+		default:
+			return nil, errors.New("unexpected host lookup: " + host)
+		}
+	}
+	defer func() { lookupHost = origLookup }()
+
+	entryIPs, routeIPs, err := resolveOuterRouteIPs(
+		"entry.example:51820",
+		"exit.example:51821",
+		[]string{"provision.example:443"},
+	)
+	if err != nil {
+		t.Fatalf("resolveOuterRouteIPs: %v", err)
+	}
+
+	gotEntry := map[string]bool{}
+	for _, ip := range entryIPs {
+		gotEntry[ip] = true
+	}
+	for _, want := range []string{"203.0.113.10", "203.0.113.11"} {
+		if !gotEntry[want] {
+			t.Fatalf("entry routes missing %s from %v", want, entryIPs)
+		}
+	}
+
+	gotRoutes := map[string]bool{}
+	for _, ip := range routeIPs {
+		gotRoutes[ip] = true
+	}
+	for _, want := range []string{"198.51.100.20", "198.51.100.21", "198.51.100.90", "198.51.100.91"} {
+		if !gotRoutes[want] {
+			t.Fatalf("outer pinned routes missing %s from %v", want, routeIPs)
+		}
+	}
+}
+
+func TestResolveOuterRouteIPsRejectsEntryExitOverlapAcrossResolvedSets(t *testing.T) {
+	origLookup := lookupHost
+	lookupHost = func(host string) ([]string, error) {
+		switch host {
+		case "entry.example":
+			return []string{"203.0.113.10", "203.0.113.11"}, nil
+		case "exit.example":
+			return []string{"198.51.100.20", "203.0.113.10"}, nil
+		default:
+			return nil, errors.New("unexpected host lookup: " + host)
+		}
+	}
+	defer func() { lookupHost = origLookup }()
+
+	_, _, err := resolveOuterRouteIPs("entry.example:51820", "exit.example:51821", nil)
+	if err == nil {
+		t.Fatal("expected overlap across resolved host sets to fail")
+	}
+	if !strings.Contains(err.Error(), "both resolve to 203.0.113.10") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestUpInnerRequiresOuter(t *testing.T) {
 	tun := newReadyTunnel(t, newFakeWG(), newFakeNet())
 	if err := tun.UpInner(context.Background(), validConfig()); err == nil {

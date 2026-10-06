@@ -27,6 +27,33 @@ type TokenSender struct {
 	pool relayClient
 }
 
+// ProofSpendUncertainError reports a post-publish failure where proofs may
+// already have been redeemed by the node.
+//
+// Callers must treat these proofs as unsafe to re-use.
+type ProofSpendUncertainError struct {
+	Reason string
+	Cause  error
+}
+
+func (e *ProofSpendUncertainError) Error() string {
+	if e == nil {
+		return "proof spend uncertainty"
+	}
+	if e.Cause != nil && e.Reason != "" {
+		return fmt.Sprintf("%s: %v", e.Reason, e.Cause)
+	}
+	if e.Cause != nil {
+		return e.Cause.Error()
+	}
+	if e.Reason != "" {
+		return e.Reason
+	}
+	return "proof spend uncertainty"
+}
+
+func (e *ProofSpendUncertainError) Unwrap() error { return e.Cause }
+
 type relayClient interface {
 	Publish(ctx context.Context, event *nostr.Event) (int, error)
 	Subscribe(ctx context.Context, subID string, filters ...nostr.Filter) (<-chan *nostr.Event, error)
@@ -96,15 +123,19 @@ func (ts *TokenSender) SendToNodePair(
 	pair *NodePair,
 	entryProofs cashu.Proofs,
 	exitProofs cashu.Proofs,
-	clientWGPubkey string,
+	entryClientWGPubkey string,
+	exitClientWGPubkey string,
 ) error {
+	if entryClientWGPubkey == "" || exitClientWGPubkey == "" {
+		return fmt.Errorf("both entry and exit wg_pubkeys are required")
+	}
 	// Use a distinct sender keypair per hop so colluding nodes cannot link hops
 	// by sender identity.
 	entryKP, err := nostr.GenerateKeyPair()
 	if err != nil {
 		return fmt.Errorf("generate entry sender keypair: %w", err)
 	}
-	if err := ts.SendTokens(ctx, entryKP, pair.Entry.NostrPubkey, entryProofs, clientWGPubkey, "entry"); err != nil {
+	if err := ts.SendTokens(ctx, entryKP, pair.Entry.NostrPubkey, entryProofs, entryClientWGPubkey, "entry"); err != nil {
 		return fmt.Errorf("send to entry node: %w", err)
 	}
 
@@ -112,7 +143,7 @@ func (ts *TokenSender) SendToNodePair(
 	if err != nil {
 		return fmt.Errorf("generate exit sender keypair: %w", err)
 	}
-	if err := ts.SendTokens(ctx, exitKP, pair.Exit.NostrPubkey, exitProofs, clientWGPubkey, "exit"); err != nil {
+	if err := ts.SendTokens(ctx, exitKP, pair.Exit.NostrPubkey, exitProofs, exitClientWGPubkey, "exit"); err != nil {
 		return fmt.Errorf("send to exit node: %w", err)
 	}
 
@@ -170,20 +201,33 @@ func (ts *TokenSender) ConnectWithProofs(
 	if err != nil {
 		return nil, fmt.Errorf("seal token envelope: %w", err)
 	}
-	published, err := ts.pool.Publish(ctx, event)
+	published := false
+	accepted, err := ts.pool.Publish(ctx, event)
 	if err != nil {
 		return nil, fmt.Errorf("publish token envelope: %w", err)
 	}
-	if published == 0 {
+	if accepted == 0 {
 		return nil, fmt.Errorf("no relays accepted token envelope")
 	}
+	published = true
 
 	for {
 		select {
 		case <-ctx.Done():
+			if published {
+				return nil, &ProofSpendUncertainError{
+					Reason: "token envelope published; connect outcome unknown",
+					Cause:  ctx.Err(),
+				}
+			}
 			return nil, fmt.Errorf("wait for token reply: %w", ctx.Err())
 		case event, ok := <-replyCh:
 			if !ok {
+				if published {
+					return nil, &ProofSpendUncertainError{
+						Reason: "token envelope published; reply subscription closed before outcome",
+					}
+				}
 				return nil, fmt.Errorf("reply subscription closed")
 			}
 			if event == nil {
@@ -204,7 +248,9 @@ func (ts *TokenSender) ConnectWithProofs(
 				continue
 			}
 			if reply.Version != 1 {
-				return nil, fmt.Errorf("unsupported token reply version %d", reply.Version)
+				return nil, &ProofSpendUncertainError{
+					Reason: fmt.Sprintf("token envelope published; unsupported token reply version %d", reply.Version),
+				}
 			}
 			if !reply.OK {
 				if reply.StatusCode > 0 {
@@ -213,10 +259,14 @@ func (ts *TokenSender) ConnectWithProofs(
 						Message:    reply.Error,
 					}
 				}
-				return nil, fmt.Errorf("node rejected proofs: %s", reply.Error)
+				return nil, &ProofSpendUncertainError{
+					Reason: fmt.Sprintf("token envelope published; node rejected proofs without status: %s", reply.Error),
+				}
 			}
 			if reply.TunnelIP == "" || reply.NodeWGPubkey == "" {
-				return nil, fmt.Errorf("node reply missing tunnel_ip or node_wg_pubkey")
+				return nil, &ProofSpendUncertainError{
+					Reason: "token envelope published; node reply missing tunnel_ip or node_wg_pubkey",
+				}
 			}
 			return &ConnectResult{
 				TunnelIP:     reply.TunnelIP,
@@ -233,14 +283,15 @@ func (ts *TokenSender) ConnectPair(
 	pair *NodePair,
 	entryProofs cashu.Proofs,
 	exitProofs cashu.Proofs,
-	clientWGPubkey string,
+	entryClientWGPubkey string,
+	exitClientWGPubkey string,
 ) (entry *ConnectResult, exit *ConnectResult, err error) {
-	entry, err = ts.ConnectWithProofs(ctx, pair.Entry.NostrPubkey, entryProofs, clientWGPubkey, "entry")
+	entry, err = ts.ConnectWithProofs(ctx, pair.Entry.NostrPubkey, entryProofs, entryClientWGPubkey, "entry")
 	if err != nil {
 		return nil, nil, fmt.Errorf("entry node connect via Nostr: %w", err)
 	}
 
-	exit, err = ts.ConnectWithProofs(ctx, pair.Exit.NostrPubkey, exitProofs, clientWGPubkey, "exit")
+	exit, err = ts.ConnectWithProofs(ctx, pair.Exit.NostrPubkey, exitProofs, exitClientWGPubkey, "exit")
 	if err != nil {
 		return entry, nil, fmt.Errorf("exit node connect via Nostr (entry succeeded): %w", err)
 	}

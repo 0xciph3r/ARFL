@@ -40,6 +40,8 @@ const (
 	innerMTUOverhead = 80
 )
 
+var lookupHost = net.LookupHost
+
 // netConfigurator performs the privileged, OS-specific parts of bring-up.
 type netConfigurator interface {
 	// DefaultRoute reports the gateway and interface currently carrying
@@ -249,7 +251,11 @@ func (t *Tunnel) upOuterLocked(cfg app.TunnelConfig) error {
 		return err
 	}
 
-	entryIP, outerRouteIPs, err := resolveOuterRouteIPs(cfg.Entry.Endpoint, cfg.Exit.Endpoint, cfg.OuterPinnedEndpoints)
+	entryRouteIPs, outerRouteIPs, err := resolveOuterRouteIPs(cfg.Entry.Endpoint, cfg.Exit.Endpoint, cfg.OuterPinnedEndpoints)
+	if err != nil {
+		return err
+	}
+	cfg.Entry.Endpoint, err = endpointWithHost(cfg.Entry.Endpoint, entryRouteIPs[0])
 	if err != nil {
 		return err
 	}
@@ -262,7 +268,7 @@ func (t *Tunnel) upOuterLocked(cfg app.TunnelConfig) error {
 	}
 
 	state := &activeState{}
-	if err := t.bringUpOuter(cfg, entryIP, outerRouteIPs, gateway, iface, state); err != nil {
+	if err := t.bringUpOuter(cfg, entryRouteIPs, outerRouteIPs, gateway, iface, state); err != nil {
 		// Roll back so a failed attempt does not strand the machine with a
 		// half-configured routing table and no internet.
 		t.teardown(state)
@@ -285,7 +291,13 @@ func (t *Tunnel) upInnerLocked(cfg app.TunnelConfig) error {
 		t.active = nil
 		return err
 	}
-	_, _, err := resolveEndpoints(cfg.Entry.Endpoint, cfg.Exit.Endpoint)
+	_, exitIP, err := resolveEndpoints(cfg.Entry.Endpoint, cfg.Exit.Endpoint)
+	if err != nil {
+		t.teardown(t.active)
+		t.active = nil
+		return err
+	}
+	cfg.Exit.Endpoint, err = endpointWithHost(cfg.Exit.Endpoint, exitIP)
 	if err != nil {
 		t.teardown(t.active)
 		t.active = nil
@@ -314,18 +326,11 @@ func (t *Tunnel) upInnerLocked(cfg app.TunnelConfig) error {
 // An operator with two addresses can still run both hops; that is a
 // discovery and reputation problem, not one the client can settle here.
 func resolveEndpoints(entryEndpoint, exitEndpoint string) (entryIP, exitIP string, err error) {
-	entryIP, err = hostOf(entryEndpoint)
+	entryIPs, exitIPs, err := resolveEndpointIPs(entryEndpoint, exitEndpoint)
 	if err != nil {
-		return "", "", fmt.Errorf("entry endpoint: %w", err)
+		return "", "", err
 	}
-	exitIP, err = hostOf(exitEndpoint)
-	if err != nil {
-		return "", "", fmt.Errorf("exit endpoint: %w", err)
-	}
-	if entryIP == exitIP {
-		return "", "", fmt.Errorf("entry and exit both resolve to %s: a single host would see the client and the destination, defeating the two-hop guarantee", entryIP)
-	}
-	return entryIP, exitIP, nil
+	return entryIPs[0], exitIPs[0], nil
 }
 
 // resolveOuterRouteIPs returns all destination IPs that must stay pinned to
@@ -334,26 +339,20 @@ func resolveEndpoints(entryEndpoint, exitEndpoint string) (entryIP, exitIP strin
 // cfg.Exit.Endpoint is always included. Additional control-plane endpoints
 // (for example, exit connect URLs that resolve elsewhere) can be added through
 // cfg.OuterPinnedEndpoints so they do not bypass the outer hop.
-func resolveOuterRouteIPs(entryEndpoint, exitEndpoint string, pinned []string) (entryIP string, routeIPs []string, err error) {
-	entryIP, exitIP, err := resolveEndpoints(entryEndpoint, exitEndpoint)
+func resolveOuterRouteIPs(entryEndpoint, exitEndpoint string, pinned []string) (entryRouteIPs []string, routeIPs []string, err error) {
+	entryIPs, exitIPs, err := resolveEndpointIPs(entryEndpoint, exitEndpoint)
 	if err != nil {
-		return "", nil, err
+		return nil, nil, err
 	}
-	seen := map[string]struct{}{exitIP: {}}
-	routeIPs = append(routeIPs, exitIP)
+	entryRouteIPs = append(entryRouteIPs, entryIPs...)
+	entrySet := make(map[string]struct{}, len(entryRouteIPs))
+	for _, ip := range entryRouteIPs {
+		entrySet[ip] = struct{}{}
+	}
 
-	for _, endpoint := range pinned {
-		endpoint = strings.TrimSpace(endpoint)
-		if endpoint == "" {
-			continue
-		}
-		ip, err := hostOf(endpoint)
-		if err != nil {
-			return "", nil, fmt.Errorf("outer pinned endpoint: %w", err)
-		}
-		if ip == entryIP {
-			return "", nil, fmt.Errorf("outer pinned endpoint %q resolves to the entry node host %s", endpoint, entryIP)
-		}
+	seen := make(map[string]struct{}, len(exitIPs))
+	routeIPs = make([]string, 0, len(exitIPs))
+	for _, ip := range exitIPs {
 		if _, ok := seen[ip]; ok {
 			continue
 		}
@@ -361,12 +360,33 @@ func resolveOuterRouteIPs(entryEndpoint, exitEndpoint string, pinned []string) (
 		routeIPs = append(routeIPs, ip)
 	}
 
-	return entryIP, routeIPs, nil
+	for _, endpoint := range pinned {
+		endpoint = strings.TrimSpace(endpoint)
+		if endpoint == "" {
+			continue
+		}
+		ips, err := hostsOf(endpoint)
+		if err != nil {
+			return nil, nil, fmt.Errorf("outer pinned endpoint: %w", err)
+		}
+		for _, ip := range ips {
+			if _, ok := entrySet[ip]; ok {
+				return nil, nil, fmt.Errorf("outer pinned endpoint %q resolves to the entry node host %s", endpoint, ip)
+			}
+			if _, ok := seen[ip]; ok {
+				continue
+			}
+			seen[ip] = struct{}{}
+			routeIPs = append(routeIPs, ip)
+		}
+	}
+
+	return entryRouteIPs, routeIPs, nil
 }
 
 func (t *Tunnel) bringUpOuter(
 	cfg app.TunnelConfig,
-	entryIP string,
+	entryRouteIPs []string,
 	routeIPs []string,
 	gateway, iface string,
 	state *activeState,
@@ -400,8 +420,10 @@ func (t *Tunnel) bringUpOuter(
 
 	// Pin the entry node to the real gateway. Without this the default route
 	// below would send the tunnel's own packets into the tunnel.
-	if err := t.addRoute(route{cidr: entryIP + "/32", gateway: gateway, iface: iface}, state); err != nil {
-		return err
+	for _, ip := range entryRouteIPs {
+		if err := t.addRoute(route{cidr: ip + "/32", gateway: gateway, iface: iface}, state); err != nil {
+			return err
+		}
 	}
 	// Routes must name the interface the OS actually created, which is not the
 	// logical name on macOS.
@@ -413,6 +435,35 @@ func (t *Tunnel) bringUpOuter(
 	}
 
 	return nil
+}
+
+func endpointWithHost(endpoint, host string) (string, error) {
+	_, port, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("parse endpoint %q: %w", endpoint, err)
+	}
+	return net.JoinHostPort(host, port), nil
+}
+
+func resolveEndpointIPs(entryEndpoint, exitEndpoint string) (entryIPs, exitIPs []string, err error) {
+	entryIPs, err = hostsOf(entryEndpoint)
+	if err != nil {
+		return nil, nil, fmt.Errorf("entry endpoint: %w", err)
+	}
+	exitIPs, err = hostsOf(exitEndpoint)
+	if err != nil {
+		return nil, nil, fmt.Errorf("exit endpoint: %w", err)
+	}
+	exitSet := make(map[string]struct{}, len(exitIPs))
+	for _, ip := range exitIPs {
+		exitSet[ip] = struct{}{}
+	}
+	for _, ip := range entryIPs {
+		if _, ok := exitSet[ip]; ok {
+			return nil, nil, fmt.Errorf("entry and exit both resolve to %s: a single host would see the client and the destination, defeating the two-hop guarantee", ip)
+		}
+	}
+	return entryIPs, exitIPs, nil
 }
 
 func (t *Tunnel) bringUpInner(cfg app.TunnelConfig, state *activeState) error {
@@ -644,36 +695,54 @@ func validateTunnelIP(hop, value string) error {
 // user's LAN, and the pinning route added for it would redirect local traffic
 // or point the tunnel at a machine on the victim's own network.
 func hostOf(endpoint string) (string, error) {
+	ips, err := hostsOf(endpoint)
+	if err != nil {
+		return "", err
+	}
+	return ips[0], nil
+}
+
+func hostsOf(endpoint string) ([]string, error) {
 	host, port, err := net.SplitHostPort(endpoint)
 	if err != nil {
-		return "", fmt.Errorf("parse endpoint %q: %w", endpoint, err)
+		return nil, fmt.Errorf("parse endpoint %q: %w", endpoint, err)
 	}
 	if port == "" {
-		return "", fmt.Errorf("endpoint %q has no port", endpoint)
+		return nil, fmt.Errorf("endpoint %q has no port", endpoint)
 	}
 
 	if ip := net.ParseIP(host); ip != nil {
 		if err := checkRoutable(ip); err != nil {
-			return "", fmt.Errorf("endpoint %q: %w", endpoint, err)
+			return nil, fmt.Errorf("endpoint %q: %w", endpoint, err)
 		}
-		return ip.String(), nil
+		return []string{ip.String()}, nil
 	}
 
-	addrs, err := net.LookupHost(host)
+	addrs, err := lookupHost(host)
 	if err != nil {
-		return "", fmt.Errorf("resolve %q: %w", host, err)
+		return nil, fmt.Errorf("resolve %q: %w", host, err)
 	}
+	out := make([]string, 0, len(addrs))
+	seen := make(map[string]struct{}, len(addrs))
 	for _, addr := range addrs {
 		ip := net.ParseIP(addr)
 		if ip == nil || ip.To4() == nil {
 			continue
 		}
 		if err := checkRoutable(ip); err != nil {
-			return "", fmt.Errorf("endpoint %q resolved to %s: %w", endpoint, ip, err)
+			return nil, fmt.Errorf("endpoint %q resolved to %s: %w", endpoint, ip, err)
 		}
-		return ip.String(), nil
+		canonical := ip.String()
+		if _, ok := seen[canonical]; ok {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		out = append(out, canonical)
 	}
-	return "", fmt.Errorf("no usable IPv4 address for %q", host)
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no usable IPv4 address for %q", host)
+	}
+	return out, nil
 }
 
 // checkRoutable rejects addresses a node endpoint must never resolve to.

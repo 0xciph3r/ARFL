@@ -355,6 +355,44 @@ func TestPairNodesWithPolicy_PrioritizesHighestPreferredTransportBucket(t *testi
 	}
 }
 
+func TestPairNodesWithPolicyForDelivery_AllowsNIP44NodesWithoutConnectURL(t *testing.T) {
+	nodes := []types.NodeInfo{
+		{
+			NostrPubkey: "entry",
+			Role:        types.RoleEntry,
+			Endpoint:    "203.0.113.90:51820",
+			Transports: []types.TransportCapability{
+				{Transport: types.TransportWireGuard, Endpoint: "203.0.113.90:51820"},
+			},
+		},
+		{
+			NostrPubkey: "exit",
+			Role:        types.RoleExit,
+			Endpoint:    "203.0.113.91:51820",
+			Transports: []types.TransportCapability{
+				{Transport: types.TransportWireGuard, Endpoint: "203.0.113.91:51820"},
+			},
+		},
+	}
+	allowed := map[types.Transport]struct{}{types.TransportWireGuard: {}}
+
+	pair, err := PairNodesWithPolicyForDelivery(nodes, []types.Transport{types.TransportWireGuard}, allowed, TokenDeliveryNIP44)
+	if err != nil {
+		t.Fatalf("PairNodesWithPolicyForDelivery(nip44): %v", err)
+	}
+	if pair.Transport != types.TransportWireGuard {
+		t.Fatalf("transport = %q, want wireguard", pair.Transport)
+	}
+	if pair.Entry.ConnectURL != "" || pair.Exit.ConnectURL != "" {
+		t.Fatalf("connect URLs should remain empty for NIP-44-only nodes: entry=%q exit=%q", pair.Entry.ConnectURL, pair.Exit.ConnectURL)
+	}
+
+	_, err = PairNodesWithPolicyForDelivery(nodes, []types.Transport{types.TransportWireGuard}, allowed, TokenDeliveryHTTP)
+	if err != ErrNoCompatiblePair {
+		t.Fatalf("PairNodesWithPolicyForDelivery(http) error = %v, want ErrNoCompatiblePair", err)
+	}
+}
+
 // --- CashuConnector tests ---
 
 func TestCashuConnector_HappyPath(t *testing.T) {

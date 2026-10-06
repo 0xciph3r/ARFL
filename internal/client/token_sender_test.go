@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -240,5 +241,42 @@ func TestTokenSenderConnectWithProofs_MapsNodeRejection(t *testing.T) {
 	case <-callbackCalled:
 		t.Fatal("connect callback should not run when redeem fails")
 	default:
+	}
+}
+
+func TestTokenSenderConnectWithProofs_PostPublishTimeoutIsSpendUncertain(t *testing.T) {
+	relay := newMemoryRelay()
+	nodeKP, err := nostr.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("node keypair: %v", err)
+	}
+
+	// Simulate a relay that accepted the request envelope for the node but no
+	// node reply ever arrives.
+	subCtx, cancelSub := context.WithCancel(context.Background())
+	defer cancelSub()
+	_, err = relay.Subscribe(subCtx, "dummy-node-sub", nostr.Filter{
+		Kinds: []int{nostr.TokenEnvelopeKind},
+		Tags: map[string][]string{
+			"p": {nodeKP.PubkeyHex()},
+		},
+	})
+	if err != nil {
+		t.Fatalf("subscribe dummy node: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	sender := NewTokenSender(relay)
+	_, err = sender.ConnectWithProofs(ctx, nodeKP.PubkeyHex(), cashu.Proofs{
+		{Amount: 1, Id: "k", Secret: "s", C: "02abc"},
+	}, "client-wg-pubkey==", "entry")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	var uncertain *ProofSpendUncertainError
+	if !errors.As(err, &uncertain) {
+		t.Fatalf("error type=%T, want *ProofSpendUncertainError (%v)", err, err)
 	}
 }

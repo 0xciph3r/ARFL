@@ -164,6 +164,27 @@ func PairNodesWithPreferred(nodes []types.NodeInfo, preferred []types.Transport)
 // PairNodesWithPolicy selects a random entry/exit pair from nodes with a common transport,
 // honoring preferred order and allowlist.
 func PairNodesWithPolicy(nodes []types.NodeInfo, preferred []types.Transport, allowed map[types.Transport]struct{}) (*NodePair, error) {
+	return pairNodesWithPolicy(nodes, preferred, allowed, true)
+}
+
+// PairNodesWithPolicyForDelivery applies node-pairing policy while honoring
+// token-delivery requirements for connect URL availability.
+func PairNodesWithPolicyForDelivery(
+	nodes []types.NodeInfo,
+	preferred []types.Transport,
+	allowed map[types.Transport]struct{},
+	delivery TokenDeliveryMode,
+) (*NodePair, error) {
+	requireConnectURL := delivery != TokenDeliveryNIP44
+	return pairNodesWithPolicy(nodes, preferred, allowed, requireConnectURL)
+}
+
+func pairNodesWithPolicy(
+	nodes []types.NodeInfo,
+	preferred []types.Transport,
+	allowed map[types.Transport]struct{},
+	requireConnectURL bool,
+) (*NodePair, error) {
 	var entryNodes, exitNodes []types.NodeInfo
 
 	for _, n := range nodes {
@@ -191,7 +212,7 @@ func PairNodesWithPolicy(nodes []types.NodeInfo, preferred []types.Transport, al
 				continue
 			}
 		}
-		candidates := collectCandidatesForTransport(entryNodes, exitNodes, transport)
+		candidates := collectCandidatesForTransport(entryNodes, exitNodes, transport, requireConnectURL)
 		if len(candidates) == 0 {
 			continue
 		}
@@ -258,11 +279,18 @@ func capabilities(node types.NodeInfo) []types.TransportCapability {
 }
 
 func projectNodeForTransport(node types.NodeInfo, transport types.Transport) (types.NodeInfo, bool) {
+	return projectNodeForTransportWithConnectURL(node, transport, true)
+}
+
+func projectNodeForTransportWithConnectURL(node types.NodeInfo, transport types.Transport, requireConnectURL bool) (types.NodeInfo, bool) {
 	if transport == "" {
 		return types.NodeInfo{}, false
 	}
 	if len(node.Transports) == 0 {
 		if transport != types.TransportWireGuard || node.Endpoint == "" {
+			return types.NodeInfo{}, false
+		}
+		if requireConnectURL && node.ConnectURL == "" {
 			return types.NodeInfo{}, false
 		}
 		return node, true
@@ -272,7 +300,10 @@ func projectNodeForTransport(node types.NodeInfo, transport types.Transport) (ty
 		if cap.Transport != transport {
 			continue
 		}
-		if cap.Endpoint == "" || cap.ConnectURL == "" {
+		if cap.Endpoint == "" {
+			return types.NodeInfo{}, false
+		}
+		if requireConnectURL && cap.ConnectURL == "" {
 			return types.NodeInfo{}, false
 		}
 		projected := node
@@ -283,10 +314,10 @@ func projectNodeForTransport(node types.NodeInfo, transport types.Transport) (ty
 	return types.NodeInfo{}, false
 }
 
-func collectCandidatesForTransport(entryNodes, exitNodes []types.NodeInfo, transport types.Transport) []pairCandidate {
+func collectCandidatesForTransport(entryNodes, exitNodes []types.NodeInfo, transport types.Transport, requireConnectURL bool) []pairCandidate {
 	candidates := make([]pairCandidate, 0)
 	for _, entry := range entryNodes {
-		entryProjected, ok := projectNodeForTransport(entry, transport)
+		entryProjected, ok := projectNodeForTransportWithConnectURL(entry, transport, requireConnectURL)
 		if !ok {
 			continue
 		}
@@ -296,7 +327,7 @@ func collectCandidatesForTransport(entryNodes, exitNodes []types.NodeInfo, trans
 			if exit.NostrPubkey == entry.NostrPubkey {
 				continue
 			}
-			if _, ok := projectNodeForTransport(exit, transport); ok {
+			if _, ok := projectNodeForTransportWithConnectURL(exit, transport, requireConnectURL); ok {
 				compatibleDistinct = true
 				break
 			}
@@ -306,7 +337,7 @@ func collectCandidatesForTransport(entryNodes, exitNodes []types.NodeInfo, trans
 			if compatibleDistinct && exit.NostrPubkey == entry.NostrPubkey {
 				continue
 			}
-			exitProjected, ok := projectNodeForTransport(exit, transport)
+			exitProjected, ok := projectNodeForTransportWithConnectURL(exit, transport, requireConnectURL)
 			if !ok {
 				continue
 			}

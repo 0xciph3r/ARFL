@@ -426,7 +426,7 @@ func (s *Service) SelectPair(ctx context.Context) (*client.NodePair, error) {
 	if err != nil {
 		return nil, err
 	}
-	return client.PairNodesWithPolicy(nodes, s.preferred, s.allowed)
+	return client.PairNodesWithPolicyForDelivery(nodes, s.preferred, s.allowed, s.delivery)
 }
 
 // State reports the current connection state.
@@ -504,6 +504,10 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 	if s.delivery == client.TokenDeliveryNIP44 && (pair.Entry.NostrPubkey == "" || pair.Exit.NostrPubkey == "") {
 		return nil, fmt.Errorf("selected pair missing nostr pubkey for NIP-44 delivery")
 	}
+	staged, stagedOK := s.tunnel.(StagedTunnel)
+	if s.delivery == client.TokenDeliveryHTTP && !stagedOK {
+		return nil, fmt.Errorf("token delivery mode %q requires staged tunnel support to avoid exit-side IP exposure", s.delivery)
+	}
 	exitProvisionEndpoint := pair.Exit.Endpoint
 	if s.delivery == client.TokenDeliveryHTTP {
 		exitProvisionEndpoint, err = provisionRouteEndpoint(pair.Exit.Endpoint, pair.Exit.ConnectURL)
@@ -567,7 +571,7 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 
 	entryRes, err := s.connectNode(ctx, tokenSender, pair.Entry.ConnectURL, pair.Entry.NostrPubkey, entryProofs, entryClientKey, "entry")
 	if err != nil {
-		entrySpent := isBurnedNodeRejection(err)
+		entrySpent := shouldTreatProofsAsSpent(err)
 		if rerr := s.refundUnspentProofs(w, entryProofs, exitProofs, entrySpent, false); rerr != nil {
 			return nil, fmt.Errorf("%w (unspent proofs could not be returned to the store: %v)", err, rerr)
 		}
@@ -595,7 +599,6 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 
 	// Route exit provisioning through the established outer hop when supported
 	// and when proofs are delivered via direct HTTP.
-	staged, stagedOK := s.tunnel.(StagedTunnel)
 	stageExitProvision := stagedOK && s.delivery == client.TokenDeliveryHTTP
 	outerUp := false
 	if stageExitProvision {
@@ -618,7 +621,7 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 				err = fmt.Errorf("%w (cleanup after failed exit connect: %v)", err, derr)
 			}
 		}
-		exitSpent := isBurnedNodeRejection(err)
+		exitSpent := shouldTreatProofsAsSpent(err)
 		if rerr := s.refundUnspentProofs(w, entryProofs, exitProofs, true, exitSpent); rerr != nil {
 			return nil, fmt.Errorf("%w (unspent proofs could not be returned to the store: %v)", err, rerr)
 		}
@@ -911,9 +914,13 @@ func (s *Service) refundUnspentProofs(
 	return w.Release(unspent)
 }
 
-func isBurnedNodeRejection(err error) bool {
+func shouldTreatProofsAsSpent(err error) bool {
 	var rejected *client.NodeRejectedError
-	return errors.As(err, &rejected) && rejected.ProofsBurned()
+	if errors.As(err, &rejected) && rejected.ProofsBurned() {
+		return true
+	}
+	var uncertain *client.ProofSpendUncertainError
+	return errors.As(err, &uncertain)
 }
 
 func provisionRouteEndpoint(exitEndpoint, exitConnectURL string) (string, error) {

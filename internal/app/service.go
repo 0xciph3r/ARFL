@@ -34,6 +34,8 @@ var (
 	ErrNotConnected         = errors.New("not connected")
 	ErrAmountTooSmall       = errors.New("amount must be greater than zero")
 	ErrTransportUnsupported = errors.New("selected transport is not supported by this runtime")
+	ErrPinnedNodeOffline    = errors.New("a node you picked is not online at this hub")
+	ErrPinnedSameOperator   = errors.New("entry and exit must belong to different operators")
 )
 
 // State is the connection state machine exposed to the UI.
@@ -212,6 +214,16 @@ type Service struct {
 
 	state   State
 	session *Session
+
+	// pinned replaces the random pair with one the user chose. It is cleared
+	// on every hub switch, since node IDs only mean something at one hub.
+	pinned *PinnedPair
+}
+
+// PinnedPair names the entry and exit nodes a user chose by ID.
+type PinnedPair struct {
+	EntryID string `json:"entry_id"`
+	ExitID  string `json:"exit_id"`
 }
 
 // New opens the proof store and returns a service with no hub connected.
@@ -320,6 +332,7 @@ func (s *Service) ConnectHub(ctx context.Context, hubURL string) (*HubStatus, er
 	}
 	s.wallet = w
 	s.selector = selector
+	s.pinned = nil
 	s.hubInfo = info
 	s.mu.Unlock()
 
@@ -426,7 +439,83 @@ func (s *Service) SelectPair(ctx context.Context) (*client.NodePair, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	pinned := s.pinned
+	s.mu.Unlock()
+	if pinned != nil {
+		if nodes, err = restrictToPinned(nodes, *pinned); err != nil {
+			return nil, err
+		}
+	}
 	return client.PairNodesWithPolicyForDelivery(nodes, s.preferred, s.allowed, s.delivery)
+}
+
+// restrictToPinned narrows the node list to the user's chosen entry and exit,
+// each reduced to that one role, so the pair still passes the same transport,
+// delivery and endpoint checks as a random one.
+func restrictToPinned(nodes []types.NodeInfo, pin PinnedPair) ([]types.NodeInfo, error) {
+	var entry, exit *types.NodeInfo
+	for i := range nodes {
+		n := &nodes[i]
+		if n.ID == pin.EntryID && (n.Role == types.RoleEntry || n.Role == types.RoleBoth) {
+			entry = n
+		}
+		if n.ID == pin.ExitID && (n.Role == types.RoleExit || n.Role == types.RoleBoth) {
+			exit = &nodes[i]
+		}
+	}
+	if entry == nil || exit == nil {
+		return nil, ErrPinnedNodeOffline
+	}
+	if entry.NostrPubkey == exit.NostrPubkey {
+		return nil, ErrPinnedSameOperator
+	}
+	e, x := *entry, *exit
+	e.Role = types.RoleEntry
+	x.Role = types.RoleExit
+	return []types.NodeInfo{e, x}, nil
+}
+
+// SetPinnedPair makes every later connect use these two nodes. Pass nil to go
+// back to a random pair.
+func (s *Service) SetPinnedPair(pin *PinnedPair) error {
+	if pin != nil && (pin.EntryID == "" || pin.ExitID == "") {
+		return fmt.Errorf("both an entry and an exit node are required")
+	}
+	if pin != nil && pin.EntryID == pin.ExitID {
+		return ErrPinnedSameOperator
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if pin == nil {
+		s.pinned = nil
+		return nil
+	}
+	cp := *pin
+	s.pinned = &cp
+	return nil
+}
+
+// Snapshot returns every held proof keyed by hub URL, for backups.
+func (s *Service) Snapshot() map[string]cashu.Proofs {
+	return s.store.Snapshot()
+}
+
+// ImportProofs adds restored proofs for a hub to the local vault.
+func (s *Service) ImportProofs(hubURL string, proofs cashu.Proofs) error {
+	return s.store.Add(hubURL, proofs)
+}
+
+// PinnedPair returns the user's chosen pair, or nil when pairing is random.
+func (s *Service) PinnedPair() *PinnedPair {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pinned == nil {
+		return nil
+	}
+	cp := *s.pinned
+	return &cp
 }
 
 // State reports the current connection state.

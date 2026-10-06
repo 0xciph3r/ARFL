@@ -55,6 +55,12 @@ type netConfigurator interface {
 	SetDNS(resolver string) error
 	// RestoreDNS puts the previous resolver back.
 	RestoreDNS() error
+	// DisableIPv6 turns IPv6 off on the physical adapters, recording what it
+	// changed. The tunnel carries IPv4 only, so IPv6 would otherwise leave the
+	// machine directly.
+	DisableIPv6() error
+	// RestoreIPv6 puts back exactly what DisableIPv6 changed.
+	RestoreIPv6() error
 }
 
 // WireGuard is the subset of wg.Manager the tunnel needs. Narrowing it keeps
@@ -70,6 +76,7 @@ type WireGuard interface {
 	// than through the manager, so they must be given the real name or they
 	// reference an interface that does not exist.
 	InterfaceName(logical string) string
+	GetPeerStats(iface string) ([]wg.PeerStats, error)
 	Close() error
 }
 
@@ -90,11 +97,12 @@ type Tunnel struct {
 
 // activeState is the set of changes made to the system for one session.
 type activeState struct {
-	routes     []route
-	dnsChanged bool
-	interfaces []string
-	outerReady bool
-	innerReady bool
+	routes      []route
+	dnsChanged  bool
+	ipv6Changed bool
+	interfaces  []string
+	outerReady  bool
+	innerReady  bool
 }
 
 type route struct {
@@ -543,6 +551,11 @@ func (t *Tunnel) teardown(state *activeState) error {
 	if state.dnsChanged {
 		if err := t.net.RestoreDNS(); err != nil {
 			problems = append(problems, fmt.Errorf("restore DNS: %w", err))
+		}
+	}
+	if state.ipv6Changed {
+		if err := t.net.RestoreIPv6(); err != nil {
+			problems = append(problems, fmt.Errorf("restore IPv6: %w", err))
 		}
 	}
 

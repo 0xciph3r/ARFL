@@ -1,0 +1,67 @@
+package app
+
+import (
+	"errors"
+	"testing"
+
+	"github.com/Radi-Labs/ARFL/pkg/types"
+)
+
+func pinNodes() []types.NodeInfo {
+	return []types.NodeInfo{
+		{ID: "a", NostrPubkey: "op1", Role: types.RoleBoth},
+		{ID: "b", NostrPubkey: "op2", Role: types.RoleExit},
+		{ID: "c", NostrPubkey: "op1", Role: types.RoleExit},
+		{ID: "d", NostrPubkey: "op3", Role: types.RoleEntry},
+	}
+}
+
+func TestRestrictToPinnedKeepsOnlyTheChosenPairInTheirRoles(t *testing.T) {
+	got, err := restrictToPinned(pinNodes(), PinnedPair{EntryID: "a", ExitID: "b"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "a" || got[0].Role != types.RoleEntry || got[1].ID != "b" || got[1].Role != types.RoleExit {
+		t.Fatalf("got %+v, want entry a then exit b", got)
+	}
+}
+
+func TestRestrictToPinnedRejectsWrongRoleOrOfflineNode(t *testing.T) {
+	cases := []PinnedPair{
+		{EntryID: "b", ExitID: "d"}, // b cannot enter, d cannot exit
+		{EntryID: "a", ExitID: "gone"},
+	}
+	for _, pin := range cases {
+		if _, err := restrictToPinned(pinNodes(), pin); !errors.Is(err, ErrPinnedNodeOffline) {
+			t.Errorf("pin %+v: got %v, want ErrPinnedNodeOffline", pin, err)
+		}
+	}
+}
+
+// One operator holding both ends sees the client and the destination, which
+// is what the second hop exists to prevent.
+func TestRestrictToPinnedRejectsSameOperator(t *testing.T) {
+	if _, err := restrictToPinned(pinNodes(), PinnedPair{EntryID: "a", ExitID: "c"}); !errors.Is(err, ErrPinnedSameOperator) {
+		t.Fatalf("got %v, want ErrPinnedSameOperator", err)
+	}
+}
+
+func TestSetPinnedPairValidatesAndClears(t *testing.T) {
+	s := &Service{}
+	if err := s.SetPinnedPair(&PinnedPair{EntryID: "a"}); err == nil {
+		t.Fatal("expected an error for a pin without an exit")
+	}
+	if err := s.SetPinnedPair(&PinnedPair{EntryID: "a", ExitID: "a"}); !errors.Is(err, ErrPinnedSameOperator) {
+		t.Fatalf("got %v, want ErrPinnedSameOperator", err)
+	}
+	if err := s.SetPinnedPair(&PinnedPair{EntryID: "a", ExitID: "b"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p := s.PinnedPair(); p == nil || p.ExitID != "b" {
+		t.Fatalf("pin not stored: %+v", p)
+	}
+	_ = s.SetPinnedPair(nil)
+	if s.PinnedPair() != nil {
+		t.Fatal("pin not cleared")
+	}
+}

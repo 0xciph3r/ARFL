@@ -14,6 +14,9 @@ import (
 // changed is recorded so teardown can put each one back.
 type darwinConfigurator struct {
 	dnsBackup map[string][]string
+	// ipv6Off lists the services whose IPv6 was Automatic before the tunnel
+	// turned it off; only those are switched back.
+	ipv6Off []string
 }
 
 func newNetConfigurator() (netConfigurator, error) {
@@ -160,4 +163,36 @@ func currentDNS(service string) ([]string, error) {
 		}
 	}
 	return servers, nil
+}
+
+func (c *darwinConfigurator) DisableIPv6() error {
+	services, err := networkServices()
+	if err != nil {
+		return err
+	}
+	for _, service := range services {
+		info, err := output("networksetup", "-getinfo", service)
+		if err != nil || !strings.Contains(info, "IPv6: Automatic") {
+			continue
+		}
+		if err := run("networksetup", "-setv6off", service); err != nil {
+			return fmt.Errorf("turn off IPv6 on %q: %w", service, err)
+		}
+		c.ipv6Off = append(c.ipv6Off, service)
+	}
+	return nil
+}
+
+func (c *darwinConfigurator) RestoreIPv6() error {
+	var problems []string
+	for _, service := range c.ipv6Off {
+		if err := run("networksetup", "-setv6automatic", service); err != nil {
+			problems = append(problems, fmt.Sprintf("%s: %v", service, err))
+		}
+	}
+	c.ipv6Off = nil
+	if len(problems) > 0 {
+		return fmt.Errorf("restore IPv6: %s", strings.Join(problems, "; "))
+	}
+	return nil
 }

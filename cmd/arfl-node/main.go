@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -150,12 +151,14 @@ func main() {
 	}
 
 	// Wire Cashu-gated /cashu-connect if hub_url and nostr_privkey are configured.
+	var cashuRedeemer *node.HubRedeemer
 	if cfg.HubURL != "" && cfg.NostrPrivkey != "" {
 		nodeKPForCashu, err := nostr.KeyPairFromPrivHex(cfg.NostrPrivkey)
 		if err != nil {
 			log.Fatalf("parse nostr key for cashu gate: %v", err)
 		}
 		redeemer := node.NewHubRedeemer(cfg.HubURL, nodeKPForCashu.PubkeyHex())
+		cashuRedeemer = redeemer
 		subnet := deriveTunnelSubnet(cfg.TunnelIP)
 		adminServer.EnableCashuGate(redeemer, wgPubKeyB64, subnet)
 	} else {
@@ -238,6 +241,24 @@ func main() {
 				announcer.SetHubURL(cfg.HubURL)
 			}
 			go announcer.Run(ctx)
+
+			if cashuRedeemer != nil {
+				receiver := node.NewTokenReceiver(
+					nodeKP,
+					cashuRedeemer,
+					pool,
+					func(wgPubkey string, bytesAllowed int64) (*node.CashuConnectResult, int, error) {
+						return adminServer.GrantCashuPeer(wgPubkey, bytesAllowed)
+					},
+				)
+				go func() {
+					if err := receiver.Listen(ctx); err != nil && !errors.Is(err, context.Canceled) {
+						log.Printf("[node] token receiver stopped: %v", err)
+					}
+				}()
+				log.Printf("[node] NIP-44 token receiver enabled on %d relay(s)", len(cfg.Relays))
+			}
+
 			defer pool.Close()
 			log.Printf("[node] announcing to %d relay(s)", len(cfg.Relays))
 		}

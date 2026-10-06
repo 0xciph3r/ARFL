@@ -21,12 +21,30 @@ import (
 // 20000-29999 range = ephemeral events (NIP-16), not persisted by relays.
 const TokenEnvelopeKind = 21000
 
+// TokenReplyEnvelopeKind is the Nostr event kind for encrypted connect replies.
+// Nodes use it to return tunnel parameters or an explicit rejection reason.
+const TokenReplyEnvelopeKind = 21001
+
 // TokenPayload is the plaintext content encrypted inside the envelope.
 type TokenPayload struct {
-	Proofs   cashu.Proofs `json:"proofs"`
-	WGPubkey string       `json:"wg_pubkey"` // Client's WireGuard public key
-	Role     string       `json:"role"`      // "entry" or "exit"
-	Version  int          `json:"version"`   // Protocol version (1)
+	Proofs    cashu.Proofs `json:"proofs"`
+	WGPubkey  string       `json:"wg_pubkey"`  // Client's WireGuard public key
+	Role      string       `json:"role"`       // "entry" or "exit"
+	RequestID string       `json:"request_id"` // Client-generated correlation ID
+	Version   int          `json:"version"`    // Protocol version (1)
+}
+
+// TokenReplyPayload is the encrypted reply a node sends to the request sender.
+// It mirrors the /cashu-connect response shape for parity between transports.
+type TokenReplyPayload struct {
+	RequestID    string `json:"request_id"`
+	OK           bool   `json:"ok"`
+	Error        string `json:"error,omitempty"`
+	StatusCode   int    `json:"status_code,omitempty"`
+	TunnelIP     string `json:"tunnel_ip,omitempty"`
+	NodeWGPubkey string `json:"node_wg_pubkey,omitempty"`
+	BytesAllowed int64  `json:"bytes_allowed,omitempty"`
+	Version      int    `json:"version"` // Protocol version (1)
 }
 
 // SealTokenEnvelope encrypts a TokenPayload for a specific node and
@@ -39,10 +57,29 @@ func SealTokenEnvelope(
 	recipientPubkeyHex string,
 	payload *TokenPayload,
 ) (*Event, error) {
+	return sealEnvelope(senderKP, recipientPubkeyHex, TokenEnvelopeKind, payload)
+}
+
+// SealTokenReplyEnvelope encrypts a TokenReplyPayload for the original sender
+// and wraps it in a signed Nostr event.
+func SealTokenReplyEnvelope(
+	senderKP *KeyPair,
+	recipientPubkeyHex string,
+	payload *TokenReplyPayload,
+) (*Event, error) {
+	return sealEnvelope(senderKP, recipientPubkeyHex, TokenReplyEnvelopeKind, payload)
+}
+
+func sealEnvelope(
+	senderKP *KeyPair,
+	recipientPubkeyHex string,
+	kind int,
+	payload any,
+) (*Event, error) {
 	// Serialize payload.
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("marshal token payload: %w", err)
+		return nil, fmt.Errorf("marshal token envelope payload: %w", err)
 	}
 
 	// Parse recipient pubkey for ECDH.
@@ -66,7 +103,7 @@ func SealTokenEnvelope(
 	event := &Event{
 		Pubkey:    senderKP.PubkeyHex(),
 		CreatedAt: time.Now().Unix(),
-		Kind:      TokenEnvelopeKind,
+		Kind:      kind,
 		Tags: Tags{
 			Tag{"p", recipientPubkeyHex}, // Recipient node
 		},
@@ -83,33 +120,48 @@ func SealTokenEnvelope(
 // OpenTokenEnvelope decrypts and parses a token envelope event.
 // recipientKP is the node's keypair (has the private key for decryption).
 func OpenTokenEnvelope(event *Event, recipientKP *KeyPair) (*TokenPayload, error) {
-	if event.Kind != TokenEnvelopeKind {
-		return nil, fmt.Errorf("unexpected event kind %d (want %d)", event.Kind, TokenEnvelopeKind)
+	var payload TokenPayload
+	if err := openEnvelope(event, recipientKP, TokenEnvelopeKind, &payload); err != nil {
+		return nil, err
+	}
+	return &payload, nil
+}
+
+// OpenTokenReplyEnvelope decrypts and parses a token-reply envelope event.
+func OpenTokenReplyEnvelope(event *Event, recipientKP *KeyPair) (*TokenReplyPayload, error) {
+	var payload TokenReplyPayload
+	if err := openEnvelope(event, recipientKP, TokenReplyEnvelopeKind, &payload); err != nil {
+		return nil, err
+	}
+	return &payload, nil
+}
+
+func openEnvelope(event *Event, recipientKP *KeyPair, expectedKind int, target any) error {
+	if event.Kind != expectedKind {
+		return fmt.Errorf("unexpected event kind %d (want %d)", event.Kind, expectedKind)
 	}
 
 	// Parse sender pubkey for ECDH.
 	senderPub, err := PubkeyFromHex(event.Pubkey)
 	if err != nil {
-		return nil, fmt.Errorf("parse sender pubkey: %w", err)
+		return fmt.Errorf("parse sender pubkey: %w", err)
 	}
 
 	// Compute conversation key and decrypt.
 	convKey, err := GetConversationKey(recipientKP.PrivateKey, senderPub)
 	if err != nil {
-		return nil, fmt.Errorf("conversation key: %w", err)
+		return fmt.Errorf("conversation key: %w", err)
 	}
 
 	decrypted, err := Decrypt(event.Content, convKey)
 	if err != nil {
-		return nil, fmt.Errorf("nip44 decrypt: %w", err)
+		return fmt.Errorf("nip44 decrypt: %w", err)
 	}
 
-	var payload TokenPayload
-	if err := json.Unmarshal([]byte(decrypted), &payload); err != nil {
-		return nil, fmt.Errorf("unmarshal token payload: %w", err)
+	if err := json.Unmarshal([]byte(decrypted), target); err != nil {
+		return fmt.Errorf("unmarshal token payload: %w", err)
 	}
-
-	return &payload, nil
+	return nil
 }
 
 // PubkeyFromHex parses a 32-byte hex-encoded x-only public key (BIP-340).

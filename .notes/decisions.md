@@ -2317,3 +2317,86 @@ path regression here would silently alter negotiation behavior at unlock time.
 **Why:** This makes desktop unlock policy behavior deterministic and safe during rapid transport migration.
 
 **Defend it as:** "Transport policy loading is now verified behavior, not best-effort parsing."
+
+---
+
+### Decision 109: Stage WireGuard bring-up so exit provisioning rides the outer hop
+
+**Context:** In HTTP token-delivery mode, the client previously called the exit node's
+`/cashu-connect` endpoint before any tunnel existed, exposing the client source IP to the exit.
+
+**Decision:** Added staged tunnel bring-up:
+
+- `UpOuter` creates only the outer hop and pins the exit endpoint route through it.
+- Exit `/cashu-connect` is called only after `UpOuter` succeeds.
+- `UpInner` completes inner hop + default routes + DNS.
+- On stage failures, the tunnel is torn down and only truly unspent proofs are refunded.
+
+**Why:** This preserves current HTTP control-plane semantics while ensuring the exit sees the
+entry-side source rather than the client origin.
+
+**Defend it as:** "If we use HTTP provisioning, we still enforce that exit provisioning traffic
+is sourced from inside the outer hop."
+
+---
+
+### Decision 110: Wire NIP-44 token delivery as request/reply with explicit client mode
+
+**Context:** We had NIP-44 envelope primitives but no wired node reply path, so clients could not
+receive `tunnel_ip`, `node_wg_pubkey`, or rejection status over Nostr.
+
+**Decision:** Implemented end-to-end NIP-44 request/reply flow:
+
+- Added encrypted token-reply events (`kind 21001`) carrying connect success/error payloads.
+- Node token receiver now verifies event signatures, redeems proofs, provisions peers, and replies
+  to the sender pubkey with correlated `request_id`.
+- Desktop client policy adds `token_delivery` (`http` or `nip44`) and relay URLs in `client.json`.
+- Sender now uses a distinct ephemeral Nostr key per hop to reduce cross-hop linkability.
+
+**Why:** This gives a practical no-direct-node-HTTP delivery path without introducing new trust in
+the hub or relay operators.
+
+**Defend it as:** "NIP-44 is now a complete transport, not just a one-way envelope."
+
+---
+
+### Decision 111: Use per-hop WireGuard client keys and reset them after failed connects
+
+**Context:** A single client WireGuard key reused across entry and exit lets colluding operators
+link both hops by key identity, even when payment proofs are unlinkable.
+
+**Decision:** Tunnel now supports per-hop keys through `PrepareHopKeys`:
+
+- A fresh keypair is generated for each hop on every connect attempt.
+- Entry receives `entryClientKey`; exit receives `exitClientKey`.
+- Outer and inner interfaces use matching private keys for their respective hop.
+- Failed connects trigger `ResetHopKeys` so retries cannot reuse prior identifiers.
+- Existing callers that still use `PublicKey` keep working (legacy fallback), but service
+  connect flow always prefers per-hop key provisioning.
+
+**Why:** This closes the key-reuse correlation channel between entry and exit while keeping the
+current tunnel API migration-safe.
+
+**Defend it as:** "Proof unlinkability is not enough if the transport identity is reused.
+Per-hop ephemeral keys remove that linkage at the WireGuard layer."
+
+---
+
+### Decision 112: Add optional relay-index discovery mode to reduce hub timing mediation
+
+**Context:** Even with client-side pairing, fetching `/nodes` from the hub before each connect
+provides a convenient timing anchor a compromised hub can correlate against redemption events.
+
+**Decision:** Added explicit discovery-source policy:
+
+- `discovery_source: "hub"` (default): current behavior via hub `/nodes`.
+- `discovery_source: "nostr"`: client subscribes directly to relays, verifies announcements
+  against `hub_pubkeys`, builds the online node list locally, then pairs hops client-side.
+- Desktop config parsing now validates and passes `discovery_source` + `hub_pubkeys` to app service.
+- `nostr` discovery mode requires configured relay URLs and trusted hub pubkeys.
+
+**Why:** This removes hub node-list mediation when operators opt in, reducing one timing
+correlation signal without changing settlement ownership or trust assumptions.
+
+**Defend it as:** "The hub can still observe redemption timing, but it no longer controls or
+directly serves the node-list lookup path when relay discovery mode is enabled."

@@ -33,6 +33,13 @@ type CashuRedeemResult struct {
 	SatsRedeemed uint64 `json:"sats_redeemed"`
 }
 
+// CashuConnectResult is returned to clients when proofs are accepted.
+type CashuConnectResult struct {
+	TunnelIP     string `json:"tunnel_ip"`
+	NodeWGPubkey string `json:"node_wg_pubkey"`
+	BytesAllowed int64  `json:"bytes_allowed"`
+}
+
 // HubRedeemer calls the hub's /v1/redeem endpoint.
 type HubRedeemer struct {
 	hubURL     string
@@ -118,5 +125,21 @@ func (hr *HubRedeemer) Redeem(ctx context.Context, proofs cashu.Proofs) (*CashuR
 
 	default:
 		return nil, fmt.Errorf("%w: status %d: %s", ErrRedeemHubDown, resp.StatusCode, respBody)
+	}
+}
+
+// RedeemErrorResponse maps a hub-redeem failure to the node API surface.
+func RedeemErrorResponse(err error) (status int, message string, ok bool) {
+	switch {
+	case errors.Is(err, ErrRedeemAlreadySpent):
+		return http.StatusConflict, "proofs already spent", true
+	case errors.Is(err, ErrRedeemInvalidProof):
+		return http.StatusUnauthorized, "invalid proofs", true
+	case errors.Is(err, ErrRedeemRateLimited):
+		return http.StatusTooManyRequests, "hub rate-limited — try later", true
+	case errors.Is(err, ErrRedeemCircuitOpen):
+		return http.StatusServiceUnavailable, "hub payment system temporarily down", true
+	default:
+		return 0, "", false
 	}
 }

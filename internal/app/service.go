@@ -11,13 +11,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/client"
+	"github.com/Radi-Labs/ARFL/internal/discovery"
+	"github.com/Radi-Labs/ARFL/internal/nostr"
 	"github.com/Radi-Labs/ARFL/internal/wallet"
+	"github.com/Radi-Labs/ARFL/pkg/protocol"
 	"github.com/Radi-Labs/ARFL/pkg/types"
 	"github.com/elnosh/gonuts/cashu"
 )
@@ -39,6 +44,9 @@ const (
 	StateConnecting    State = "connecting"
 	StateConnected     State = "connected"
 	StateDisconnecting State = "disconnecting"
+
+	DiscoverySourceHub   = "hub"
+	DiscoverySourceNostr = "nostr"
 )
 
 // Tunnel brings a two-hop WireGuard tunnel up and down.
@@ -71,12 +79,38 @@ type EndpointValidator interface {
 	ValidateEndpoints(entryEndpoint, exitEndpoint string) error
 }
 
+// StagedTunnel can bring up the outer and inner hops separately.
+//
+// Service uses this to connect the exit node only after the outer hop exists,
+// so the exit /cashu-connect request is sourced from inside the tunnel.
+type StagedTunnel interface {
+	UpOuter(ctx context.Context, cfg TunnelConfig) error
+	UpInner(ctx context.Context, cfg TunnelConfig) error
+}
+
+// HopKeyProvider supplies distinct client WireGuard keys for each hop.
+//
+// The service calls PrepareHopKeys once per connect attempt and ResetHopKeys
+// on failed attempts so retries do not reuse identifiers.
+type HopKeyProvider interface {
+	PrepareHopKeys() (entryPub, exitPub string, err error)
+	ResetHopKeys()
+}
+
 // TunnelConfig is everything a Tunnel needs to establish both hops.
 type TunnelConfig struct {
-	Entry     HopConfig       `json:"entry"`
-	Exit      HopConfig       `json:"exit"`
-	ClientKey string          `json:"client_key"`
-	Transport types.Transport `json:"transport,omitempty"`
+	Entry          HopConfig `json:"entry"`
+	Exit           HopConfig `json:"exit"`
+	ClientKey      string    `json:"client_key"`
+	EntryClientKey string    `json:"entry_client_key,omitempty"`
+	ExitClientKey  string    `json:"exit_client_key,omitempty"`
+	// OuterPinnedEndpoints are additional host:port endpoints that must be
+	// pinned through the outer tunnel during staged setup.
+	//
+	// This keeps HTTP provisioning endpoints and the real exit WireGuard
+	// endpoint both routed through the entry hop when they differ by host.
+	OuterPinnedEndpoints []string        `json:"outer_pinned_endpoints,omitempty"`
+	Transport            types.Transport `json:"transport,omitempty"`
 }
 
 // HopConfig describes one leg of the two-hop tunnel.
@@ -134,6 +168,21 @@ type Config struct {
 	// AllowedTransports restricts transports eligible for pair selection.
 	// Empty defaults to all known transports.
 	AllowedTransports []types.Transport
+	// NostrRelays is used when TokenDelivery is "nip44".
+	NostrRelays []string
+	// TokenDelivery selects how proofs are delivered to nodes.
+	// Empty defaults to "http".
+	TokenDelivery client.TokenDeliveryMode
+	// DiscoverySource controls where the client builds its node index from.
+	// "hub" uses GET /nodes. "nostr" subscribes to relay announcements.
+	// Empty defaults to "hub".
+	DiscoverySource string
+	// TrustedHubPubkeys is required for discovery_source=nostr so attestations
+	// can be verified client-side.
+	TrustedHubPubkeys []string
+	// DiscoveryWindow bounds relay sampling time for each node-list fetch.
+	// Zero defaults to 2 seconds.
+	DiscoveryWindow time.Duration
 }
 
 // Service is the headless ARFL client.
@@ -150,6 +199,11 @@ type Service struct {
 	pollInterval time.Duration
 	preferred    []types.Transport
 	allowed      map[types.Transport]struct{}
+	nostrRelays  []string
+	delivery     client.TokenDeliveryMode
+	discoverySrc string
+	trustedHubs  []string
+	discoveryTTL time.Duration
 
 	// Hub-scoped state, replaced wholesale by ConnectHub.
 	wallet   *wallet.Wallet
@@ -185,6 +239,38 @@ func New(cfg Config) (*Service, error) {
 		interval = 2 * time.Second
 	}
 
+	delivery := cfg.TokenDelivery
+	if delivery == "" {
+		delivery = client.TokenDeliveryHTTP
+	}
+	if delivery != client.TokenDeliveryHTTP && delivery != client.TokenDeliveryNIP44 {
+		return nil, fmt.Errorf("unsupported token delivery mode %q", delivery)
+	}
+	nostrRelays := sanitizeRelays(cfg.NostrRelays)
+	if delivery == client.TokenDeliveryNIP44 && len(nostrRelays) == 0 {
+		return nil, fmt.Errorf("token delivery mode %q requires at least one relay URL", delivery)
+	}
+	discoverySrc := strings.ToLower(strings.TrimSpace(cfg.DiscoverySource))
+	if discoverySrc == "" {
+		discoverySrc = DiscoverySourceHub
+	}
+	if discoverySrc != DiscoverySourceHub && discoverySrc != DiscoverySourceNostr {
+		return nil, fmt.Errorf("unsupported discovery source %q", cfg.DiscoverySource)
+	}
+	trustedHubs := sanitizeHubPubkeys(cfg.TrustedHubPubkeys)
+	if discoverySrc == DiscoverySourceNostr {
+		if len(nostrRelays) == 0 {
+			return nil, fmt.Errorf("discovery source %q requires at least one relay URL", discoverySrc)
+		}
+		if len(trustedHubs) == 0 {
+			return nil, fmt.Errorf("discovery source %q requires at least one trusted hub pubkey", discoverySrc)
+		}
+	}
+	discoveryTTL := cfg.DiscoveryWindow
+	if discoveryTTL <= 0 {
+		discoveryTTL = 2 * time.Second
+	}
+
 	return &Service{
 		store:        store,
 		tunnel:       cfg.Tunnel,
@@ -192,6 +278,11 @@ func New(cfg Config) (*Service, error) {
 		pollInterval: interval,
 		preferred:    sanitizePreferredTransports(cfg.PreferredTransports),
 		allowed:      sanitizeAllowedTransports(cfg.AllowedTransports),
+		nostrRelays:  nostrRelays,
+		delivery:     delivery,
+		discoverySrc: discoverySrc,
+		trustedHubs:  trustedHubs,
+		discoveryTTL: discoveryTTL,
 		state:        StateDisconnected,
 	}, nil
 }
@@ -245,9 +336,8 @@ func (s *Service) ConnectHub(ctx context.Context, hubURL string) (*HubStatus, er
 		Balance:  balance,
 	}
 
-	// Node count is informational — a hub that cannot serve the list is still
-	// usable for minting, so a failure here must not block connecting.
-	if nodes, err := selector.FetchNodes(ctx); err == nil {
+	// Node count is informational — minting still works if discovery is down.
+	if nodes, err := s.fetchNodes(ctx); err == nil {
 		status.NodeCount = len(nodes)
 	}
 
@@ -320,11 +410,7 @@ func (s *Service) AwaitPurchase(ctx context.Context, quoteID string) (uint64, er
 
 // ListNodes returns the online nodes the hub knows about.
 func (s *Service) ListNodes(ctx context.Context) ([]types.NodeInfo, error) {
-	sel, err := s.currentSelector()
-	if err != nil {
-		return nil, err
-	}
-	return sel.FetchNodes(ctx)
+	return s.fetchNodes(ctx)
 }
 
 // SelectPair picks an entry/exit pair client-side. The hub never learns the
@@ -336,11 +422,11 @@ func (s *Service) SelectPair(ctx context.Context) (*client.NodePair, error) {
 	if len(s.allowed) == 0 {
 		return nil, fmt.Errorf("%w (transport policy: allowed transports contain no supported transport)", client.ErrNoCompatiblePair)
 	}
-	sel, err := s.currentSelector()
+	nodes, err := s.fetchNodes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return sel.SelectPair(ctx)
+	return client.PairNodesWithPolicyForDelivery(nodes, s.preferred, s.allowed, s.delivery)
 }
 
 // State reports the current connection state.
@@ -412,14 +498,35 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 	if pair.Entry.Endpoint == "" || pair.Exit.Endpoint == "" {
 		return nil, fmt.Errorf("selected pair missing endpoint for transport %s", pair.Transport)
 	}
-	if pair.Entry.ConnectURL == "" || pair.Exit.ConnectURL == "" {
+	if s.delivery == client.TokenDeliveryHTTP && (pair.Entry.ConnectURL == "" || pair.Exit.ConnectURL == "") {
 		return nil, fmt.Errorf("selected pair missing connect URL for transport %s", pair.Transport)
 	}
+	if s.delivery == client.TokenDeliveryNIP44 && (pair.Entry.NostrPubkey == "" || pair.Exit.NostrPubkey == "") {
+		return nil, fmt.Errorf("selected pair missing nostr pubkey for NIP-44 delivery")
+	}
+	staged, stagedOK := s.tunnel.(StagedTunnel)
+	if s.delivery == client.TokenDeliveryHTTP && !stagedOK {
+		return nil, fmt.Errorf("token delivery mode %q requires staged tunnel support to avoid exit-side IP exposure", s.delivery)
+	}
+	exitProvisionEndpoint := pair.Exit.Endpoint
+	if s.delivery == client.TokenDeliveryHTTP {
+		exitProvisionEndpoint, err = provisionRouteEndpoint(pair.Exit.Endpoint, pair.Exit.ConnectURL)
+		if err != nil {
+			return nil, fmt.Errorf("selected pair has invalid exit connect URL for staged provisioning: %w", err)
+		}
+	}
 
-	clientKey, err := s.clientPublicKey()
+	entryClientKey, exitClientKey, resetHopKeys, err := s.prepareConnectKeys()
 	if err != nil {
 		return nil, err
 	}
+	connectSucceeded := false
+	defer func() {
+		if connectSucceeded || resetHopKeys == nil {
+			return
+		}
+		resetHopKeys()
+	}()
 
 	// Check the tunnel can actually be established before spending anything.
 	// Everything below this line costs the user money that cannot be recovered
@@ -448,34 +555,34 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 		return nil, fmt.Errorf("reserve exit payment: %w", err)
 	}
 
-	entryRes, exitRes, err := s.connector.ConnectPair(ctx, pair, entryProofs, exitProofs, clientKey)
+	var tokenSender *client.TokenSender
+	var relayPool *nostr.RelayPool
+	if s.delivery == client.TokenDeliveryNIP44 {
+		relayPool = nostr.NewRelayPool(s.nostrRelays)
+		if err := relayPool.Connect(ctx); err != nil {
+			if rerr := w.Release(append(append(cashu.Proofs{}, entryProofs...), exitProofs...)); rerr != nil {
+				return nil, fmt.Errorf("connect to relays for token delivery: %w (reserved proofs could not be returned to the store: %v)", err, rerr)
+			}
+			return nil, fmt.Errorf("connect to relays for token delivery: %w", err)
+		}
+		defer relayPool.Close()
+		tokenSender = client.NewTokenSender(relayPool)
+	}
+
+	entryRes, err := s.connectNode(ctx, tokenSender, pair.Entry.ConnectURL, pair.Entry.NostrPubkey, entryProofs, entryClientKey, "entry")
 	if err != nil {
-		// Only refund what was never handed over. If a node accepted its
-		// proofs they are already burned at the hub, and returning them to the
-		// store would show a balance the user cannot actually spend.
-		//
-		// A 409 means the failing hop's proofs were burned even though that node
-		// gave no tunnel. Refunding them would re-poison the wallet, so they are
-		// dropped. The failing hop is the entry when it returned no result,
-		// otherwise the exit.
-		var rejected *client.NodeRejectedError
-		burned := errors.As(err, &rejected) && rejected.ProofsBurned()
-		var unspent cashu.Proofs
-		if entryRes == nil && !burned {
-			unspent = append(unspent, entryProofs...)
-		}
-		if exitRes == nil && !(burned && entryRes != nil) {
-			unspent = append(unspent, exitProofs...)
-		}
-		if rerr := w.Release(unspent); rerr != nil {
+		entrySpent := shouldTreatProofsAsSpent(err)
+		if rerr := s.refundUnspentProofs(w, entryProofs, exitProofs, entrySpent, false); rerr != nil {
 			return nil, fmt.Errorf("%w (unspent proofs could not be returned to the store: %v)", err, rerr)
 		}
 		return nil, err
 	}
 
 	cfg := TunnelConfig{
-		ClientKey: clientKey,
-		Transport: pair.Transport,
+		ClientKey:      entryClientKey,
+		EntryClientKey: entryClientKey,
+		ExitClientKey:  exitClientKey,
+		Transport:      pair.Transport,
 		Entry: HopConfig{
 			NodeID:       pair.Entry.ID,
 			Endpoint:     pair.Entry.Endpoint,
@@ -486,14 +593,58 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 		Exit: HopConfig{
 			NodeID:       pair.Exit.ID,
 			Endpoint:     pair.Exit.Endpoint,
-			NodeWGPubkey: exitRes.NodeWGPubkey,
-			TunnelIP:     exitRes.TunnelIP,
-			BytesAllowed: exitRes.BytesAllowed,
+			NodeWGPubkey: pair.Exit.WGPubkey,
 		},
 	}
-	if err := s.tunnel.Up(ctx, cfg); err != nil {
+
+	// Route exit provisioning through the established outer hop when supported
+	// and when proofs are delivered via direct HTTP.
+	stageExitProvision := stagedOK && s.delivery == client.TokenDeliveryHTTP
+	outerUp := false
+	if stageExitProvision {
+		outerCfg := cfg
+		outerCfg.Exit.Endpoint = exitProvisionEndpoint
+		outerCfg.OuterPinnedEndpoints = []string{pair.Exit.Endpoint}
+		if err := staged.UpOuter(ctx, outerCfg); err != nil {
+			if rerr := s.refundUnspentProofs(w, entryProofs, exitProofs, true, false); rerr != nil {
+				return nil, fmt.Errorf("bring outer tunnel up: %w (exit proofs could not be returned to the store: %v)", err, rerr)
+			}
+			return nil, fmt.Errorf("bring outer tunnel up: %w", err)
+		}
+		outerUp = true
+	}
+
+	exitRes, err := s.connectNode(ctx, tokenSender, pair.Exit.ConnectURL, pair.Exit.NostrPubkey, exitProofs, exitClientKey, "exit")
+	if err != nil {
+		if outerUp {
+			if derr := s.tunnel.Down(ctx); derr != nil {
+				err = fmt.Errorf("%w (cleanup after failed exit connect: %v)", err, derr)
+			}
+		}
+		exitSpent := shouldTreatProofsAsSpent(err)
+		if rerr := s.refundUnspentProofs(w, entryProofs, exitProofs, true, exitSpent); rerr != nil {
+			return nil, fmt.Errorf("%w (unspent proofs could not be returned to the store: %v)", err, rerr)
+		}
+		return nil, err
+	}
+
+	cfg.Exit.NodeWGPubkey = exitRes.NodeWGPubkey
+	cfg.Exit.TunnelIP = exitRes.TunnelIP
+	cfg.Exit.BytesAllowed = exitRes.BytesAllowed
+
+	if stageExitProvision {
+		if err := staged.UpInner(ctx, cfg); err != nil {
+			downErr := s.tunnel.Down(ctx)
+			if downErr != nil {
+				return nil, fmt.Errorf("bring inner tunnel up: %w (cleanup failed: %v)", err, downErr)
+			}
+			return nil, fmt.Errorf("bring inner tunnel up: %w", err)
+		}
+	} else if err := s.tunnel.Up(ctx, cfg); err != nil {
 		return nil, fmt.Errorf("bring tunnel up: %w", err)
 	}
+
+	connectSucceeded = true
 
 	return &Session{
 		State:     StateConnected,
@@ -559,18 +710,30 @@ func (s *Service) setState(st State) {
 	s.mu.Unlock()
 }
 
-func (s *Service) clientPublicKey() (string, error) {
+func (s *Service) prepareConnectKeys() (entryKey string, exitKey string, reset func(), err error) {
 	if s.tunnel == nil {
-		return "", fmt.Errorf("no tunnel configured: cannot supply a WireGuard public key")
+		return "", "", nil, fmt.Errorf("no tunnel configured: cannot supply a WireGuard public key")
 	}
+
+	if provider, ok := s.tunnel.(HopKeyProvider); ok {
+		entryKey, exitKey, err = provider.PrepareHopKeys()
+		if err != nil {
+			return "", "", nil, fmt.Errorf("prepare per-hop WireGuard keys: %w", err)
+		}
+		if entryKey == "" || exitKey == "" {
+			return "", "", nil, fmt.Errorf("prepare per-hop WireGuard keys: tunnel returned an empty key")
+		}
+		return entryKey, exitKey, provider.ResetHopKeys, nil
+	}
+
 	key, err := s.tunnel.PublicKey()
 	if err != nil {
-		return "", fmt.Errorf("read WireGuard public key: %w", err)
+		return "", "", nil, fmt.Errorf("read WireGuard public key: %w", err)
 	}
 	if key == "" {
-		return "", fmt.Errorf("tunnel returned an empty WireGuard public key")
+		return "", "", nil, fmt.Errorf("tunnel returned an empty WireGuard public key")
 	}
-	return key, nil
+	return key, key, nil, nil
 }
 
 func (s *Service) currentWallet() (*wallet.Wallet, error) {
@@ -589,6 +752,231 @@ func (s *Service) currentSelector() (*client.NodeSelector, error) {
 		return nil, ErrNoHub
 	}
 	return s.selector, nil
+}
+
+func (s *Service) fetchNodes(ctx context.Context) ([]types.NodeInfo, error) {
+	switch s.discoverySource() {
+	case DiscoverySourceNostr:
+		return s.fetchNodesFromRelays(ctx)
+	default:
+		sel, err := s.currentSelector()
+		if err != nil {
+			return nil, err
+		}
+		return sel.FetchNodes(ctx)
+	}
+}
+
+func (s *Service) fetchNodesFromRelays(ctx context.Context) ([]types.NodeInfo, error) {
+	relays, hubs, window, err := s.relayDiscoveryConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	pool := nostr.NewRelayPool(relays)
+	if err := pool.Connect(ctx); err != nil {
+		return nil, fmt.Errorf("%w: connect to relays: %v", client.ErrFetchFailed, err)
+	}
+	defer pool.Close()
+
+	index := discovery.NewNodeIndex(hubs)
+	since := time.Now().Add(-discovery.OnlineTTL).Unix()
+	subID := fmt.Sprintf("arfl-client-index-%d", time.Now().UnixNano())
+	events, err := pool.Subscribe(ctx, subID, nostr.Filter{
+		Kinds: []int{protocol.NostrKindNodeAnnouncement},
+		Since: &since,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: subscribe to relays: %v", client.ErrFetchFailed, err)
+	}
+
+	timer := time.NewTimer(window)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			nodes := indexedToNodeInfos(index.ListOnline())
+			if len(nodes) > 0 {
+				return nodes, nil
+			}
+			return nil, fmt.Errorf("%w: %v", client.ErrFetchFailed, ctx.Err())
+		case ev, ok := <-events:
+			if !ok {
+				nodes := indexedToNodeInfos(index.ListOnline())
+				if len(nodes) == 0 {
+					return nil, fmt.Errorf("%w: relay subscription closed before any node announcements", client.ErrFetchFailed)
+				}
+				return nodes, nil
+			}
+			if ev == nil {
+				continue
+			}
+			_ = index.ProcessEvent(ev)
+		case <-timer.C:
+			nodes := indexedToNodeInfos(index.ListOnline())
+			if len(nodes) == 0 {
+				return nil, fmt.Errorf("%w: no online nodes received from relays within %s", client.ErrFetchFailed, window)
+			}
+			return nodes, nil
+		}
+	}
+}
+
+func indexedToNodeInfos(in []*discovery.IndexedNode) []types.NodeInfo {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]types.NodeInfo, 0, len(in))
+	for _, node := range in {
+		if node == nil {
+			continue
+		}
+		out = append(out, node.Info)
+	}
+	return out
+}
+
+func (s *Service) discoverySource() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.discoverySrc
+}
+
+func (s *Service) relayDiscoveryConfig() ([]string, []string, time.Duration, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.wallet == nil {
+		return nil, nil, 0, ErrNoHub
+	}
+	if len(s.nostrRelays) == 0 {
+		return nil, nil, 0, fmt.Errorf("no relays configured for nostr discovery")
+	}
+	if len(s.trustedHubs) == 0 {
+		return nil, nil, 0, fmt.Errorf("no trusted hub pubkeys configured for nostr discovery")
+	}
+	return append([]string(nil), s.nostrRelays...), append([]string(nil), s.trustedHubs...), s.discoveryTTL, nil
+}
+
+func (s *Service) connectNode(
+	ctx context.Context,
+	tokenSender *client.TokenSender,
+	connectURL string,
+	nodePubkey string,
+	proofs cashu.Proofs,
+	clientWGPubkey string,
+	role string,
+) (*client.ConnectResult, error) {
+	switch s.delivery {
+	case client.TokenDeliveryHTTP:
+		if connectURL == "" {
+			return nil, fmt.Errorf("%s node missing connect URL for HTTP token delivery", role)
+		}
+		res, err := s.connector.ConnectWithProofs(ctx, connectURL, proofs, clientWGPubkey)
+		if err != nil {
+			return nil, fmt.Errorf("%s node connect: %w", role, err)
+		}
+		return res, nil
+	case client.TokenDeliveryNIP44:
+		if tokenSender == nil {
+			return nil, fmt.Errorf("%s node connect: NIP-44 sender is not configured", role)
+		}
+		if nodePubkey == "" {
+			return nil, fmt.Errorf("%s node missing nostr pubkey for NIP-44 delivery", role)
+		}
+		res, err := tokenSender.ConnectWithProofs(ctx, nodePubkey, proofs, clientWGPubkey, role)
+		if err != nil {
+			return nil, fmt.Errorf("%s node connect via NIP-44: %w", role, err)
+		}
+		return res, nil
+	default:
+		return nil, fmt.Errorf("unsupported token delivery mode %q", s.delivery)
+	}
+}
+
+func (s *Service) refundUnspentProofs(
+	w *wallet.Wallet,
+	entryProofs cashu.Proofs,
+	exitProofs cashu.Proofs,
+	entrySpent bool,
+	exitSpent bool,
+) error {
+	var unspent cashu.Proofs
+	if !entrySpent {
+		unspent = append(unspent, entryProofs...)
+	}
+	if !exitSpent {
+		unspent = append(unspent, exitProofs...)
+	}
+	if len(unspent) == 0 {
+		return nil
+	}
+	return w.Release(unspent)
+}
+
+func shouldTreatProofsAsSpent(err error) bool {
+	var rejected *client.NodeRejectedError
+	if errors.As(err, &rejected) && rejected.ProofsBurned() {
+		return true
+	}
+	var uncertain *client.ProofSpendUncertainError
+	return errors.As(err, &uncertain)
+}
+
+func provisionRouteEndpoint(exitEndpoint, exitConnectURL string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(exitConnectURL))
+	if err != nil {
+		return "", fmt.Errorf("parse connect URL %q: %w", exitConnectURL, err)
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return "", fmt.Errorf("connect URL %q has no host", exitConnectURL)
+	}
+	_, port, err := net.SplitHostPort(exitEndpoint)
+	if err != nil {
+		return "", fmt.Errorf("parse exit endpoint %q: %w", exitEndpoint, err)
+	}
+	return net.JoinHostPort(host, port), nil
+}
+
+func sanitizeRelays(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, relay := range in {
+		trimmed := strings.TrimSpace(relay)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func sanitizeHubPubkeys(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, key := range in {
+		trimmed := strings.TrimSpace(key)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 func sanitizePreferredTransports(in []types.Transport) []types.Transport {

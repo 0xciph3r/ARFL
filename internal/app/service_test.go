@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -121,6 +122,8 @@ type testNode struct {
 	rejectAll bool
 	rejectAs  int
 	connects  int
+	wgKeys    []string
+	onConnect func()
 }
 
 func (n *testNode) setReject(reject bool) {
@@ -144,6 +147,18 @@ func (n *testNode) connectCount() int {
 	return n.connects
 }
 
+func (n *testNode) setOnConnect(fn func()) {
+	n.mu.Lock()
+	n.onConnect = fn
+	n.mu.Unlock()
+}
+
+func (n *testNode) seenClientWGKeys() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string(nil), n.wgKeys...)
+}
+
 func (n *testNode) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Matched exactly. This used to be HasSuffix(path, "/connect"), which also
 	// matches "/cashu-connect" — so the fake accepted the client posting Cashu
@@ -158,7 +173,11 @@ func (n *testNode) handleConnect(w http.ResponseWriter, r *http.Request) {
 	n.connects++
 	reject := n.rejectAll
 	status := n.rejectAs
+	onConnect := n.onConnect
 	n.mu.Unlock()
+	if onConnect != nil {
+		onConnect()
+	}
 
 	if reject {
 		if status == 0 {
@@ -177,6 +196,10 @@ func (n *testNode) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+
+	n.mu.Lock()
+	n.wgKeys = append(n.wgKeys, req.WGPubkey)
+	n.mu.Unlock()
 
 	bytesAllowed, err := n.redeem(r.Context(), req.Proofs)
 	if err != nil {
@@ -273,6 +296,17 @@ func (f *fakeTunnel) Up(_ context.Context, cfg app.TunnelConfig) error {
 	return nil
 }
 
+func (f *fakeTunnel) UpOuter(_ context.Context, cfg app.TunnelConfig) error {
+	// Default staged behavior for tests: record only final full config in Up().
+	// This keeps legacy assertions stable while allowing service-level checks
+	// that require staged-tunnel support in HTTP mode.
+	return nil
+}
+
+func (f *fakeTunnel) UpInner(ctx context.Context, cfg app.TunnelConfig) error {
+	return f.Up(ctx, cfg)
+}
+
 func (f *fakeTunnel) Down(context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -290,6 +324,120 @@ func (f *fakeTunnel) downs() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.downCall
+}
+
+// unstagedFakeTunnel intentionally does not implement app.StagedTunnel.
+type unstagedFakeTunnel struct {
+	base *fakeTunnel
+}
+
+func newUnstagedFakeTunnel() *unstagedFakeTunnel {
+	return &unstagedFakeTunnel{base: newFakeTunnel()}
+}
+
+func (u *unstagedFakeTunnel) Preflight() error {
+	return u.base.Preflight()
+}
+
+func (u *unstagedFakeTunnel) PublicKey() (string, error) {
+	return u.base.PublicKey()
+}
+
+func (u *unstagedFakeTunnel) Up(ctx context.Context, cfg app.TunnelConfig) error {
+	return u.base.Up(ctx, cfg)
+}
+
+func (u *unstagedFakeTunnel) Down(ctx context.Context) error {
+	return u.base.Down(ctx)
+}
+
+type stagedFakeTunnel struct {
+	*fakeTunnel
+	outerErr  error
+	innerErr  error
+	outerUp   []app.TunnelConfig
+	innerUp   []app.TunnelConfig
+	outerUpMu sync.Mutex
+}
+
+func newStagedFakeTunnel() *stagedFakeTunnel {
+	return &stagedFakeTunnel{fakeTunnel: newFakeTunnel()}
+}
+
+func (s *stagedFakeTunnel) UpOuter(_ context.Context, cfg app.TunnelConfig) error {
+	s.outerUpMu.Lock()
+	defer s.outerUpMu.Unlock()
+	if s.outerErr != nil {
+		return s.outerErr
+	}
+	s.outerUp = append(s.outerUp, cfg)
+	return nil
+}
+
+func (s *stagedFakeTunnel) UpInner(_ context.Context, cfg app.TunnelConfig) error {
+	s.outerUpMu.Lock()
+	defer s.outerUpMu.Unlock()
+	if s.innerErr != nil {
+		return s.innerErr
+	}
+	s.innerUp = append(s.innerUp, cfg)
+	return nil
+}
+
+func (s *stagedFakeTunnel) outerUps() []app.TunnelConfig {
+	s.outerUpMu.Lock()
+	defer s.outerUpMu.Unlock()
+	return append([]app.TunnelConfig(nil), s.outerUp...)
+}
+
+func (s *stagedFakeTunnel) innerUps() []app.TunnelConfig {
+	s.outerUpMu.Lock()
+	defer s.outerUpMu.Unlock()
+	return append([]app.TunnelConfig(nil), s.innerUp...)
+}
+
+type hopKeyFakeTunnel struct {
+	*fakeTunnel
+	mu           sync.Mutex
+	seq          int
+	prepareCalls int
+	resetCalls   int
+	entryPub     string
+	exitPub      string
+	prepareErr   error
+}
+
+func newHopKeyFakeTunnel() *hopKeyFakeTunnel {
+	return &hopKeyFakeTunnel{
+		fakeTunnel: newFakeTunnel(),
+		entryPub:   "client-entry-0",
+		exitPub:    "client-exit-0",
+	}
+}
+
+func (h *hopKeyFakeTunnel) PrepareHopKeys() (string, string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.prepareCalls++
+	if h.prepareErr != nil {
+		return "", "", h.prepareErr
+	}
+	h.entryPub = fmt.Sprintf("client-entry-%d", h.seq)
+	h.exitPub = fmt.Sprintf("client-exit-%d", h.seq)
+	return h.entryPub, h.exitPub, nil
+}
+
+func (h *hopKeyFakeTunnel) ResetHopKeys() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.resetCalls++
+	h.seq++
+}
+
+func (h *hopKeyFakeTunnel) stats() (prepareCalls, resetCalls int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.prepareCalls, h.resetCalls
 }
 
 func newService(t *testing.T, tunnel app.Tunnel) *app.Service {
@@ -404,6 +552,75 @@ func TestOperationsRequireAHub(t *testing.T) {
 	}
 }
 
+func TestNewRejectsNIP44DeliveryWithoutRelays(t *testing.T) {
+	_, err := app.New(app.Config{
+		StorePath:         t.TempDir() + "/tokens.json",
+		Passphrase:        "correct horse battery staple",
+		TokenDelivery:     client.TokenDeliveryNIP44,
+		NostrRelays:       nil,
+		PollInterval:      10 * time.Millisecond,
+		AllowedTransports: []types.Transport{types.TransportWireGuard},
+	})
+	if err == nil {
+		t.Fatal("expected New to reject nip44 delivery without relays")
+	}
+	if !strings.Contains(err.Error(), "requires at least one relay URL") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewRejectsUnknownTokenDeliveryMode(t *testing.T) {
+	_, err := app.New(app.Config{
+		StorePath:         t.TempDir() + "/tokens.json",
+		Passphrase:        "correct horse battery staple",
+		TokenDelivery:     client.TokenDeliveryMode("carrier-pigeon"),
+		PollInterval:      10 * time.Millisecond,
+		AllowedTransports: []types.Transport{types.TransportWireGuard},
+	})
+	if err == nil {
+		t.Fatal("expected New to reject unknown token delivery mode")
+	}
+	if !strings.Contains(err.Error(), "unsupported token delivery mode") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewRejectsNostrDiscoveryWithoutTrustedHubPubkeys(t *testing.T) {
+	_, err := app.New(app.Config{
+		StorePath:         t.TempDir() + "/tokens.json",
+		Passphrase:        "correct horse battery staple",
+		TokenDelivery:     client.TokenDeliveryNIP44,
+		NostrRelays:       []string{"wss://relay.example"},
+		DiscoverySource:   app.DiscoverySourceNostr,
+		TrustedHubPubkeys: nil,
+		PollInterval:      10 * time.Millisecond,
+		AllowedTransports: []types.Transport{types.TransportWireGuard},
+	})
+	if err == nil {
+		t.Fatal("expected New to reject nostr discovery without trusted hub pubkeys")
+	}
+	if !strings.Contains(err.Error(), "requires at least one trusted hub pubkey") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewAcceptsNostrDiscoveryWithTrustedHubPubkeys(t *testing.T) {
+	svc, err := app.New(app.Config{
+		StorePath:         t.TempDir() + "/tokens.json",
+		Passphrase:        "correct horse battery staple",
+		TokenDelivery:     client.TokenDeliveryNIP44,
+		NostrRelays:       []string{"wss://relay.example"},
+		DiscoverySource:   app.DiscoverySourceNostr,
+		TrustedHubPubkeys: []string{"hub-pubkey"},
+		PollInterval:      10 * time.Millisecond,
+		AllowedTransports: []types.Transport{types.TransportWireGuard},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_ = svc.Close(context.Background())
+}
+
 func TestPurchaseMintsSpendableBalance(t *testing.T) {
 	hub := newTestHub(t)
 	svc := newService(t, newFakeTunnel())
@@ -477,6 +694,262 @@ func TestConnectSpendsBothHopsAndBringsTunnelUp(t *testing.T) {
 	}
 	if balance != 64 {
 		t.Errorf("balance = %d, want 64 remaining after spending 64", balance)
+	}
+}
+
+func TestConnectUsesDistinctPerHopClientKeys(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	exit := hub.addNode(t, "exit-1", types.RoleExit)
+
+	tunnel := newHopKeyFakeTunnel()
+	svc := newService(t, tunnel)
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	session, err := svc.Connect(ctx, 32)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	entryKeys := entry.seenClientWGKeys()
+	exitKeys := exit.seenClientWGKeys()
+	if len(entryKeys) != 1 || len(exitKeys) != 1 {
+		t.Fatalf("unexpected node key observations: entry=%v exit=%v", entryKeys, exitKeys)
+	}
+	if entryKeys[0] == exitKeys[0] {
+		t.Fatalf("entry and exit received the same client key %q", entryKeys[0])
+	}
+
+	if session.Config.EntryClientKey != entryKeys[0] || session.Config.ExitClientKey != exitKeys[0] {
+		t.Fatalf("session keys do not match node-observed keys: session=%q/%q nodes=%q/%q", session.Config.EntryClientKey, session.Config.ExitClientKey, entryKeys[0], exitKeys[0])
+	}
+	if session.Config.ClientKey != session.Config.EntryClientKey {
+		t.Fatalf("session client_key = %q, want entry key %q", session.Config.ClientKey, session.Config.EntryClientKey)
+	}
+
+	prepareCalls, resetCalls := tunnel.stats()
+	if prepareCalls != 1 || resetCalls != 0 {
+		t.Fatalf("hop key lifecycle calls = prepare:%d reset:%d, want prepare:1 reset:0", prepareCalls, resetCalls)
+	}
+}
+
+func TestConnectFailureResetsHopKeysBeforeRetry(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	exit := hub.addNode(t, "exit-1", types.RoleExit)
+	exit.setReject(true)
+
+	tunnel := newHopKeyFakeTunnel()
+	svc := newService(t, tunnel)
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	if _, err := svc.Connect(ctx, 32); err == nil {
+		t.Fatal("expected first connect attempt to fail")
+	}
+
+	prepareCalls, resetCalls := tunnel.stats()
+	if prepareCalls != 1 || resetCalls != 1 {
+		t.Fatalf("after failure hop key lifecycle calls = prepare:%d reset:%d, want prepare:1 reset:1", prepareCalls, resetCalls)
+	}
+
+	exit.setReject(false)
+	if _, err := svc.Connect(ctx, 32); err != nil {
+		t.Fatalf("second connect attempt failed: %v", err)
+	}
+
+	prepareCalls, resetCalls = tunnel.stats()
+	if prepareCalls != 2 || resetCalls != 1 {
+		t.Fatalf("after retry hop key lifecycle calls = prepare:%d reset:%d, want prepare:2 reset:1", prepareCalls, resetCalls)
+	}
+
+	entryKeys := entry.seenClientWGKeys()
+	if len(entryKeys) != 2 {
+		t.Fatalf("entry key observations = %v, want two attempts", entryKeys)
+	}
+	if entryKeys[0] == entryKeys[1] {
+		t.Fatalf("entry client key was reused across retries: %q", entryKeys[0])
+	}
+}
+
+func TestConnectPreflightFailureResetsHopKeys(t *testing.T) {
+	hub := newTestHub(t)
+	hub.addNode(t, "entry-1", types.RoleEntry)
+	hub.addNode(t, "exit-1", types.RoleExit)
+
+	tunnel := newHopKeyFakeTunnel()
+	tunnel.preflightErr = errors.New("needs privilege")
+	svc := newService(t, tunnel)
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	if _, err := svc.Connect(ctx, 32); err == nil {
+		t.Fatal("expected connect to fail on preflight")
+	}
+	prepareCalls, resetCalls := tunnel.stats()
+	if prepareCalls != 1 || resetCalls != 1 {
+		t.Fatalf("hop key lifecycle calls = prepare:%d reset:%d, want prepare:1 reset:1", prepareCalls, resetCalls)
+	}
+}
+
+func TestConnectStagesOuterBeforeExitProvisioning(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	exit := hub.addNode(t, "exit-1", types.RoleExit)
+
+	tunnel := newStagedFakeTunnel()
+	exitConnectObservation := make(chan bool, 1)
+	exit.setOnConnect(func() {
+		exitConnectObservation <- len(tunnel.outerUps()) > 0
+	})
+	svc := newService(t, tunnel)
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	if _, err := svc.Connect(ctx, 32); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if entry.connectCount() != 1 || exit.connectCount() != 1 {
+		t.Fatalf("connect counts: entry=%d exit=%d, want 1 each", entry.connectCount(), exit.connectCount())
+	}
+	if got := <-exitConnectObservation; !got {
+		t.Fatal("exit node was contacted before outer tunnel came up")
+	}
+	outerUps := tunnel.outerUps()
+	if len(outerUps) != 1 || len(tunnel.innerUps()) != 1 {
+		t.Fatalf("staged calls outer=%d inner=%d, want 1 each", len(outerUps), len(tunnel.innerUps()))
+	}
+	exitURL, err := url.Parse(exit.server.URL)
+	if err != nil {
+		t.Fatalf("parse exit test URL: %v", err)
+	}
+	wantProvisionEndpoint := exitURL.Hostname() + ":51820"
+	if outerUps[0].Exit.Endpoint != wantProvisionEndpoint {
+		t.Fatalf("outer provisioning endpoint = %q, want %q", outerUps[0].Exit.Endpoint, wantProvisionEndpoint)
+	}
+	if len(outerUps[0].OuterPinnedEndpoints) != 1 || outerUps[0].OuterPinnedEndpoints[0] != "exit-1.example:51820" {
+		t.Fatalf("outer pinned endpoints = %v, want [exit-1.example:51820]", outerUps[0].OuterPinnedEndpoints)
+	}
+	if len(tunnel.ups()) != 0 {
+		t.Fatalf("full Up should not be used when staged methods exist; got %d calls", len(tunnel.ups()))
+	}
+}
+
+func TestConnectOuterStageFailureRefundsExitProofs(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	exit := hub.addNode(t, "exit-1", types.RoleExit)
+
+	tunnel := newStagedFakeTunnel()
+	tunnel.outerErr = errors.New("outer tunnel failed")
+	svc := newService(t, tunnel)
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	if _, err := svc.Connect(ctx, 32); err == nil {
+		t.Fatal("expected connect to fail when UpOuter fails")
+	}
+	balance, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance: %v", err)
+	}
+	if balance != 96 {
+		t.Fatalf("balance=%d, want 96 (entry spent, exit refunded)", balance)
+	}
+	if entry.connectCount() != 1 {
+		t.Fatalf("entry connects=%d, want 1", entry.connectCount())
+	}
+	if exit.connectCount() != 0 {
+		t.Fatalf("exit connects=%d, want 0 when outer stage fails", exit.connectCount())
+	}
+}
+
+func TestConnectInnerStageFailureCleansUpAndKeepsSpentBalance(t *testing.T) {
+	hub := newTestHub(t)
+	hub.addNode(t, "entry-1", types.RoleEntry)
+	hub.addNode(t, "exit-1", types.RoleExit)
+
+	tunnel := newStagedFakeTunnel()
+	tunnel.innerErr = errors.New("inner tunnel failed")
+	svc := newService(t, tunnel)
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	if _, err := svc.Connect(ctx, 32); err == nil {
+		t.Fatal("expected connect to fail when UpInner fails")
+	}
+	if tunnel.downs() != 1 {
+		t.Fatalf("Down called %d times, want 1 cleanup after inner failure", tunnel.downs())
+	}
+	balance, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance: %v", err)
+	}
+	if balance != 64 {
+		t.Fatalf("balance=%d, want 64 (both hops were already spent)", balance)
+	}
+}
+
+func TestConnectHTTPRequiresStagedTunnelSupport(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	exit := hub.addNode(t, "exit-1", types.RoleExit)
+
+	tunnel := newUnstagedFakeTunnel()
+	svc := newService(t, tunnel)
+	ctx := context.Background()
+
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 128)
+
+	before, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance before connect: %v", err)
+	}
+
+	_, err = svc.Connect(ctx, 32)
+	if err == nil {
+		t.Fatal("expected connect to fail without staged tunnel support in http mode")
+	}
+	if !strings.Contains(err.Error(), "requires staged tunnel support") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if entry.connectCount() != 0 || exit.connectCount() != 0 {
+		t.Fatalf("node connect should not run when staged support is missing: entry=%d exit=%d", entry.connectCount(), exit.connectCount())
+	}
+	after, err := svc.Balance()
+	if err != nil {
+		t.Fatalf("balance after connect: %v", err)
+	}
+	if before != after {
+		t.Fatalf("balance changed despite fail-closed staged requirement: before=%d after=%d", before, after)
 	}
 }
 

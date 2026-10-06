@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Radi-Labs/ARFL/internal/node"
 	"github.com/Radi-Labs/ARFL/internal/wg"
 )
 
@@ -68,6 +69,19 @@ func (s *Server) grantPeer(wgPubkey string, quotaBytes int64) (string, int, erro
 		return "", http.StatusInternalServerError, fmt.Errorf("set quota: %v", err)
 	}
 	return tunnelIP, http.StatusOK, nil
+}
+
+// GrantCashuPeer grants access for a successful Cashu redemption.
+func (s *Server) GrantCashuPeer(wgPubkey string, quotaBytes int64) (*node.CashuConnectResult, int, error) {
+	tunnelIP, status, err := s.grantPeer(wgPubkey, quotaBytes)
+	if err != nil {
+		return nil, status, err
+	}
+	return &node.CashuConnectResult{
+		TunnelIP:     tunnelIP + "/32",
+		NodeWGPubkey: s.wgPubkey,
+		BytesAllowed: quotaBytes,
+	}, http.StatusOK, nil
 }
 
 // releasePeerResources frees the tunnel IP and quota held by a peer. The

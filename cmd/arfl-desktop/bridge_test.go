@@ -44,12 +44,24 @@ func TestLoadTransportPolicyFromClientConfig_DefaultMissing(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(prev) })
 	t.Setenv("ARFL_CLIENT_CONFIG", "")
 
-	preferred, allowed, err := loadTransportPolicyFromClientConfig()
+	preferred, allowed, relays, hubPubkeys, mode, discovery, err := loadTransportPolicyFromClientConfig()
 	if err != nil {
 		t.Fatalf("loadTransportPolicyFromClientConfig: %v", err)
 	}
 	if preferred != nil || allowed != nil {
 		t.Fatalf("expected nil policy for missing client.json, got preferred=%v allowed=%v", preferred, allowed)
+	}
+	if len(relays) != 0 {
+		t.Fatalf("expected no relays by default, got %v", relays)
+	}
+	if len(hubPubkeys) != 0 {
+		t.Fatalf("expected no trusted hub pubkeys by default, got %v", hubPubkeys)
+	}
+	if mode != "http" {
+		t.Fatalf("expected default token delivery mode http, got %q", mode)
+	}
+	if discovery != "hub" {
+		t.Fatalf("expected default discovery source hub, got %q", discovery)
 	}
 }
 
@@ -66,7 +78,7 @@ func TestLoadTransportPolicyFromClientConfig_EnvPath(t *testing.T) {
 	}
 	t.Setenv("ARFL_CLIENT_CONFIG", cfgPath)
 
-	preferred, allowed, err := loadTransportPolicyFromClientConfig()
+	preferred, allowed, relays, hubPubkeys, mode, discovery, err := loadTransportPolicyFromClientConfig()
 	if err != nil {
 		t.Fatalf("loadTransportPolicyFromClientConfig: %v", err)
 	}
@@ -75,6 +87,18 @@ func TestLoadTransportPolicyFromClientConfig_EnvPath(t *testing.T) {
 	}
 	if len(allowed) != 2 || allowed[0] != types.TransportWireGuard || allowed[1] != types.TransportHysteria2 {
 		t.Fatalf("unexpected allowed transports: %v", allowed)
+	}
+	if len(relays) != 0 {
+		t.Fatalf("unexpected relays: %v", relays)
+	}
+	if len(hubPubkeys) != 0 {
+		t.Fatalf("unexpected trusted hub pubkeys: %v", hubPubkeys)
+	}
+	if mode != "http" {
+		t.Fatalf("unexpected mode: %q", mode)
+	}
+	if discovery != "hub" {
+		t.Fatalf("unexpected discovery source: %q", discovery)
 	}
 }
 
@@ -89,7 +113,7 @@ func TestLoadTransportPolicyFromClientConfig_InvalidTransport(t *testing.T) {
 	}
 	t.Setenv("ARFL_CLIENT_CONFIG", cfgPath)
 
-	_, _, err := loadTransportPolicyFromClientConfig()
+	_, _, _, _, _, _, err := loadTransportPolicyFromClientConfig()
 	if err == nil {
 		t.Fatal("expected invalid transport error")
 	}
@@ -110,7 +134,7 @@ func TestLoadTransportPolicyFromClientConfig_RejectsMixedHopMode(t *testing.T) {
 	}
 	t.Setenv("ARFL_CLIENT_CONFIG", cfgPath)
 
-	_, _, err := loadTransportPolicyFromClientConfig()
+	_, _, _, _, _, _, err := loadTransportPolicyFromClientConfig()
 	if err == nil {
 		t.Fatal("expected mixed-hop rejection error")
 	}
@@ -133,7 +157,7 @@ func TestLoadTransportPolicyFromClientConfig_AllowsMissingCommonHopFlag(t *testi
 	}
 	t.Setenv("ARFL_CLIENT_CONFIG", cfgPath)
 
-	preferred, allowed, err := loadTransportPolicyFromClientConfig()
+	preferred, allowed, relays, hubPubkeys, mode, discovery, err := loadTransportPolicyFromClientConfig()
 	if err != nil {
 		t.Fatalf("expected missing require_common_hop_transport to be accepted, got: %v", err)
 	}
@@ -142,5 +166,113 @@ func TestLoadTransportPolicyFromClientConfig_AllowsMissingCommonHopFlag(t *testi
 	}
 	if len(allowed) != 1 || allowed[0] != types.TransportWireGuard {
 		t.Fatalf("unexpected allowed transports: %v", allowed)
+	}
+	if len(relays) != 0 {
+		t.Fatalf("unexpected relays: %v", relays)
+	}
+	if len(hubPubkeys) != 0 {
+		t.Fatalf("unexpected trusted hub pubkeys: %v", hubPubkeys)
+	}
+	if mode != "http" {
+		t.Fatalf("unexpected token delivery mode: %q", mode)
+	}
+	if discovery != "hub" {
+		t.Fatalf("unexpected discovery source: %q", discovery)
+	}
+}
+
+func TestLoadTransportPolicyFromClientConfig_NIP44Delivery(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "nip44-policy.json")
+	cfg := `{
+  "preferred_transports": ["wireguard"],
+  "allowed_transports": ["wireguard"],
+  "token_delivery": "nip44",
+  "relays": ["wss://relay.damus.io", " wss://nos.lol ", "wss://relay.damus.io"]
+}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("ARFL_CLIENT_CONFIG", cfgPath)
+
+	_, _, relays, hubPubkeys, mode, discovery, err := loadTransportPolicyFromClientConfig()
+	if err != nil {
+		t.Fatalf("loadTransportPolicyFromClientConfig: %v", err)
+	}
+	if mode != "nip44" {
+		t.Fatalf("token delivery mode = %q, want nip44", mode)
+	}
+	if len(relays) != 2 || relays[0] != "wss://relay.damus.io" || relays[1] != "wss://nos.lol" {
+		t.Fatalf("unexpected relays: %v", relays)
+	}
+	if len(hubPubkeys) != 0 {
+		t.Fatalf("unexpected trusted hub pubkeys: %v", hubPubkeys)
+	}
+	if discovery != "hub" {
+		t.Fatalf("unexpected discovery source: %q", discovery)
+	}
+}
+
+func TestLoadTransportPolicyFromClientConfig_InvalidTokenDelivery(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "bad-delivery.json")
+	cfg := `{"token_delivery":"carrier-pigeon"}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("ARFL_CLIENT_CONFIG", cfgPath)
+
+	_, _, _, _, _, _, err := loadTransportPolicyFromClientConfig()
+	if err == nil {
+		t.Fatal("expected invalid token_delivery error")
+	}
+	if !strings.Contains(err.Error(), "token_delivery has unsupported value") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadTransportPolicyFromClientConfig_NostrDiscovery(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "nostr-discovery.json")
+	cfg := `{
+  "token_delivery": "nip44",
+  "discovery_source": "nostr",
+  "relays": ["wss://relay.damus.io", " wss://nos.lol ", "wss://relay.damus.io"],
+  "hub_pubkeys": ["hub-a", " hub-b ", "hub-a"]
+}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("ARFL_CLIENT_CONFIG", cfgPath)
+
+	_, _, relays, hubPubkeys, mode, discovery, err := loadTransportPolicyFromClientConfig()
+	if err != nil {
+		t.Fatalf("loadTransportPolicyFromClientConfig: %v", err)
+	}
+	if mode != "nip44" {
+		t.Fatalf("unexpected mode: %q", mode)
+	}
+	if discovery != "nostr" {
+		t.Fatalf("unexpected discovery source: %q", discovery)
+	}
+	if len(relays) != 2 || relays[0] != "wss://relay.damus.io" || relays[1] != "wss://nos.lol" {
+		t.Fatalf("unexpected relays: %v", relays)
+	}
+	if len(hubPubkeys) != 2 || hubPubkeys[0] != "hub-a" || hubPubkeys[1] != "hub-b" {
+		t.Fatalf("unexpected hub pubkeys: %v", hubPubkeys)
+	}
+}
+
+func TestLoadTransportPolicyFromClientConfig_InvalidDiscoverySource(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "bad-discovery.json")
+	cfg := `{"discovery_source":"radio"}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("ARFL_CLIENT_CONFIG", cfgPath)
+
+	_, _, _, _, _, _, err := loadTransportPolicyFromClientConfig()
+	if err == nil {
+		t.Fatal("expected invalid discovery_source error")
+	}
+	if !strings.Contains(err.Error(), "discovery_source has unsupported value") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

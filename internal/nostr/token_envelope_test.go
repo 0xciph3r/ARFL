@@ -16,9 +16,10 @@ func TestTokenEnvelope_SealAndOpen(t *testing.T) {
 			{Amount: 10, Id: "keyset-1", Secret: "secret-abc", C: "02deadbeef"},
 			{Amount: 5, Id: "keyset-1", Secret: "secret-def", C: "02cafebabe"},
 		},
-		WGPubkey: "clientWgPubKey123==",
-		Role:     "entry",
-		Version:  1,
+		WGPubkey:  "clientWgPubKey123==",
+		Role:      "entry",
+		RequestID: "req-1",
+		Version:   1,
 	}
 
 	event, err := SealTokenEnvelope(clientKP, nodeKP.PubkeyHex(), payload)
@@ -51,6 +52,9 @@ func TestTokenEnvelope_SealAndOpen(t *testing.T) {
 	if opened.Role != "entry" {
 		t.Errorf("Role = %q, want %q", opened.Role, "entry")
 	}
+	if opened.RequestID != "req-1" {
+		t.Errorf("RequestID = %q, want %q", opened.RequestID, "req-1")
+	}
 	if opened.Version != 1 {
 		t.Errorf("Version = %d, want 1", opened.Version)
 	}
@@ -68,10 +72,11 @@ func TestTokenEnvelope_WrongRecipient(t *testing.T) {
 	evilKP, _ := GenerateKeyPair()
 
 	payload := &TokenPayload{
-		Proofs:   cashu.Proofs{{Amount: 1, Id: "ks", Secret: "s", C: "02c"}},
-		WGPubkey: "pk==",
-		Role:     "exit",
-		Version:  1,
+		Proofs:    cashu.Proofs{{Amount: 1, Id: "ks", Secret: "s", C: "02c"}},
+		WGPubkey:  "pk==",
+		Role:      "exit",
+		RequestID: "req-2",
+		Version:   1,
 	}
 
 	event, err := SealTokenEnvelope(clientKP, nodeKP.PubkeyHex(), payload)
@@ -113,10 +118,11 @@ func TestTokenEnvelope_MultipleProofs(t *testing.T) {
 	}
 
 	payload := &TokenPayload{
-		Proofs:   proofs,
-		WGPubkey: "bigBatchPubkey==",
-		Role:     "exit",
-		Version:  1,
+		Proofs:    proofs,
+		WGPubkey:  "bigBatchPubkey==",
+		Role:      "exit",
+		RequestID: "req-3",
+		Version:   1,
 	}
 
 	event, err := SealTokenEnvelope(clientKP, nodeKP.PubkeyHex(), payload)
@@ -156,5 +162,41 @@ func TestPubkeyFromHex_Invalid(t *testing.T) {
 	_, err = PubkeyFromHex("aabbcc") // Too short.
 	if err == nil {
 		t.Fatal("expected error for short hex")
+	}
+}
+
+func TestTokenReplyEnvelope_SealAndOpen(t *testing.T) {
+	nodeKP, _ := GenerateKeyPair()
+	clientKP, _ := GenerateKeyPair()
+
+	payload := &TokenReplyPayload{
+		RequestID:    "req-abc",
+		OK:           true,
+		TunnelIP:     "10.100.0.2/32",
+		NodeWGPubkey: "nodePub==",
+		BytesAllowed: 4_000_000,
+		Version:      1,
+	}
+
+	event, err := SealTokenReplyEnvelope(nodeKP, clientKP.PubkeyHex(), payload)
+	if err != nil {
+		t.Fatalf("SealTokenReplyEnvelope: %v", err)
+	}
+	if event.Kind != TokenReplyEnvelopeKind {
+		t.Fatalf("kind=%d want=%d", event.Kind, TokenReplyEnvelopeKind)
+	}
+
+	opened, err := OpenTokenReplyEnvelope(event, clientKP)
+	if err != nil {
+		t.Fatalf("OpenTokenReplyEnvelope: %v", err)
+	}
+	if !opened.OK {
+		t.Fatal("expected OK reply")
+	}
+	if opened.RequestID != payload.RequestID {
+		t.Fatalf("request_id=%q want=%q", opened.RequestID, payload.RequestID)
+	}
+	if opened.TunnelIP != payload.TunnelIP {
+		t.Fatalf("tunnel_ip=%q want=%q", opened.TunnelIP, payload.TunnelIP)
 	}
 }

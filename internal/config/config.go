@@ -84,8 +84,11 @@ type HubConfig struct {
 type ClientConfig struct {
 	HubURL              string   `json:"hub_url"`                                // Hub discovery API URL
 	HubPubkeys          []string `json:"hub_pubkeys"`                            // Trusted hub pubkeys for verification
+	DiscoverySource     string   `json:"discovery_source,omitempty"`             // "hub" (default) or "nostr"
+	Relays              []string `json:"relays,omitempty"`                       // Nostr relay URLs for encrypted token delivery
 	PreferredTransports []string `json:"preferred_transports,omitempty"`         // Client transport preference order
 	AllowedTransports   []string `json:"allowed_transports,omitempty"`           // Optional client allowlist
+	TokenDelivery       string   `json:"token_delivery,omitempty"`               // "http" (default) or "nip44"
 	RequireCommonHops   *bool    `json:"require_common_hop_transport,omitempty"` // Optional explicit flag; false rejects mixed-hop mode until supported
 }
 

@@ -49,6 +49,11 @@ async function value<T>(fn: () => Promise<T | null>): Promise<T> {
   return (await call(fn)) as T
 }
 
+// An empty Go slice arrives as null; the UI always works with arrays.
+async function list<T>(fn: () => Promise<T[] | null>): Promise<T[]> {
+  return (await call(fn)) ?? []
+}
+
 export const api = {
   locked: () => call(() => Bridge.Locked()),
   status: () => value(() => Bridge.Status()),
@@ -56,7 +61,7 @@ export const api = {
   balance: () => call(() => Bridge.Balance()),
   purchase: (amountSats: number) => value(() => Bridge.Purchase(amountSats)),
   awaitPurchase: (quoteId: string) => call(() => Bridge.AwaitPurchase(quoteId)),
-  listNodes: () => call(() => Bridge.ListNodes()),
+  listNodes: () => list(() => Bridge.ListNodes()),
   vaultState: () => value(() => Bridge.VaultState()),
   connect: (perHopSats: number) => value(() => Bridge.Connect(perHopSats)),
   session: () => call(() => Bridge.Session()),
@@ -65,7 +70,7 @@ export const api = {
   unpinPair: () => call(() => Bridge.UnpinPair()),
   pinnedPair: () => call(() => Bridge.PinnedPair()),
   setup: () => value(() => Bridge.Setup()),
-  knownHubs: () => call(() => Bridge.KnownHubs()),
+  knownHubs: () => list(() => Bridge.KnownHubs()),
   usage: () => value(() => Bridge.Usage()),
   ipv6Exposed: () => call(() => Bridge.IPv6Exposed()),
   disableIPv6: () => call(() => Bridge.DisableIPv6()),
@@ -77,10 +82,10 @@ export const api = {
   openWallet: () => value(() => Bridge.OpenWallet()),
   upgradeLegacy: (passphrase: string) => value(() => Bridge.UpgradeLegacy(passphrase)),
   fingerprint: () => call(() => Bridge.Fingerprint()),
-  recommendedHubs: () => call(() => Bridge.RecommendedHubs()),
+  recommendedHubs: () => list(() => Bridge.RecommendedHubs()),
   previewHub: (url: string) => value(() => Bridge.PreviewHub(url)),
   exportBackup: (passphrase: string) => call(() => Bridge.ExportBackup(passphrase)),
   chooseBackupFile: () => call(() => Bridge.ChooseBackupFile()),
-  restoreBackup: (path: string, passphrase: string) => call(() => Bridge.RestoreBackup(path, passphrase)),
+  restoreBackup: (path: string, passphrase: string) => list(() => Bridge.RestoreBackup(path, passphrase)),
   showMain: (overlay = '') => call(() => Bridge.ShowMain(overlay)),
 }

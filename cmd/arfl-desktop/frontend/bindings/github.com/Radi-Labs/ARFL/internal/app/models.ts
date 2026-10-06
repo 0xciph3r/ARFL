@@ -3,100 +3,35 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Create as $Create } from "@wailsio/runtime";
-
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
 import * as types$0 from "../../pkg/types/models.js";
 
 /**
  * HopConfig describes one leg of the two-hop tunnel.
  */
-export class HopConfig {
+export interface HopConfig {
     "node_id": string;
     "endpoint": string;
     "node_wg_pubkey": string;
     "tunnel_ip": string;
     "bytes_allowed": number;
-
-    /** Creates a new HopConfig instance. */
-    constructor($$source: Partial<HopConfig> = {}) {
-        if (!("node_id" in $$source)) {
-            this["node_id"] = "";
-        }
-        if (!("endpoint" in $$source)) {
-            this["endpoint"] = "";
-        }
-        if (!("node_wg_pubkey" in $$source)) {
-            this["node_wg_pubkey"] = "";
-        }
-        if (!("tunnel_ip" in $$source)) {
-            this["tunnel_ip"] = "";
-        }
-        if (!("bytes_allowed" in $$source)) {
-            this["bytes_allowed"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new HopConfig instance from a string or object.
-     */
-    static createFrom($$source: any = {}): HopConfig {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new HopConfig($$parsedSource as Partial<HopConfig>);
-    }
 }
 
 /**
  * HubStatus summarises a connected hub for display.
  */
-export class HubStatus {
+export interface HubStatus {
     "url": string;
     "name": string;
     "version": string;
     "keyset_id": string;
     "balance_sats": number;
     "node_count": number;
-
-    /** Creates a new HubStatus instance. */
-    constructor($$source: Partial<HubStatus> = {}) {
-        if (!("url" in $$source)) {
-            this["url"] = "";
-        }
-        if (!("name" in $$source)) {
-            this["name"] = "";
-        }
-        if (!("version" in $$source)) {
-            this["version"] = "";
-        }
-        if (!("keyset_id" in $$source)) {
-            this["keyset_id"] = "";
-        }
-        if (!("balance_sats" in $$source)) {
-            this["balance_sats"] = 0;
-        }
-        if (!("node_count" in $$source)) {
-            this["node_count"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new HubStatus instance from a string or object.
-     */
-    static createFrom($$source: any = {}): HubStatus {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new HubStatus($$parsedSource as Partial<HubStatus>);
-    }
 }
 
 /**
  * Invoice is a pending bandwidth purchase awaiting Lightning payment.
  */
-export class Invoice {
+export interface Invoice {
     "quote_id": string;
     "bolt11": string;
 
@@ -107,103 +42,24 @@ export class Invoice {
     "payment_hash": string;
     "amount_sats": number;
     "expires_at": string;
-
-    /** Creates a new Invoice instance. */
-    constructor($$source: Partial<Invoice> = {}) {
-        if (!("quote_id" in $$source)) {
-            this["quote_id"] = "";
-        }
-        if (!("bolt11" in $$source)) {
-            this["bolt11"] = "";
-        }
-        if (!("payment_hash" in $$source)) {
-            this["payment_hash"] = "";
-        }
-        if (!("amount_sats" in $$source)) {
-            this["amount_sats"] = 0;
-        }
-        if (!("expires_at" in $$source)) {
-            this["expires_at"] = "0001-01-01T00:00:00.000Z";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new Invoice instance from a string or object.
-     */
-    static createFrom($$source: any = {}): Invoice {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new Invoice($$parsedSource as Partial<Invoice>);
-    }
 }
 
 /**
  * PinnedPair names the entry and exit nodes a user chose by ID.
  */
-export class PinnedPair {
+export interface PinnedPair {
     "entry_id": string;
     "exit_id": string;
-
-    /** Creates a new PinnedPair instance. */
-    constructor($$source: Partial<PinnedPair> = {}) {
-        if (!("entry_id" in $$source)) {
-            this["entry_id"] = "";
-        }
-        if (!("exit_id" in $$source)) {
-            this["exit_id"] = "";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new PinnedPair instance from a string or object.
-     */
-    static createFrom($$source: any = {}): PinnedPair {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new PinnedPair($$parsedSource as Partial<PinnedPair>);
-    }
 }
 
 /**
  * Session describes an active two-hop connection.
  */
-export class Session {
+export interface Session {
     "state": State;
     "config": TunnelConfig;
     "spent_sats": number;
     "started_at": string;
-
-    /** Creates a new Session instance. */
-    constructor($$source: Partial<Session> = {}) {
-        if (!("state" in $$source)) {
-            this["state"] = State.$zero;
-        }
-        if (!("config" in $$source)) {
-            this["config"] = (new TunnelConfig());
-        }
-        if (!("spent_sats" in $$source)) {
-            this["spent_sats"] = 0;
-        }
-        if (!("started_at" in $$source)) {
-            this["started_at"] = "0001-01-01T00:00:00.000Z";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new Session instance from a string or object.
-     */
-    static createFrom($$source: any = {}): Session {
-        const $$createField1_0 = $$createType0;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("config" in $$parsedSource) {
-            $$parsedSource["config"] = $$createField1_0($$parsedSource["config"]);
-        }
-        return new Session($$parsedSource as Partial<Session>);
-    }
 }
 
 /**
@@ -224,7 +80,7 @@ export enum State {
 /**
  * TunnelConfig is everything a Tunnel needs to establish both hops.
  */
-export class TunnelConfig {
+export interface TunnelConfig {
     "entry": HopConfig;
     "exit": HopConfig;
     "client_key": string;
@@ -238,46 +94,6 @@ export class TunnelConfig {
      * This keeps HTTP provisioning endpoints and the real exit WireGuard
      * endpoint both routed through the entry hop when they differ by host.
      */
-    "outer_pinned_endpoints"?: string[];
+    "outer_pinned_endpoints"?: string[] | null;
     "transport"?: types$0.Transport;
-
-    /** Creates a new TunnelConfig instance. */
-    constructor($$source: Partial<TunnelConfig> = {}) {
-        if (!("entry" in $$source)) {
-            this["entry"] = (new HopConfig());
-        }
-        if (!("exit" in $$source)) {
-            this["exit"] = (new HopConfig());
-        }
-        if (!("client_key" in $$source)) {
-            this["client_key"] = "";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new TunnelConfig instance from a string or object.
-     */
-    static createFrom($$source: any = {}): TunnelConfig {
-        const $$createField0_0 = $$createType1;
-        const $$createField1_0 = $$createType1;
-        const $$createField5_0 = $$createType2;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("entry" in $$parsedSource) {
-            $$parsedSource["entry"] = $$createField0_0($$parsedSource["entry"]);
-        }
-        if ("exit" in $$parsedSource) {
-            $$parsedSource["exit"] = $$createField1_0($$parsedSource["exit"]);
-        }
-        if ("outer_pinned_endpoints" in $$parsedSource) {
-            $$parsedSource["outer_pinned_endpoints"] = $$createField5_0($$parsedSource["outer_pinned_endpoints"]);
-        }
-        return new TunnelConfig($$parsedSource as Partial<TunnelConfig>);
-    }
 }
-
-// Private type creation functions
-const $$createType0 = TunnelConfig.createFrom;
-const $$createType1 = HopConfig.createFrom;
-const $$createType2 = $Create.Array($Create.Any);

@@ -8,7 +8,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Create } from "@wailsio/runtime";
+import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -53,18 +53,14 @@ export function ChooseBackupFile(): $CancellablePromise<string> {
  * way back to a disconnected state.
  */
 export function Connect(perHopSats: number): $CancellablePromise<app$0.Session | null> {
-    return $Call.ByID(2465156827, perHopSats).then(($result: any) => {
-        return $$createType1($result);
-    });
+    return $Call.ByID(2465156827, perHopSats);
 }
 
 /**
  * ConnectHub points the client at a hub URL the user typed in.
  */
 export function ConnectHub(hubURL: string): $CancellablePromise<app$0.HubStatus | null> {
-    return $Call.ByID(2237699778, hubURL).then(($result: any) => {
-        return $$createType3($result);
-    });
+    return $Call.ByID(2237699778, hubURL);
 }
 
 /**
@@ -131,19 +127,15 @@ export function KeyTransfer(): $CancellablePromise<string> {
  * KnownHubs lists the recommended hubs plus every hub this wallet holds
  * tokens at, each with its public info and the local balance there.
  */
-export function KnownHubs(): $CancellablePromise<$models.KnownHub[]> {
-    return $Call.ByID(71136906).then(($result: any) => {
-        return $$createType5($result);
-    });
+export function KnownHubs(): $CancellablePromise<$models.KnownHub[] | null> {
+    return $Call.ByID(71136906);
 }
 
 /**
  * ListNodes returns the hub's online nodes.
  */
-export function ListNodes(): $CancellablePromise<types$0.NodeInfo[]> {
-    return $Call.ByID(314861188).then(($result: any) => {
-        return $$createType7($result);
-    });
+export function ListNodes(): $CancellablePromise<types$0.NodeInfo[] | null> {
+    return $Call.ByID(314861188);
 }
 
 /**
@@ -167,9 +159,7 @@ export function OpenAtLogin(): $CancellablePromise<boolean> {
  * first, so the user is never asked for a password.
  */
 export function OpenWallet(): $CancellablePromise<$models.StatusView | null> {
-    return $Call.ByID(1715399630).then(($result: any) => {
-        return $$createType9($result);
-    });
+    return $Call.ByID(1715399630);
 }
 
 /**
@@ -183,36 +173,28 @@ export function PinPair(entryID: string, exitID: string): $CancellablePromise<vo
  * PinnedPair returns the user's chosen pair, or nil when pairing is random.
  */
 export function PinnedPair(): $CancellablePromise<app$0.PinnedPair | null> {
-    return $Call.ByID(3062685517).then(($result: any) => {
-        return $$createType11($result);
-    });
+    return $Call.ByID(3062685517);
 }
 
 /**
  * PreviewHub reads a hub's public info without connecting to it.
  */
 export function PreviewHub(hubURL: string): $CancellablePromise<$models.HubPreview | null> {
-    return $Call.ByID(2208574280, hubURL).then(($result: any) => {
-        return $$createType13($result);
-    });
+    return $Call.ByID(2208574280, hubURL);
 }
 
 /**
  * Purchase requests a Lightning invoice for bandwidth credit.
  */
 export function Purchase(amountSats: number): $CancellablePromise<app$0.Invoice | null> {
-    return $Call.ByID(4002128072, amountSats).then(($result: any) => {
-        return $$createType15($result);
-    });
+    return $Call.ByID(4002128072, amountSats);
 }
 
 /**
  * RecommendedHubs lists the hubs the chooser offers before the user adds one.
  */
-export function RecommendedHubs(): $CancellablePromise<string[]> {
-    return $Call.ByID(3179063902).then(($result: any) => {
-        return $$createType16($result);
-    });
+export function RecommendedHubs(): $CancellablePromise<string[] | null> {
+    return $Call.ByID(3179063902);
 }
 
 /**
@@ -229,19 +211,15 @@ export function ResetVault(): $CancellablePromise<void> {
  * RestoreBackup brings a backed-up key and its tokens to this device. Each
  * hub is asked which tokens are still unspent, and spent ones are dropped.
  */
-export function RestoreBackup(path: string, passphrase: string): $CancellablePromise<$models.RestoredHub[]> {
-    return $Call.ByID(431276389, path, passphrase).then(($result: any) => {
-        return $$createType18($result);
-    });
+export function RestoreBackup(path: string, passphrase: string): $CancellablePromise<$models.RestoredHub[] | null> {
+    return $Call.ByID(431276389, path, passphrase);
 }
 
 /**
  * Session returns the active session, or nil when disconnected.
  */
 export function Session(): $CancellablePromise<app$0.Session | null> {
-    return $Call.ByID(4044722465).then(($result: any) => {
-        return $$createType1($result);
-    });
+    return $Call.ByID(4044722465);
 }
 
 /**
@@ -255,9 +233,7 @@ export function SetOpenAtLogin(on: boolean): $CancellablePromise<void> {
  * Setup reports whether this device already has a key.
  */
 export function Setup(): $CancellablePromise<$models.SetupView | null> {
-    return $Call.ByID(3227868360).then(($result: any) => {
-        return $$createType20($result);
-    });
+    return $Call.ByID(3227868360);
 }
 
 /**
@@ -272,9 +248,7 @@ export function ShowMain(overlay: string): $CancellablePromise<void> {
  * Status returns the current snapshot for the UI.
  */
 export function Status(): $CancellablePromise<$models.StatusView | null> {
-    return $Call.ByID(940942817).then(($result: any) => {
-        return $$createType9($result);
-    });
+    return $Call.ByID(940942817);
 }
 
 /**
@@ -282,9 +256,7 @@ export function Status(): $CancellablePromise<$models.StatusView | null> {
  * re-opening the store while a session is live would drop that session.
  */
 export function Unlock(passphrase: string): $CancellablePromise<$models.StatusView | null> {
-    return $Call.ByID(3850666575, passphrase).then(($result: any) => {
-        return $$createType9($result);
-    });
+    return $Call.ByID(3850666575, passphrase);
 }
 
 /**
@@ -299,52 +271,19 @@ export function UnpinPair(): $CancellablePromise<void> {
  * is kept beside the new one until the move has fully succeeded.
  */
 export function UpgradeLegacy(passphrase: string): $CancellablePromise<$models.StatusView | null> {
-    return $Call.ByID(3758703246, passphrase).then(($result: any) => {
-        return $$createType9($result);
-    });
+    return $Call.ByID(3758703246, passphrase);
 }
 
 /**
  * Usage reports bytes carried by the tunnel this session.
  */
 export function Usage(): $CancellablePromise<$models.UsageView | null> {
-    return $Call.ByID(3219775478).then(($result: any) => {
-        return $$createType22($result);
-    });
+    return $Call.ByID(3219775478);
 }
 
 /**
  * VaultState reports whether the local encrypted vault file exists.
  */
 export function VaultState(): $CancellablePromise<$models.VaultStateView | null> {
-    return $Call.ByID(2744106450).then(($result: any) => {
-        return $$createType24($result);
-    });
+    return $Call.ByID(2744106450);
 }
-
-// Private type creation functions
-const $$createType0 = app$0.Session.createFrom;
-const $$createType1 = $Create.Nullable($$createType0);
-const $$createType2 = app$0.HubStatus.createFrom;
-const $$createType3 = $Create.Nullable($$createType2);
-const $$createType4 = $models.KnownHub.createFrom;
-const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = types$0.NodeInfo.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = $models.StatusView.createFrom;
-const $$createType9 = $Create.Nullable($$createType8);
-const $$createType10 = app$0.PinnedPair.createFrom;
-const $$createType11 = $Create.Nullable($$createType10);
-const $$createType12 = $models.HubPreview.createFrom;
-const $$createType13 = $Create.Nullable($$createType12);
-const $$createType14 = app$0.Invoice.createFrom;
-const $$createType15 = $Create.Nullable($$createType14);
-const $$createType16 = $Create.Array($Create.Any);
-const $$createType17 = $models.RestoredHub.createFrom;
-const $$createType18 = $Create.Array($$createType17);
-const $$createType19 = $models.SetupView.createFrom;
-const $$createType20 = $Create.Nullable($$createType19);
-const $$createType21 = $models.UsageView.createFrom;
-const $$createType22 = $Create.Nullable($$createType21);
-const $$createType23 = $models.VaultStateView.createFrom;
-const $$createType24 = $Create.Nullable($$createType23);

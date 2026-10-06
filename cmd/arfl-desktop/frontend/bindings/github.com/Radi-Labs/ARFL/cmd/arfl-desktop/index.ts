@@ -6,7 +6,7 @@ export {
     Bridge
 };
 
-export {
+export type {
     HubPreview,
     KnownHub,
     RestoredHub,

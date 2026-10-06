@@ -71,15 +71,17 @@ mkdir -p bin
 go build -o bin/arfl-hub ./cmd/arfl-hub
 go build -o bin/arfl-node ./cmd/arfl-node
 go build -o bin/arfl-client ./cmd/arfl-client
+go build -o bin/arfl ./cmd/arfl
 ```
 
-This produces three binaries:
+This produces four binaries:
 
 | Binary | Purpose |
 |---|---|
 | `bin/arfl-hub` | Coordination hub — discovery, payments, blind signing |
 | `bin/arfl-node` | Node daemon — WireGuard tunnel endpoint (entry or exit) |
 | `bin/arfl-client` | Client CLI — purchase bandwidth, connect to nodes |
+| `bin/arfl` | Setup helper — guided config generation (`init`) and diagnostics (`doctor`) |
 
 > **Important (production deploy):** build the hub with CGO enabled (default).
 > `CGO_ENABLED=0` will compile, but SQLite will be a stub and `arfl-hub` exits
@@ -121,6 +123,42 @@ For production node servers, the setup script installs WireGuard, nftables, enab
 ```bash
 sudo bash deployments/setup-node.sh
 ```
+
+### Automated Hub Setup (Ubuntu)
+
+For production hub servers, the setup script installs dependencies, builds binaries, and
+generates `/opt/arfl/data/hub.json` with secure defaults:
+
+```bash
+sudo bash deployments/setup-hub.sh
+```
+
+The script is idempotent for hub identity: if `/opt/arfl/data/hub.json` already exists,
+it does not overwrite it by default. Set `ARFL_REGENERATE_HUB_CONFIG=1` only when you
+intentionally want fresh hub secrets and identity.
+
+### Guided Setup (No Manual JSON Editing)
+
+Use the setup helper to generate configs and validate them.
+`arfl init` uses Charm interactive forms (Bubble Tea + Huh), while `arfl doctor`
+uses Lip Gloss styling for readable pass/warn/fail diagnostics.
+
+```bash
+# Generate hub config + secrets
+./bin/arfl init hub --output hub.json
+
+# Generate node config + keys
+./bin/arfl init node --role entry --endpoint <public-ip>:51820 --output node-entry.json
+
+# Validate configuration and runtime health
+./bin/arfl doctor hub --config hub.json --url http://127.0.0.1:8080
+./bin/arfl doctor node --config node-entry.json --hub-url http://<hub-ip>:8080
+```
+
+`arfl init hub` / `arfl init node` refuse to overwrite existing output files unless
+you pass `--force` (which creates a timestamped backup first).
+
+For CI/automation, disable the interactive TUI with `--non-interactive` and pass flags directly.
 
 ## Configuration
 

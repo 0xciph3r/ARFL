@@ -78,6 +78,21 @@ cd ARFL
 go build ./...
 ```
 
+### Guided setup helpers
+
+```bash
+# interactive config generation
+./arfl init hub --output hub.json
+./arfl init node --role entry --endpoint <public-ip>:51820 --output node.json
+
+# health checks
+./arfl doctor hub --config hub.json --url http://127.0.0.1:8080
+./arfl doctor node --config node.json --hub-url http://<hub-ip>:8080
+```
+
+`arfl init` uses Charm interactive forms (Bubble Tea + Huh). `arfl doctor` uses
+Lip Gloss-styled diagnostics. Use `--non-interactive` for automation pipelines.
+
 ---
 
 ## Documentation

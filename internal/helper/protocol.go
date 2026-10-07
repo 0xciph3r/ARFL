@@ -19,7 +19,8 @@ import (
 // so the app offers to reinstall an out-of-date helper rather than drive it.
 // 2: Preflight checks for wireguard-go, found outside launchd's PATH.
 // 3: Preflight and tunnel bring-up require an outbound IPv6 block.
-const Version = 3
+// 4: Records teardown diagnostics in a root-only log.
+const Version = 4
 
 // Method names.
 const (

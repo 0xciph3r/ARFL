@@ -42,7 +42,7 @@
   const NODE_SILENT_SECS = 180
   const HUB_CHECK_MS = 60_000
 
-  type AlertKind = 'low' | 'out' | 'node' | 'hub'
+  type AlertKind = 'low' | 'out' | 'node'
   let alert = $state<AlertKind | null>(null)
   let lowDismissed = $state(false)
   let silentHop = $state<'entry' | 'exit'>('exit')
@@ -53,19 +53,42 @@
   // After a failed top-up, wait before trying again rather than every sample.
   let renewRetryAt = 0
   let hubPreview = $state<{ margin_pct: number; node_count: number } | null>(null)
-  let hubReachedAt = $state(Date.now())
+  let hubReachedAt = $state<number | null>(null)
+  let hubCheckError = $state('')
+  let checkingHub = $state(false)
+  let failedHubChecks = 0
 
-  async function checkHub() {
+  async function checkHub(manual = false) {
+    if (checkingHub) return
+    const hubURL = status.hub_url
+    checkingHub = true
     try {
-      hubPreview = await api.previewHub(status.hub_url)
+      const preview = await api.previewHub(hubURL)
+      if (hubURL !== status.hub_url) return
+      hubPreview = preview
       hubReachedAt = Date.now()
-      if (alert === 'hub') alert = null
-    } catch {
-      if (!alert) alert = 'hub'
+      failedHubChecks = 0
+      hubCheckError = ''
+    } catch (err) {
+      if (hubURL !== status.hub_url) return
+      failedHubChecks++
+      if (manual || failedHubChecks >= 2) hubCheckError = (err as Error).message
+    } finally {
+      checkingHub = false
+      if (hubURL !== status.hub_url) void checkHub()
     }
   }
-  checkHub()
-  const hubTimer = setInterval(checkHub, HUB_CHECK_MS)
+  $effect(() => {
+    const hubURL = status.hub_url
+    untrack(() => {
+      hubPreview = null
+      hubReachedAt = null
+      failedHubChecks = 0
+      hubCheckError = ''
+      if (hubURL) void checkHub()
+    })
+  })
+  const hubTimer = setInterval(() => { void checkHub() }, HUB_CHECK_MS)
   const hubMeta = $derived(hubPreview ? `Margin ${hubPreview.margin_pct}% · ${hubPreview.node_count} approved nodes. ` : '')
 
   // svelte-ignore state_referenced_locally
@@ -402,7 +425,7 @@
     if (tokens > LOW_TOKENS) lowDismissed = false
     else if (tokens > 0 && !lowDismissed && !alert) alert = 'low'
   })
-  const lastReached = $derived(Math.max(0, Math.round((now - hubReachedAt) / 60000)))
+  const lastReached = $derived(hubReachedAt === null ? null : Math.max(0, Math.round((now - hubReachedAt) / 60000)))
 
   const protShort = $derived(!connected ? 'Checked when connected' : nodeWarned ? 'Node not responding' : 'Basic setup configured')
   const protColor = $derived(!connected ? 'var(--muted)' : nodeWarned ? 'var(--amber)' : 'var(--cyan)')
@@ -443,6 +466,14 @@
       </div>
       <div class="word-status">{statusWord}</div>
       <div class="hint" class:err={!!error}>{statusHint}</div>
+      {#if hubCheckError}
+        <div class="hub-check" role="status">
+          Could not confirm hub reachability from this device: {hubCheckError}
+          {connected ? 'The tunnel is still reported up; new payments may fail.' : 'You are not connected. Your remaining tokens stay on this device.'}
+          {lastReached === null ? 'No successful hub check this session.' : `Last successful check: ${lastReached === 0 ? 'just now' : `${lastReached} min ago`}.`}
+          <button class="bare details" disabled={checkingHub} onclick={() => { void checkHub(true) }}>{checkingHub ? 'Checking…' : 'Retry check'}</button>
+        </div>
+      {/if}
       {#if pairError && !connected}
         <button class="bare details" onclick={() => (overlay = 'nodes')}>Choose another pair</button>
       {/if}
@@ -609,22 +640,6 @@
       onPrimary={reconnectAfterNodeFailure}
       onSecondary={() => { alert = null; overlay = 'nodes' }}
     />
-  {:else if alert === 'hub'}
-    <Alert
-      kicker="Hub unreachable"
-      tone="red"
-      title={`Can't reach ${hubName}`}
-      body={`Nodes check every token with the hub, so new connections cannot start until it is back. Your tokens stay on this device but only work at ${hubName}.`}
-      primary="Retry"
-      secondary="Switch hub"
-      onPrimary={checkHub}
-      onSecondary={() => { alert = null; overlay = 'hubs' }}
-    >
-      <div class="aline">
-        <div><div class="ak">Balance at {hubName}</div><div class="av mono">{balanceGB} GB</div></div>
-        <div class="ak">Last reached {lastReached === 0 ? 'just now' : `${lastReached} min ago`}</div>
-      </div>
-    </Alert>
   {/if}
 </div>
 
@@ -751,6 +766,19 @@
     color: var(--red);
   }
 
+  .hub-check {
+    max-width: 440px;
+    margin-top: 10px;
+    color: var(--amber);
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+
+  .hub-check button {
+    display: block;
+    margin-top: 4px;
+  }
+
   .setup {
     margin-top: 12px;
     min-height: 40px;
@@ -863,22 +891,9 @@
     border-bottom: 1px solid var(--line);
   }
 
-  .aline {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 0;
-    border-top: 1px solid var(--line);
-    border-bottom: 1px solid var(--line);
-  }
-
   .ak {
     font-size: 12px;
     color: var(--muted);
-  }
-
-  .aline > .ak {
-    font-size: 13px;
   }
 
   .av {

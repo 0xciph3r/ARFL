@@ -11,6 +11,7 @@ import (
 const (
 	binPath    = "/Library/PrivilegedHelperTools/" + Label
 	plistPath  = "/Library/LaunchDaemons/" + Label + ".plist"
+	logPath    = "/var/log/" + Label + ".log"
 	configDir  = "/Library/Application Support/ARFL"
 	ConfigPath = configDir + "/helper.json"
 )
@@ -25,7 +26,7 @@ func plist() string {
   <array><string>` + binPath + `</string><string>helper</string><string>run</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardErrorPath</key><string>/var/log/` + Label + `.log</string>
+  <key>StandardErrorPath</key><string>` + logPath + `</string>
 </dict>
 </plist>
 `
@@ -48,6 +49,16 @@ func Install(exe string, uid int) error {
 	if err := os.WriteFile(plistPath, []byte(plist()), 0o644); err != nil {
 		return fmt.Errorf("write launch daemon: %w", err)
 	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open helper log: %w", err)
+	}
+	if err := logFile.Close(); err != nil {
+		return fmt.Errorf("close helper log: %w", err)
+	}
+	if err := os.Chmod(logPath, 0o600); err != nil {
+		return fmt.Errorf("protect helper log: %w", err)
+	}
 	if out, err := exec.Command("launchctl", "bootstrap", "system", plistPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("start helper: %v: %s", err, out)
 	}
@@ -60,7 +71,7 @@ func Uninstall() error {
 		return fmt.Errorf("removing the helper needs administrator rights")
 	}
 	_ = exec.Command("launchctl", "bootout", "system/"+Label).Run()
-	for _, p := range []string{plistPath, binPath, ConfigPath, SocketPath} {
+	for _, p := range []string{plistPath, binPath, ConfigPath, SocketPath, logPath} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove %s: %w", p, err)
 		}

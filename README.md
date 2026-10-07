@@ -341,6 +341,8 @@ Unknown `discovery_source` values are treated as configuration errors. `discover
 
 The desktop shows its locally selected entry and exit before connecting. Connect rechecks the displayed pair against the current node index and refuses to spend proofs if either node is unavailable; **Pick another pair** selects a new route. Manually chosen nodes remain pinned until the user switches back to automatic selection. Without a desktop-prepared pair, the CLI still selects locally when connecting.
 
+The desktop checks the hub's `/info` endpoint separately from tunnel status. Repeated failed checks produce a non-blocking warning, not proof that the hub is down or that the tunnel disconnected; **Retry check** tests reachability from this device. Reconnecting can spend another pair of proofs, so it is never automatic. On macOS, the privileged helper records tunnel bring-up and teardown method results (without token data) in the root-only `/var/log/io.arfl.helper.log` for diagnosing unexpected disconnects.
+
 ### Bandwidth Tiers
 
 | Tier | Data | Price | Tokens |

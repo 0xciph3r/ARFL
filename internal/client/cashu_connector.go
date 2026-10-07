@@ -19,7 +19,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -44,6 +46,9 @@ func NewCashuConnector() *CashuConnector {
 	return &CashuConnector{
 		httpClient: &http.Client{
 			Timeout: 20 * time.Second,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}
 }
@@ -94,6 +99,53 @@ func (cc *CashuConnector) ConnectWithProofs(
 	proofs cashu.Proofs,
 	clientWGPubkey string,
 ) (*ConnectResult, error) {
+	return cc.sendProofs(ctx, cc.httpClient, connectURL, proofs, clientWGPubkey)
+}
+
+// ConnectWithProofsPinned uses the original URL for Host and TLS verification,
+// but connects only to the IPv4 address already routed through the outer hop.
+func (cc *CashuConnector) ConnectWithProofsPinned(
+	ctx context.Context, connectURL, pinnedIP string, proofs cashu.Proofs, clientWGPubkey string,
+) (*ConnectResult, error) {
+	ip := net.ParseIP(pinnedIP)
+	if ip == nil || ip.To4() == nil {
+		return nil, fmt.Errorf("invalid pinned IPv4 address %q", pinnedIP)
+	}
+	u, err := url.Parse(connectURL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil {
+		return nil, fmt.Errorf("invalid pinned connect URL %q", connectURL)
+	}
+	port := u.Port()
+	if port == "" {
+		if u.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	expected := net.JoinHostPort(u.Hostname(), port)
+	httpClient := &http.Client{
+		Timeout: cc.httpClient.Timeout,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{
+			Proxy: nil,
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if network != "tcp" || addr != expected {
+					return nil, fmt.Errorf("refusing unpinned connection to %s (%s)", addr, network)
+				}
+				return (&net.Dialer{}).DialContext(ctx, "tcp4", net.JoinHostPort(ip.String(), port))
+			},
+		},
+	}
+	defer httpClient.CloseIdleConnections()
+	return cc.sendProofs(ctx, httpClient, connectURL, proofs, clientWGPubkey)
+}
+
+func (cc *CashuConnector) sendProofs(
+	ctx context.Context, httpClient *http.Client, connectURL string, proofs cashu.Proofs, clientWGPubkey string,
+) (*ConnectResult, error) {
 	if len(proofs) == 0 {
 		return nil, fmt.Errorf("no proofs provided")
 	}
@@ -119,7 +171,7 @@ func (cc *CashuConnector) ConnectWithProofs(
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := cc.httpClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("connect request to %s: %w", connectURL, err)
 	}

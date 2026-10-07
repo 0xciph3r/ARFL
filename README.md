@@ -333,7 +333,7 @@ Desktop loads this policy from `client.json` in the current working directory by
 Unknown transport names in `preferred_transports` / `allowed_transports` are treated as configuration errors.
 If `require_common_hop_transport` is explicitly set to `false`, `arfl-desktop` rejects the policy until mixed-hop adapters are implemented.
 Unknown `token_delivery` values are treated as configuration errors.
-Unknown `discovery_source` values are treated as configuration errors. `discovery_source: "nostr"` requires both `relays` and `hub_pubkeys`.
+Unknown `discovery_source` values are treated as configuration errors. `discovery_source: "nostr"` requires both `relays` and `hub_pubkeys`. NIP-44 delivery also requires Nostr discovery with trusted hub keys: hub `/nodes` responses do not authenticate node encryption keys. HTTP delivery still supports hub discovery.
 
 ### Bandwidth Tiers
 

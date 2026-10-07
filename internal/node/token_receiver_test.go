@@ -2,6 +2,8 @@ package node
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -73,6 +75,7 @@ func TestTokenReceiver_DeduplicatesDuplicateRequestEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate node keypair: %v", err)
 	}
+
 	senderKP, err := nostr.GenerateKeyPair()
 	if err != nil {
 		t.Fatalf("generate sender keypair: %v", err)
@@ -150,5 +153,63 @@ func TestTokenReceiver_DeduplicatesDuplicateRequestEvents(t *testing.T) {
 	case <-done:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("receiver did not exit after cancel")
+	}
+}
+
+func TestTokenReceiverBoundsAndExpiresReplyCache(t *testing.T) {
+	nodeKP, err := nostr.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver := NewTokenReceiver(nodeKP, &countingRedeemer{}, newRelayStub(), nil)
+	for i := 0; i < maxCachedReplies; i++ {
+		key := fmt.Sprintf("sender:%d", i)
+		receiver.replies[key] = cachedTokenReply{
+			reply:     nostr.TokenReplyPayload{RequestID: key},
+			createdAt: time.Now(),
+		}
+	}
+	receiver.sendReplyAndCache(context.Background(), nodeKP.PubkeyHex(), "sender:new", &nostr.TokenReplyPayload{RequestID: "new"})
+	if len(receiver.replies) != maxCachedReplies {
+		t.Fatalf("cache grew beyond cap: %d", len(receiver.replies))
+	}
+	receiver.replies["sender:1"] = cachedTokenReply{
+		reply:     nostr.TokenReplyPayload{RequestID: "1"},
+		createdAt: time.Now().Add(-replyCacheTTL),
+	}
+	if _, ok := receiver.cachedReply("sender:1"); ok {
+		t.Fatal("expired reply was replayed")
+	}
+	if _, ok := receiver.replies["sender:1"]; ok {
+		t.Fatal("expired reply was retained")
+	}
+}
+
+func TestTokenReceiverRejectsOversizedRequestID(t *testing.T) {
+	nodeKP, err := nostr.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderKP, err := nostr.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay := newRelayStub()
+	redeemer := &countingRedeemer{}
+	receiver := NewTokenReceiver(nodeKP, redeemer, relay, nil)
+	payload := &nostr.TokenPayload{
+		RequestID: strings.Repeat("x", maxRequestIDLength+1),
+		Version:   1,
+		Role:      "entry",
+		WGPubkey:  "key",
+		Proofs:    cashu.Proofs{{Amount: 1, Id: "ks", Secret: "s", C: "02abc"}},
+	}
+	event, err := nostr.SealTokenEnvelope(senderKP, nodeKP.PubkeyHex(), payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver.handleEvent(context.Background(), event)
+	if len(receiver.replies) != 0 || redeemer.callCount() != 0 || relay.publishedCount() != 0 {
+		t.Fatal("oversized request was processed")
 	}
 }

@@ -61,6 +61,7 @@ ARFL is a **privacy-respecting bandwidth marketplace** — not an untraceable VP
 - **Go 1.26.3+** — [install](https://go.dev/dl/)
 - **WireGuard** — `apt install wireguard wireguard-tools` (Linux) or `brew install wireguard-tools` (macOS)
 - **nftables** (Linux nodes only) — `apt install nftables` (for kernel-level quota enforcement)
+- **ip6tables** (Linux clients, including the desktop app) — `apt install iptables` (required for the outbound IPv6 block; without it, connection preflight fails before payment)
 - **LND** (hub) — Lightning node with REST API enabled (`mainnet` for live sats, `testnet/signet` for E2E dry runs; [Polar](https://lightningpolar.com) for local dev)
 
 ### Build from Source
@@ -243,8 +244,11 @@ do not advertise paid node earnings as guaranteed (see step 4).
 
    A node announces itself to relays; the hub discovers it and verifies its
    attestation. Sharing a hub URL alone does not register a node. Renew
-   attestations before their 30-day expiry, and keep the lease active. A
-   usable two-hop route needs two distinct nodes serving entry and exit.
+   attestations last six hours; the node refreshes them automatically near
+   expiry while the hub-issued lease remains active (90 days in this example).
+   Check node logs if refresh fails, and arrange lease renewal with the hub
+   operator before the lease expires. A usable two-hop route needs two distinct
+   nodes serving entry and exit.
 
 4. **How node payment is intended to work (not yet reliable for live payouts).**
    Clients buy bandwidth from a hub and use it through entry and exit nodes.
@@ -445,6 +449,8 @@ Unknown `token_delivery` values are treated as configuration errors.
 Unknown `discovery_source` values are treated as configuration errors. `discovery_source: "nostr"` requires both `relays` and `hub_pubkeys`. NIP-44 delivery also requires Nostr discovery with trusted hub keys: hub `/nodes` responses do not authenticate node encryption keys. HTTP delivery still supports hub discovery.
 
 The desktop automatically selects and displays its entry and exit before connecting (the sole eligible pair when there is one, otherwise a random eligible pair); manual selection is optional. It prefers separately operated nodes, but if none are available it can use two distinct nodes of one operator. The Privacy panel explains that different node keys do not guarantee different operators. Connect rechecks the displayed nodes against the current node index and refuses to spend proofs if either is unavailable; **Pick another pair** selects a new route. Manually chosen nodes remain pinned until the user switches back to automatic selection.
+
+From the menu bar popover, **Choose nodes to connect** opens the main Nodes view. Review the displayed pair there, then click **Connect** in the main window to start a session. The popover can still disconnect an active session.
 
 The desktop checks the hub's `/info` endpoint separately from tunnel status. Repeated failed checks produce a non-blocking warning, not proof that the hub is down or that the tunnel disconnected; **Retry check** tests reachability from this device. Reconnecting can spend another pair of proofs, so it is never automatic. On macOS, the privileged helper records tunnel bring-up and teardown method results (without token data) in the root-only `/var/log/io.arfl.helper.log` for diagnosing unexpected disconnects.
 

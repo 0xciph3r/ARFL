@@ -4,8 +4,7 @@
   import { api, type Session, type StatusView } from '../lib/api'
   import { isLight, prefs } from '../lib/prefs.svelte'
   import { cue } from '../lib/sound'
-  import { connectProtected } from '../lib/protect'
-  import { TOKEN_SATS, gbFromTokens, tokensFromSats } from '../lib/units'
+  import { gbFromTokens, tokensFromSats } from '../lib/units'
   import mark from '../assets/mark.svg'
   import wordDark from '../assets/wordmark-dark.png'
   import wordLight from '../assets/wordmark-light.png'
@@ -50,8 +49,7 @@
       } else if (tokens < 2) {
         await api.showMain('topup')
       } else {
-        await connectProtected(TOKEN_SATS)
-        cue('up')
+        await api.showMain('nodes')
       }
     } catch (err) {
       error = (err as Error).message
@@ -62,7 +60,7 @@
   }
 
   const label = $derived(
-    busy ? (connected ? 'Disconnecting…' : 'Connecting…') : connected ? 'Disconnect' : tokens < 2 ? 'Top up to connect' : 'Connect',
+    busy ? (connected ? 'Disconnecting…' : 'Opening ARFL…') : connected ? 'Disconnect' : tokens < 2 ? 'Top up to connect' : 'Choose nodes to connect',
   )
 </script>
 
@@ -82,14 +80,14 @@
   </div>
 
   <div class="rows">
-    <div class="row"><span class="k">Entry</span><span class="v">{connected ? nodeLabel(session?.config?.entry?.node_id) : 'Not set'}</span></div>
-    <div class="row"><span class="k">Exit</span><span class="v">{connected ? nodeLabel(session?.config?.exit?.node_id) : 'Not set'}</span></div>
+    <div class="row"><span class="k">Entry</span><span class="v">{connected ? nodeLabel(session?.config?.entry?.node_id) : 'Choose in ARFL'}</span></div>
+    <div class="row"><span class="k">Exit</span><span class="v">{connected ? nodeLabel(session?.config?.exit?.node_id) : 'Choose in ARFL'}</span></div>
   </div>
 
   <div class="grow"></div>
 
   <div class="actions">
-    <button class="conn" class:on={connected} disabled={busy || (!connected && !status?.tunnel_ready && tokens >= 2)} onclick={toggle}>{label}</button>
+    <button class="conn" class:on={connected} disabled={busy || !status} onclick={toggle}>{label}</button>
     <div class="pair">
       <button class="secondary" onclick={() => api.showMain('topup')}>Top up</button>
       <button class="secondary" onclick={() => api.showMain()}>Open ARFL</button>

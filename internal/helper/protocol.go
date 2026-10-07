@@ -15,9 +15,10 @@ import (
 	"github.com/Radi-Labs/ARFL/internal/app"
 )
 
-// Version is bumped when the request set changes, so an app can tell an
-// out-of-date helper apart from a missing one.
-const Version = 1
+// Version is bumped when the request set or the helper's behaviour changes,
+// so the app offers to reinstall an out-of-date helper rather than drive it.
+// 2: Preflight checks for wireguard-go, found outside launchd's PATH.
+const Version = 2
 
 // Method names.
 const (

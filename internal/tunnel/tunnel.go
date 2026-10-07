@@ -202,7 +202,12 @@ func (t *Tunnel) ResetHopKeys() {
 // during bring-up costs the user real sats. This is checked first so an
 // unprivileged process is refused before any payment.
 func (t *Tunnel) Preflight() error {
-	return checkPrivileges()
+	if err := checkPrivileges(); err != nil {
+		return err
+	}
+	// Missing WireGuard support is only otherwise found while bringing the
+	// outer hop up, after the entry node has already been paid.
+	return wg.CheckDataPlane()
 }
 
 // ValidateEndpoints reports whether the two node endpoints could be used to

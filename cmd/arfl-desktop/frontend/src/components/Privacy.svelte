@@ -2,9 +2,9 @@
   let { connected, ipv6Safe }: { connected: boolean; ipv6Safe: boolean } = $props()
 
   const now = $derived([
-    { label: 'Payment cannot be linked to your use', status: 'Always on', tone: 'ok' },
+    { label: 'Blind tokens prevent a direct purchase-to-redemption match', status: 'Token only', tone: 'ok' },
     { label: 'IPv4 traffic is tunnelled', status: connected ? 'OK' : 'Not connected', tone: connected ? 'ok' : 'off' },
-    { label: 'DNS stays inside the tunnel', status: connected ? 'OK' : 'Not connected', tone: connected ? 'ok' : 'off' },
+    { label: 'DNS set to the tunnel resolver', status: connected ? 'Configured' : 'Not connected', tone: connected ? 'ok' : 'off' },
     {
       label: 'IPv6',
       status: connected ? (ipv6Safe ? 'OK' : 'Leaking') : 'Not connected',
@@ -16,10 +16,24 @@
   const limits = $derived([
     {
       title: 'Setup-time IP exposure',
-      body: 'The entry node sees your real IP while the session is set up, as it does for the whole session.',
-      status: 'Fixed for the exit',
+      body: 'The entry sees your real IP. With direct HTTP delivery, the exit is set up through the entry tunnel.',
+      status: 'Entry sees IP',
       tone: 'ok',
-      help: 'Your device pays the exit through the entry tunnel, so the exit never sees your IP.',
+      help: 'The exit normally sees the entry, not your source IP; colluding nodes can correlate sessions.',
+    },
+    {
+      title: 'Purchase IP exposure',
+      body: 'The hub sees your network address when your device contacts it to buy bandwidth.',
+      status: 'Visible to hub',
+      tone: 'warn',
+      help: 'Blind signatures protect tokens, not the network metadata of a purchase.',
+    },
+    {
+      title: 'Relay metadata',
+      body: 'If you use Nostr relay setup, a relay can see your network address and when you connect.',
+      status: 'Visible to relay',
+      tone: 'warn',
+      help: 'Token contents are encrypted; the relay still sees connection metadata.',
     },
     {
       title: 'Hub as double-spend referee',
@@ -33,7 +47,21 @@
       body: 'A compromised hub could match your two hops by timing alone.',
       status: 'Possible',
       tone: 'warn',
-      help: 'Choosing nodes from Nostr instead of the hub keeps the hub out of setup. Turn it on in client.json.',
+      help: 'Relay discovery removes the hub node-list lookup, but the hub still sees token redemption.',
+    },
+    {
+      title: 'Same party behind both nodes',
+      body: 'Different node keys do not prove different people operate the two hops.',
+      status: 'Possible',
+      tone: 'warn',
+      help: 'Hubs vet operators, but this is not a cryptographic independence guarantee.',
+    },
+    {
+      title: 'Fail-closed protection',
+      body: 'There is no verified kill switch. If the tunnel drops, traffic may use your normal connection.',
+      status: 'Not guaranteed',
+      tone: 'warn',
+      help: 'Stop sensitive traffic if the app reports a disconnected or interrupted session.',
     },
     {
       title: 'IPv6 leaks',
@@ -47,28 +75,28 @@
 
 <div class="col">
   <div>
-    <div class="lede">Three parties touch your session. Each only gets part of the picture.</div>
+    <div class="lede">These parties may observe a session. Their information can be combined if they cooperate.</div>
     <div class="parties">
       <div class="party">
         <div class="pname">Entry</div>
         <div class="k">Sees</div>
         <div class="v">Your real IP</div>
         <div class="k blind">Blind to</div>
-        <div class="v dim">The sites you visit<br />Who you are</div>
+        <div class="v dim">Destinations inside the encrypted inner tunnel</div>
       </div>
       <div class="party mid">
         <div class="pname">Exit</div>
         <div class="k">Sees</div>
-        <div class="v">The sites you visit<br />A tunnel address</div>
+        <div class="v">Destination IPs<br />Traffic leaving the tunnel</div>
         <div class="k blind">Blind to</div>
-        <div class="v dim">Your real IP<br />Who you are</div>
+        <div class="v dim">Your source IP, without collusion</div>
       </div>
       <div class="party last">
         <div class="pname">Hub</div>
         <div class="k">Sees</div>
-        <div class="v">Your key<br />Amounts minted<br />Tokens redeemed</div>
+        <div class="v">Your IP when you buy<br />Amounts minted<br />Token redemption timing</div>
         <div class="k blind">Blind to</div>
-        <div class="v dim">Which payment paid for which session<br />Your browsing</div>
+        <div class="v dim">Which payment funded a blind proof<br />Your browsing</div>
       </div>
     </div>
   </div>

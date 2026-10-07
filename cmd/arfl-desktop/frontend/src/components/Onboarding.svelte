@@ -170,7 +170,7 @@
     })
 
   const hubMeta = (h: HubPreview & { custom?: boolean }) =>
-    `${h.trusted ? 'Trusted by ARFL' : 'Not verified'} · ${h.url.replace(/^https?:\/\//, '')} · Margin ${h.margin_pct}% · ${h.node_count} approved nodes`
+    `${h.url.replace(/^https?:\/\//, '')} · Margin ${h.margin_pct}% · ${h.node_count} approved nodes`
 
   const fileName = $derived(file ? file.split(/[\\/]/).pop() : 'Choose file')
   const chkLabels = ['Decrypting the file', 'Restoring your key', 'Asking each hub which tokens are unspent']
@@ -190,7 +190,7 @@
       {/each}
     </ol>
     <div class="grow"></div>
-    <div class="brand mono">NO LOGS.<br />NO ACCOUNTS.<br />NO FEE, EVER.</div>
+    <div class="brand mono">NO ACCOUNTS.<br />NO NATIVE TOKEN.</div>
   </aside>
 
   <section>
@@ -198,7 +198,7 @@
       <img src={eyes} alt="" class="eyes" />
       <div class="kicker mono">PRIVACY IN THE DARK CLOUD</div>
       <h1 class="hero">Privacy without an account.</h1>
-      <p class="lede">Your device makes a key. That key is your only identity. You pay in bitcoin over Lightning, and your traffic goes through two separate nodes.</p>
+      <p class="lede">Your device makes a key. You pay in bitcoin over Lightning, and your traffic goes through two hops. The same party may operate both nodes.</p>
       <div class="points">
         <div class="point"><span class="num mono">01</span><span>The entry node sees your IP but not where you go.</span></div>
         <div class="point"><span class="num mono">02</span><span>The exit node sees where you go but not who you are.</span></div>
@@ -237,7 +237,7 @@
       </div>
     {:else if flow === 'new' && step === 2}
       <h1>Choose a hub</h1>
-      <p class="lede wide">Hubs are run by independent operators. Each sets its own prices and approves its own nodes. Tokens only work at the hub that sold them, so switching later means buying again.</p>
+      <p class="lede wide">Hubs approve their own nodes. This desktop build uses a fixed Cashu bandwidth rate, not the hub's published tiers. Tokens only work at the hub that issued them; switching later means buying again.</p>
       <div class="hub-list">
         {#if hubLoading}
           <div class="small">Looking up hubs…</div>
@@ -307,7 +307,7 @@
       </div>
     {:else if flow === 'restore' && rs === 0}
       <h1>Restore from a backup</h1>
-      <p class="lede">Bring your key and your tokens to this device.</p>
+      <p class="lede">Restoring makes another copy of your bearer tokens. The old device can still try to spend them; only the first spend of each token works.</p>
       <div class="rows">
         <button class="bare file-row" onclick={pickFile}>
           <div><div class="row-title">Backup file</div><div class="small">Restores your key and every token</div></div>

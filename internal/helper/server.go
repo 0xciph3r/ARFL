@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/app"
 	"github.com/Radi-Labs/ARFL/internal/tunnel"
@@ -63,15 +64,20 @@ func (s *Server) Serve(l net.Listener) error {
 func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
 
+	// Read the request before answering, even from a caller that will be
+	// refused: closing on a client that is still writing makes it see a
+	// broken pipe instead of the refusal. The read is bounded in size and time.
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var req request
+	decodeErr := json.NewDecoder(io.LimitReader(conn, maxMessage)).Decode(&req)
+
 	uid, err := s.peerUID(conn)
 	if err != nil || (uid != s.allowedUID && uid != 0) {
 		log.Printf("[helper] refused connection (uid=%d, err=%v)", uid, err)
 		_ = json.NewEncoder(conn).Encode(response{Error: "not allowed to use the ARFL helper"})
 		return
 	}
-
-	var req request
-	if err := json.NewDecoder(io.LimitReader(conn, maxMessage)).Decode(&req); err != nil {
+	if decodeErr != nil {
 		_ = json.NewEncoder(conn).Encode(response{Error: "bad request"})
 		return
 	}

@@ -50,10 +50,7 @@
       } else if (tokens < 2) {
         await api.showMain('topup')
       } else {
-        // Same path as the main window, so the IPv6 preference is applied
-        // before the session counts as connected.
-        const res = await connectProtected(TOKEN_SATS)
-        if (res.ipv6Error) error = res.ipv6Error
+        await connectProtected(TOKEN_SATS)
         cue('up')
       }
     } catch (err) {

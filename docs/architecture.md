@@ -70,7 +70,7 @@ Exit decrypts Layer 2 → sees Layer 3 (cleartext). Forwards to internet.
 | Interface  | Address      | Peer Endpoint              | AllowedIPs                    | Purpose          |
 |------------|-------------|----------------------------|-------------------------------|------------------|
 | `wg-outer` | 10.100.0.2  | entry_ip:51820             | 10.100.0.0/24, exit_ip/32     | Outer tunnel     |
-| `wg-inner` | 10.200.0.2  | exit_ip:51821 (via outer)  | 0.0.0.0/0, ::/0              | Inner tunnel     |
+| `wg-inner` | 10.200.0.2  | exit_ip:51821 (via outer)  | 0.0.0.0/0 (IPv6 blocked locally) | Inner tunnel |
 
 ### Entry Node
 | Interface  | Address      | Listen Port | Purpose                    |

@@ -1,12 +1,10 @@
 <script lang="ts">
-  let { connected, session, used, down, up, ipv6Exposed, onFixIPv6, onPrivacy }: {
+  let { connected, session, used, down, up, onPrivacy }: {
     connected: boolean
     session: string
     used: string
     down: string
     up: string
-    ipv6Exposed: boolean
-    onFixIPv6: () => void
     onPrivacy: () => void
   } = $props()
 </script>
@@ -22,17 +20,7 @@
     <div class="checks">
       <div class="row"><span>IPv4 traffic is tunnelled</span><span class="ok">OK</span></div>
       <div class="row"><span>DNS set to the tunnel resolver</span><span class="ok">Configured</span></div>
-      <div class="row tall">
-        <span>IPv6</span>
-        {#if ipv6Exposed}
-          <div class="fix">
-            <span class="warn">Leaks around the tunnel</span>
-            <button class="amber" onclick={onFixIPv6}>Turn off IPv6</button>
-          </div>
-        {:else}
-          <span class="ok">OK</span>
-        {/if}
-      </div>
+      <div class="row"><span>Outbound IPv6 block</span><span class="ok">Configured at connect</span></div>
     </div>
   {/if}
   <div class="foot">
@@ -81,35 +69,10 @@
     font-size: 14px;
   }
 
-  .row.tall {
-    min-height: 56px;
-  }
-
   .ok {
     font-size: 13px;
     color: var(--cyan);
     font-weight: 500;
-  }
-
-  .fix {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .warn {
-    font-size: 13px;
-    color: var(--amber);
-    font-weight: 500;
-  }
-
-  .amber {
-    min-height: 36px;
-    padding: 0 12px;
-    border-radius: 8px;
-    background: var(--amberBtn);
-    color: #1d1200;
-    font-size: 13px;
   }
 
   .foot {

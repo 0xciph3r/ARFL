@@ -207,6 +207,60 @@ func TestSTRIDE_Repudiation_DownReportsPartialTeardown(t *testing.T) {
 
 // --- Information disclosure ---
 
+func TestSTRIDE_InfoDisclosure_IPv6IsBlockedBeforeOuterHop(t *testing.T) {
+	fwg, fnet := newFakeWG(), newFakeNet()
+	tun := newReadyTunnel(t, fwg, fnet)
+	if err := tun.UpOuter(context.Background(), validConfig()); err != nil {
+		t.Fatalf("outer up: %v", err)
+	}
+	if fnet.ipv6Off != 1 {
+		t.Fatalf("IPv6 must be blocked before the outer-only interval, got %d", fnet.ipv6Off)
+	}
+	if err := tun.Down(context.Background()); err != nil || fnet.ipv6Restore != 1 {
+		t.Fatalf("IPv6 block not removed: err=%v restores=%d", err, fnet.ipv6Restore)
+	}
+}
+
+func TestSTRIDE_InfoDisclosure_IPv6FailureAbortsBeforeRoutes(t *testing.T) {
+	fwg, fnet := newFakeWG(), newFakeNet()
+	fnet.ipv6Err = errors.New("firewall refused")
+	tun := newReadyTunnel(t, fwg, fnet)
+	if err := tun.Up(context.Background(), validConfig()); err == nil || !strings.Contains(err.Error(), "secure IPv6") {
+		t.Fatalf("IPv6 failure must abort, got %v", err)
+	}
+	if len(fwg.created) != 0 || len(fnet.added) != 0 || fnet.dnsSet != 0 {
+		t.Fatal("IPv6 protection failed but network configuration proceeded")
+	}
+	if fnet.ipv6Restore != 1 {
+		t.Fatal("partial IPv6 changes were not rolled back")
+	}
+}
+
+func TestSTRIDE_Repudiation_IPv6RestoreFailureCanBeRetried(t *testing.T) {
+	fwg, fnet := newFakeWG(), newFakeNet()
+	tun := newReadyTunnel(t, fwg, fnet)
+	if err := tun.Up(context.Background(), validConfig()); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	fnet.ipv6RestoreErr = errors.New("firewall locked")
+	if err := tun.Down(context.Background()); err == nil || !strings.Contains(err.Error(), "restore IPv6") {
+		t.Fatalf("restore failure must be visible: %v", err)
+	}
+	if tun.active != nil || tun.pendingCleanup == nil {
+		t.Fatal("failed IPv6 rollback must leave a disconnected, retryable cleanup")
+	}
+	if err := tun.Up(context.Background(), validConfig()); err == nil || !strings.Contains(err.Error(), "teardown incomplete") {
+		t.Fatalf("must refuse a new session until IPv6 is restored: %v", err)
+	}
+	fnet.ipv6RestoreErr = nil
+	if err := tun.Down(context.Background()); err != nil || fnet.ipv6Restore != 2 {
+		t.Fatalf("retry IPv6 restore: err=%v attempts=%d", err, fnet.ipv6Restore)
+	}
+	if tun.pendingCleanup != nil {
+		t.Fatal("successful retry did not clear pending cleanup")
+	}
+}
+
 func TestSTRIDE_InfoDisclosure_OuterHopCannotSeeGeneralTraffic(t *testing.T) {
 	// The entry node must only carry the outer subnet and the exit node's
 	// address. If its AllowedIPs were a default route, general traffic would be

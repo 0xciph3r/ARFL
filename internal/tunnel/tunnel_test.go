@@ -73,8 +73,10 @@ type fakeNet struct {
 	setDNSErr  error
 	failRoute  string
 
-	ipv6Off     int
-	ipv6Restore int
+	ipv6Off        int
+	ipv6Restore    int
+	ipv6Err        error
+	ipv6RestoreErr error
 }
 
 func newFakeNet() *fakeNet {
@@ -116,12 +118,12 @@ func (f *fakeNet) RestoreDNS() error {
 
 func (f *fakeNet) DisableIPv6() error {
 	f.ipv6Off++
-	return nil
+	return f.ipv6Err
 }
 
 func (f *fakeNet) RestoreIPv6() error {
 	f.ipv6Restore++
-	return nil
+	return f.ipv6RestoreErr
 }
 
 func validConfig() app.TunnelConfig {

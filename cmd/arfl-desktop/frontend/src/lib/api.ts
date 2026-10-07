@@ -72,8 +72,6 @@ export const api = {
   setup: () => value(() => Bridge.Setup()),
   knownHubs: () => list(() => Bridge.KnownHubs()),
   usage: () => value(() => Bridge.Usage()),
-  ipv6Exposed: () => call(() => Bridge.IPv6Exposed()),
-  disableIPv6: () => call(() => Bridge.DisableIPv6()),
   heldSats: () => call(() => Bridge.HeldSats()),
   keyTransfer: () => call(() => Bridge.KeyTransfer()),
   openAtLogin: () => call(() => Bridge.OpenAtLogin()),

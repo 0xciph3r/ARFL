@@ -47,7 +47,7 @@
     applyPrefs()
   }
 
-  type Key = 'sounds' | 'reduceMotion' | 'ipv6Auto' | 'atLogin'
+  type Key = 'sounds' | 'reduceMotion' | 'atLogin'
   const isOn = (key: Key) => (key === 'atLogin' ? atLogin : prefs[key])
 
   async function toggle(key: Key) {
@@ -68,7 +68,6 @@
 
   const toggles: { key: Key; label: string; sub: string }[] = [
     { key: 'sounds', label: 'Sounds', sub: 'Short tones when you connect, disconnect and pay.' },
-    { key: 'ipv6Auto', label: 'Turn off IPv6 when connecting', sub: 'Stops IPv6 traffic leaking around the tunnel.' },
     { key: 'reduceMotion', label: 'Reduce motion', sub: 'Stops the pulses, glow and eye animations.' },
     { key: 'atLogin', label: 'Open at login', sub: 'Start ARFL when you sign in to this computer.' },
   ]

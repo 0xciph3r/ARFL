@@ -4,7 +4,7 @@
   import { api, type HubStatus, type Session, type StatusView } from '../lib/api'
   import { isLight, prefs } from '../lib/prefs.svelte'
   import { cue } from '../lib/sound'
-  import { connectProtected, ipv6Exposed as checkExposed } from '../lib/protect'
+  import { connectProtected } from '../lib/protect'
   import { TOKEN_SATS, gbFromTokens, tokensFromSats } from '../lib/units'
   import mark from '../assets/mark.svg'
   import wordDark from '../assets/wordmark-dark.png'
@@ -96,25 +96,6 @@
   }
   let usage = $state({ rx: 0, tx: 0 })
   let rate = $state({ down: 0, up: 0 })
-  let ipv6Exposed = $state(false)
-  let ipv6Off = $state(false)
-  const ipv6Safe = $derived(!ipv6Exposed || ipv6Off)
-
-  async function checkIPv6() {
-    ipv6Exposed = await checkExposed()
-  }
-  checkIPv6()
-
-  async function fixIPv6() {
-    error = ''
-    try {
-      await api.disableIPv6()
-      ipv6Off = true
-    } catch (err) {
-      error = (err as Error).message
-    }
-  }
-
   // Live usage comes from the tunnel's own byte counters, sampled each second.
   let lastSample = { rx: 0, tx: 0, at: 0 }
   async function sampleUsage() {
@@ -241,9 +222,6 @@
       usage = { rx: 0, tx: 0 }
       rate = { down: 0, up: 0 }
       allowanceBase = 0
-      ipv6Exposed = res.ipv6Exposed
-      ipv6Off = res.ipv6Off
-      if (res.ipv6Error) error = res.ipv6Error
       clearTimers()
       stage = -1
       cue('up')
@@ -306,7 +284,6 @@
         route: nodeLabel(ended.config?.entry?.node_id) + ' → ' + nodeLabel(ended.config?.exit?.node_id),
       }
     }
-    ipv6Off = false
     session = null
     later(() => (closing = false), 950)
     onChanged()
@@ -348,14 +325,12 @@
           : connected
             ? nodeWarned
               ? 'Node not responding'
-              : ipv6Safe
-                ? 'Tunnel up'
-                : 'IPv6 exposed'
+              : 'Tunnel up'
             : 'Not connected',
   )
   const statusSmall = $derived(closing ? 'Disconnecting' : connecting ? 'Connecting' : connected ? 'Connected' : 'Disconnected')
   const statusColor = $derived(
-    connecting ? 'var(--accent)' : connected && !closing ? (ipv6Safe && !nodeWarned ? 'var(--cyan)' : 'var(--amber)') : 'var(--muted)',
+    connecting ? 'var(--accent)' : connected && !closing ? (nodeWarned ? 'var(--amber)' : 'var(--cyan)') : 'var(--muted)',
   )
   const statusHint = $derived.by(() => {
     if (error) return error
@@ -363,8 +338,7 @@
     if (closing) return 'Closing the tunnel. Your traffic will not be protected after this.'
     if (connecting) return 'Your device is paying each node and building the two tunnels.'
     if (connected && nodeWarned) return 'A node stopped responding. The connection may not be usable; reconnect starts a new paid session.'
-    if (connected && !ipv6Safe) return 'The tunnel is up, but IPv6 traffic still goes out directly.'
-    if (connected) return 'Two tunnel hops are configured. Traffic can leave directly if the tunnel drops.'
+    if (connected) return 'Two tunnel hops and an outbound IPv6 block are configured. Traffic can leave directly if the tunnel drops.'
     if (noBalance) return `You have no bandwidth at ${hubName}. Tokens only work at the hub that sold them.`
     return 'Your traffic leaves this device directly until you connect.'
   })
@@ -399,8 +373,8 @@
   })
   const lastReached = $derived(Math.max(0, Math.round((now - hubReachedAt) / 60000)))
 
-  const protShort = $derived(!connected ? 'Checked when connected' : nodeWarned ? 'Node not responding' : ipv6Safe ? 'Checks passed' : '1 issue: IPv6')
-  const protColor = $derived(!connected ? 'var(--muted)' : nodeWarned || !ipv6Safe ? 'var(--amber)' : 'var(--cyan)')
+  const protShort = $derived(!connected ? 'Checked when connected' : nodeWarned ? 'Node not responding' : 'Basic setup configured')
+  const protColor = $derived(!connected ? 'var(--muted)' : nodeWarned ? 'var(--amber)' : 'var(--cyan)')
 
   const titles = $derived<Record<Overlay, string>>({
     topup: `Top up at ${hubName}`,
@@ -540,12 +514,10 @@
           used={fmtMB(usage.rx + usage.tx)}
           down={fmtRate(rate.down)}
           up={fmtRate(rate.up)}
-          ipv6Exposed={!ipv6Safe}
-          onFixIPv6={fixIPv6}
           onPrivacy={() => (overlay = 'privacy')}
         />
       {:else if overlay === 'privacy'}
-        <Privacy {connected} {ipv6Safe} />
+        <Privacy {connected} />
       {:else if overlay === 'summary' && last}
         <Summary
           {last}

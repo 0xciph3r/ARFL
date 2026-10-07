@@ -3,7 +3,10 @@
 package tunnel
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"os/exec"
 	"strings"
 )
 
@@ -13,10 +16,9 @@ import (
 // DNS is set per network service via networksetup, and every service that was
 // changed is recorded so teardown can put each one back.
 type darwinConfigurator struct {
-	dnsBackup map[string][]string
-	// ipv6Off lists the services whose IPv6 was Automatic before the tunnel
-	// turned it off; only those are switched back.
-	ipv6Off []string
+	dnsBackup  map[string][]string
+	ipv6Anchor string
+	ipv6Token  string
 }
 
 func newNetConfigurator() (netConfigurator, error) {
@@ -166,41 +168,78 @@ func currentDNS(service string) ([]string, error) {
 }
 
 func (c *darwinConfigurator) DisableIPv6() error {
-	services, err := networkServices()
-	if err != nil {
-		return err
+	if c.ipv6Anchor != "" {
+		return nil
 	}
-	for _, service := range services {
-		info, err := output("networksetup", "-getinfo", service)
-		if err != nil || !strings.Contains(info, "IPv6: Automatic") {
-			continue
+	// An unreferenced anchor is inert. Refuse hosts without the system's
+	// standard anchor hook rather than giving a false sense of protection.
+	parent, err := output("pfctl", "-sr")
+	if err != nil {
+		return fmt.Errorf("inspect packet filter: %w", err)
+	}
+	if !pfAnchorUsable(parent) {
+		return fmt.Errorf("packet filter has no usable com.apple/* filter anchor for IPv6")
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return fmt.Errorf("identify IPv6 anchor: %w", err)
+	}
+	c.ipv6Anchor = "com.apple/arfl-" + hex.EncodeToString(nonce[:])
+	cmd := exec.Command("pfctl", "-a", c.ipv6Anchor, "-f", "-")
+	cmd.Stdin = strings.NewReader("block drop out quick inet6 from any to any\n")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("install IPv6 block: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	rules, err := output("pfctl", "-a", c.ipv6Anchor, "-sr")
+	if err != nil || !strings.Contains(rules, "block drop out quick inet6") {
+		return fmt.Errorf("verify IPv6 block: rules=%q: %v", strings.TrimSpace(rules), err)
+	}
+	enabled, err := output("pfctl", "-E")
+	if err != nil {
+		return fmt.Errorf("enable IPv6 packet filter: %w", err)
+	}
+	for _, line := range strings.Split(enabled, "\n") {
+		if fields := strings.Fields(line); len(fields) == 3 && fields[0] == "Token" && fields[1] == ":" {
+			c.ipv6Token = fields[2]
 		}
-		if err := run("networksetup", "-setv6off", service); err != nil {
-			// The tunnel only records the change on success, so undo the
-			// services already switched off or they would stay that way.
-			if rerr := c.RestoreIPv6(); rerr != nil {
-				return fmt.Errorf("turn off IPv6 on %q: %w (rolling back: %v)", service, err, rerr)
-			}
-			return fmt.Errorf("turn off IPv6 on %q: %w", service, err)
-		}
-		c.ipv6Off = append(c.ipv6Off, service)
+	}
+	if c.ipv6Token == "" {
+		return fmt.Errorf("packet filter did not return an enable token: %q", strings.TrimSpace(enabled))
+	}
+	info, err := output("pfctl", "-s", "info")
+	if err != nil || !strings.Contains(info, "Status: Enabled") {
+		return fmt.Errorf("IPv6 packet filter is not enabled: %v", err)
 	}
 	return nil
 }
 
-func (c *darwinConfigurator) RestoreIPv6() error {
-	var problems []string
-	var failed []string
-	for _, service := range c.ipv6Off {
-		if err := run("networksetup", "-setv6automatic", service); err != nil {
-			problems = append(problems, fmt.Sprintf("%s: %v", service, err))
-			failed = append(failed, service)
+// A quick pass before our anchor could bypass it, regardless of our rule.
+func pfAnchorUsable(rules string) bool {
+	for _, line := range strings.Split(rules, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, `anchor "com.apple/*"`) {
+			return true
+		}
+		if strings.HasPrefix(line, "pass ") && strings.Contains(line, " quick ") {
+			return false
 		}
 	}
-	// Services that could not be restored stay listed so a later call retries.
-	c.ipv6Off = failed
-	if len(problems) > 0 {
-		return fmt.Errorf("restore IPv6: %s", strings.Join(problems, "; "))
+	return false
+}
+
+func (c *darwinConfigurator) RestoreIPv6() error {
+	if c.ipv6Anchor == "" {
+		return nil
 	}
+	if err := run("pfctl", "-a", c.ipv6Anchor, "-F", "rules"); err != nil {
+		return fmt.Errorf("remove IPv6 block: %w", err)
+	}
+	if c.ipv6Token != "" {
+		if err := run("pfctl", "-X", c.ipv6Token); err != nil {
+			return fmt.Errorf("release IPv6 packet filter token: %w", err)
+		}
+	}
+	c.ipv6Anchor = ""
+	c.ipv6Token = ""
 	return nil
 }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import { api, type NodeInfo, type Pinned, type Session } from '../lib/api'
 
   let { hubName, session, connected }: {
@@ -12,6 +13,7 @@
   let nodes = $state<NodeInfo[]>([])
   let pinned = $state<Pinned | null>(null)
   let error = $state('')
+  let loading = $state(false)
   let adv = $state(false)
   let slot = $state<Slot>('entry')
   let query = $state('')
@@ -19,18 +21,20 @@
   let draft = $state<{ entry: string; exit: string }>({ entry: '', exit: '' })
 
   async function load() {
+    if (loading) return
+    loading = true
     error = ''
     try {
       ;[nodes, pinned] = await Promise.all([api.listNodes(), api.pinnedPair()])
       if (pinned) draft = { entry: pinned.entry_id, exit: pinned.exit_id }
     } catch (err) {
       error = (err as Error).message
+    } finally {
+      loading = false
     }
   }
 
-  $effect(() => {
-    load()
-  })
+  onMount(() => { void load() })
 
   const nodeLabel = (n: NodeInfo | undefined) => (n ? 'Node ' + n.nostr_pubkey.slice(0, 4) : '')
   const shortKey = (k: string) => (k.length > 14 ? k.slice(0, 8) + '…' + k.slice(-4) : k)
@@ -106,7 +110,12 @@
     {#if pinned}
       <button class="bare link" onclick={useAuto}>Use the automatic pair</button>
     {/if}
-    {#if error}<div class="err" role="alert">{error}</div>{/if}
+    {#if error}
+      <div class="err" role="alert">
+        <span>{error}</span>
+        <button class="bare link" disabled={loading} onclick={load}>Try again</button>
+      </div>
+    {/if}
   </div>
 
   <button class="bare toggle" onclick={() => (adv = !adv)}>
@@ -127,7 +136,9 @@
       <input type="text" placeholder="Search this hub's nodes" aria-label="Search nodes" bind:value={query} />
       <div class="caption">Picking a node here replaces the automatic pair.</div>
     </div>
-    {#if list.length === 0}
+    {#if loading}
+      <div class="empty">Loading nodes…</div>
+    {:else if !error && list.length === 0}
       <div class="empty">No {slot} nodes match.</div>
     {/if}
     {#each list as n (n.id)}

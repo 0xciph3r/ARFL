@@ -55,9 +55,8 @@ type netConfigurator interface {
 	SetDNS(resolver string) error
 	// RestoreDNS puts the previous resolver back.
 	RestoreDNS() error
-	// DisableIPv6 turns IPv6 off on the physical adapters, recording what it
-	// changed. The tunnel carries IPv4 only, so IPv6 would otherwise leave the
-	// machine directly.
+	// DisableIPv6 blocks outbound IPv6 before the first tunnel interface or
+	// route is installed. The tunnel carries IPv4 only.
 	DisableIPv6() error
 	// RestoreIPv6 puts back exactly what DisableIPv6 changed.
 	RestoreIPv6() error
@@ -93,6 +92,9 @@ type Tunnel struct {
 	// active records what was configured so teardown reverses exactly those
 	// changes. A partial bring-up must not leave routes or interfaces behind.
 	active *activeState
+	// pendingCleanup is disconnected but still has network changes to undo.
+	// It must not count as a connected session or permit a new connection.
+	pendingCleanup *activeState
 }
 
 // activeState is the set of changes made to the system for one session.
@@ -232,8 +234,8 @@ func (t *Tunnel) ResetHopKeys() {
 	t.exitKeys = nil
 }
 
-// Preflight reports whether the tunnel could be brought up right now, without
-// making any change.
+// Preflight installs and removes a temporary IPv6 block to verify the
+// platform's actual firewall capabilities before nodes receive proofs.
 //
 // app.Service pays both nodes before calling Up, so a failure discovered
 // during bring-up costs the user real sats. This is checked first so an
@@ -244,7 +246,39 @@ func (t *Tunnel) Preflight() error {
 	}
 	// Missing WireGuard support is only otherwise found while bringing the
 	// outer hop up, after the entry node has already been paid.
-	return wg.CheckDataPlane()
+	if err := wg.CheckDataPlane(); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.preflightIPv6Locked()
+}
+
+func (t *Tunnel) preflightIPv6Locked() error {
+	if t.active != nil {
+		return fmt.Errorf("cannot probe IPv6 protection while the tunnel is up")
+	}
+	if t.pendingCleanup != nil {
+		// A failed preflight leaves no active session for the UI to disconnect.
+		// Retry the recorded cleanup before probing again or spending proofs.
+		if err := t.disconnectLocked(); err != nil {
+			return fmt.Errorf("previous tunnel teardown incomplete: %w", err)
+		}
+	}
+	installErr := t.net.DisableIPv6()
+	// DisableIPv6 may have installed a rule before verification failed.
+	// Always undo it, including on an install error.
+	if cleanupErr := t.net.RestoreIPv6(); cleanupErr != nil {
+		t.pendingCleanup = &activeState{ipv6Changed: true}
+		if installErr != nil {
+			return fmt.Errorf("probe IPv6 protection: %w (cleanup failed: %v)", installErr, cleanupErr)
+		}
+		return fmt.Errorf("probe IPv6 protection cleanup failed: %w", cleanupErr)
+	}
+	if installErr != nil {
+		return fmt.Errorf("probe IPv6 protection: %w", installErr)
+	}
+	return nil
 }
 
 // ValidateEndpoints reports whether the two node endpoints could be used to
@@ -294,6 +328,9 @@ func (t *Tunnel) upOuterLocked(cfg app.TunnelConfig) error {
 	if t.active != nil {
 		return fmt.Errorf("tunnel is already up")
 	}
+	if t.pendingCleanup != nil {
+		return fmt.Errorf("previous tunnel teardown incomplete: retry disconnect before connecting")
+	}
 	if t.entryKeys == nil {
 		return fmt.Errorf("no WireGuard keypair: call PrepareHopKeys before connecting")
 	}
@@ -318,10 +355,24 @@ func (t *Tunnel) upOuterLocked(cfg app.TunnelConfig) error {
 	}
 
 	state := &activeState{exitEndpoint: cfg.Exit.Endpoint, exitIP: outerRouteIPs[0]}
+	// Protect the staged outer-only interval too, not just the final connection.
+	// A failed installation may have partially changed the host: always attempt
+	// restoration, and retain state when rollback itself fails.
+	state.ipv6Changed = true
+	if err := t.net.DisableIPv6(); err != nil {
+		if rollback := t.net.RestoreIPv6(); rollback != nil {
+			t.pendingCleanup = state
+			return fmt.Errorf("secure IPv6: %w (IPv6 rollback failed: %v)", err, rollback)
+		}
+		return fmt.Errorf("secure IPv6: %w", err)
+	}
 	if err := t.bringUpOuter(cfg, entryRouteIPs, outerRouteIPs, gateway, iface, state); err != nil {
 		// Roll back so a failed attempt does not strand the machine with a
 		// half-configured routing table and no internet.
-		t.teardown(state)
+		if rollback := t.teardown(state); rollback != nil {
+			t.pendingCleanup = state
+			return fmt.Errorf("%w (cleanup failed: %v)", err, rollback)
+		}
 		return err
 	}
 	state.outerReady = true
@@ -337,29 +388,30 @@ func (t *Tunnel) upInnerLocked(cfg app.TunnelConfig) error {
 		return fmt.Errorf("inner tunnel is already up")
 	}
 	if cfg.Exit.Endpoint != t.active.exitEndpoint {
-		if err := t.teardown(t.active); err != nil {
-			t.active = nil
+		if err := t.disconnectLocked(); err != nil {
 			return fmt.Errorf("inner exit endpoint differs from the endpoint routed through the outer tunnel (cleanup failed: %w)", err)
 		}
-		t.active = nil
 		return fmt.Errorf("inner exit endpoint differs from the endpoint routed through the outer tunnel")
 	}
 	if err := validate(cfg); err != nil {
-		t.teardown(t.active)
-		t.active = nil
+		if rollback := t.disconnectLocked(); rollback != nil {
+			return fmt.Errorf("%w (cleanup failed: %v)", err, rollback)
+		}
 		return err
 	}
 	pinnedEndpoint, err := endpointWithHost(cfg.Exit.Endpoint, t.active.exitIP)
 	if err != nil {
-		t.teardown(t.active)
-		t.active = nil
+		if rollback := t.disconnectLocked(); rollback != nil {
+			return fmt.Errorf("%w (cleanup failed: %v)", err, rollback)
+		}
 		return err
 	}
 	cfg.Exit.Endpoint = pinnedEndpoint
 
 	if err := t.bringUpInner(cfg, t.active); err != nil {
-		t.teardown(t.active)
-		t.active = nil
+		if rollback := t.disconnectLocked(); rollback != nil {
+			return fmt.Errorf("%w (cleanup failed: %v)", err, rollback)
+		}
 		return err
 	}
 	t.active.innerReady = true
@@ -573,16 +625,29 @@ func (t *Tunnel) bringUpInner(cfg app.TunnelConfig, state *activeState) error {
 func (t *Tunnel) Down(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.active == nil && t.pendingCleanup == nil {
+		return nil
+	}
+	err := t.disconnectLocked()
+	// A completed session must not reuse its WireGuard identity.
+	t.entryKeys = nil
+	t.exitKeys = nil
+	return err
+}
 
-	if t.active == nil {
+func (t *Tunnel) disconnectLocked() error {
+	if t.active != nil {
+		t.pendingCleanup = t.active
+		t.active = nil
+	}
+	if t.pendingCleanup == nil {
 		return nil
 	}
 
-	err := t.teardown(t.active)
-	t.active = nil
-	// The keypair is dropped so the next session presents a fresh identity.
-	t.entryKeys = nil
-	t.exitKeys = nil
+	err := t.teardown(t.pendingCleanup)
+	if err == nil {
+		t.pendingCleanup = nil
+	}
 	return err
 }
 
@@ -596,28 +661,38 @@ func (t *Tunnel) teardown(state *activeState) error {
 	if state.dnsChanged {
 		if err := t.net.RestoreDNS(); err != nil {
 			problems = append(problems, fmt.Errorf("restore DNS: %w", err))
+		} else {
+			state.dnsChanged = false
 		}
 	}
 	if state.ipv6Changed {
 		if err := t.net.RestoreIPv6(); err != nil {
 			problems = append(problems, fmt.Errorf("restore IPv6: %w", err))
+		} else {
+			state.ipv6Changed = false
 		}
 	}
 
 	// Reverse order so the default route is handed back before the interface
 	// carrying it disappears.
+	var remainingRoutes []route
 	for i := len(state.routes) - 1; i >= 0; i-- {
 		r := state.routes[i]
 		if err := t.net.DeleteRoute(r.cidr, r.gateway, r.iface); err != nil {
 			problems = append(problems, fmt.Errorf("delete route %s: %w", r.cidr, err))
+			remainingRoutes = append(remainingRoutes, r)
 		}
 	}
+	state.routes = remainingRoutes
 
+	var remainingInterfaces []string
 	for i := len(state.interfaces) - 1; i >= 0; i-- {
 		if err := t.wg.DeleteInterface(state.interfaces[i]); err != nil {
 			problems = append(problems, fmt.Errorf("delete interface %s: %w", state.interfaces[i], err))
+			remainingInterfaces = append(remainingInterfaces, state.interfaces[i])
 		}
 	}
+	state.interfaces = remainingInterfaces
 
 	if len(problems) == 0 {
 		return nil

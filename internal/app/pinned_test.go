@@ -9,9 +9,9 @@ import (
 
 func pinNodes() []types.NodeInfo {
 	return []types.NodeInfo{
-		{ID: "a", NostrPubkey: "op1", Role: types.RoleBoth},
+		{ID: "a", NostrPubkey: "op1-node-a", OperatorID: "op1", Role: types.RoleBoth},
 		{ID: "b", NostrPubkey: "op2", Role: types.RoleExit},
-		{ID: "c", NostrPubkey: "op1", Role: types.RoleExit},
+		{ID: "c", NostrPubkey: "op1-node-c", OperatorID: "op1", Role: types.RoleExit},
 		{ID: "d", NostrPubkey: "op3", Role: types.RoleEntry},
 	}
 }
@@ -38,11 +38,10 @@ func TestRestrictToPinnedRejectsWrongRoleOrOfflineNode(t *testing.T) {
 	}
 }
 
-// One operator holding both ends sees the client and the destination, which
-// is what the second hop exists to prevent.
-func TestRestrictToPinnedRejectsSameOperator(t *testing.T) {
-	if _, err := restrictToPinned(pinNodes(), PinnedPair{EntryID: "a", ExitID: "c"}); !errors.Is(err, ErrPinnedSameOperator) {
-		t.Fatalf("got %v, want ErrPinnedSameOperator", err)
+func TestRestrictToPinnedAllowsDistinctNodesOfOneOperator(t *testing.T) {
+	nodes, err := restrictToPinned(pinNodes(), PinnedPair{EntryID: "a", ExitID: "c"})
+	if err != nil || len(nodes) != 2 {
+		t.Fatalf("distinct nodes of one operator must be usable with a privacy warning: %v, %+v", err, nodes)
 	}
 }
 
@@ -51,8 +50,8 @@ func TestSetPinnedPairValidatesAndClears(t *testing.T) {
 	if err := s.SetPinnedPair(&PinnedPair{EntryID: "a"}); err == nil {
 		t.Fatal("expected an error for a pin without an exit")
 	}
-	if err := s.SetPinnedPair(&PinnedPair{EntryID: "a", ExitID: "a"}); !errors.Is(err, ErrPinnedSameOperator) {
-		t.Fatalf("got %v, want ErrPinnedSameOperator", err)
+	if err := s.SetPinnedPair(&PinnedPair{EntryID: "a", ExitID: "a"}); !errors.Is(err, ErrPinnedSameNode) {
+		t.Fatalf("got %v, want ErrPinnedSameNode", err)
 	}
 	if err := s.SetPinnedPair(&PinnedPair{EntryID: "a", ExitID: "b"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -68,14 +67,14 @@ func TestSetPinnedPairValidatesAndClears(t *testing.T) {
 
 // One operator running two nodes under different keys must not be accepted
 // as two separate hops.
-func TestRestrictToPinnedComparesAttestedOperators(t *testing.T) {
+func TestRestrictToPinnedAcceptsAttestedSameOperatorWithWarning(t *testing.T) {
 	nodes := []types.NodeInfo{
 		{ID: "a", NostrPubkey: "k1", OperatorID: "same-op", Role: types.RoleEntry},
 		{ID: "b", NostrPubkey: "k2", OperatorID: "same-op", Role: types.RoleExit},
 		{ID: "c", NostrPubkey: "k3", OperatorID: "other-op", Role: types.RoleExit},
 	}
-	if _, err := restrictToPinned(nodes, PinnedPair{EntryID: "a", ExitID: "b"}); !errors.Is(err, ErrPinnedSameOperator) {
-		t.Fatalf("got %v, want ErrPinnedSameOperator", err)
+	if _, err := restrictToPinned(nodes, PinnedPair{EntryID: "a", ExitID: "b"}); err != nil {
+		t.Fatalf("different nodes of one operator should be allowed: %v", err)
 	}
 	if _, err := restrictToPinned(nodes, PinnedPair{EntryID: "a", ExitID: "c"}); err != nil {
 		t.Fatalf("different operators refused: %v", err)

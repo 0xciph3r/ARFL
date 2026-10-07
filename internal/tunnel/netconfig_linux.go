@@ -3,6 +3,8 @@
 package tunnel
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -13,8 +15,8 @@ const resolvBackup = "/etc/resolv.conf.arfl.bak"
 
 // linuxConfigurator drives iproute2 and /etc/resolv.conf. It requires root.
 type linuxConfigurator struct {
-	// ipv6Prev is disable_ipv6 before the tunnel changed it; "" means untouched.
-	ipv6Prev string
+	ipv6Blocked bool
+	ipv6RuleID  string
 }
 
 func newNetConfigurator() (netConfigurator, error) {
@@ -106,27 +108,48 @@ func (c *linuxConfigurator) RestoreDNS() error {
 	return os.Remove(resolvBackup)
 }
 
-const ipv6Sysctl = "/proc/sys/net/ipv6/conf/all/disable_ipv6"
-
 func (c *linuxConfigurator) DisableIPv6() error {
-	prev, err := os.ReadFile(ipv6Sysctl)
+	if c.ipv6Blocked {
+		return nil
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return fmt.Errorf("identify IPv6 rule: %w", err)
+	}
+	c.ipv6RuleID = "arfl-" + hex.EncodeToString(nonce[:])
+	// OUTPUT is consulted for locally generated traffic on every interface,
+	// including adapters brought up after the tunnel started. Insert first
+	// so earlier user rules cannot ACCEPT around this rule.
+	if err := run("ip6tables", "-w", "-I", "OUTPUT", "1", "-m", "comment", "--comment", c.ipv6RuleID, "-j", "REJECT"); err != nil {
+		return fmt.Errorf("block outbound IPv6: %w", err)
+	}
+	c.ipv6Blocked = true
+	out, err := output("ip6tables", "-w", "-S", "OUTPUT")
 	if err != nil {
-		return fmt.Errorf("read IPv6 setting: %w", err)
+		return fmt.Errorf("verify outbound IPv6 block: %w", err)
 	}
-	if err := os.WriteFile(ipv6Sysctl, []byte("1\n"), 0o644); err != nil {
-		return fmt.Errorf("turn off IPv6: %w", err)
+	if !ipv6RuleFirst(out, c.ipv6RuleID) {
+		return fmt.Errorf("outbound IPv6 block is not first in OUTPUT")
 	}
-	c.ipv6Prev = strings.TrimSpace(string(prev))
 	return nil
 }
 
+func ipv6RuleFirst(rules, id string) bool {
+	for _, line := range strings.Split(rules, "\n") {
+		if strings.HasPrefix(line, "-A OUTPUT ") {
+			return strings.Contains(line, "--comment "+id+" ") && strings.HasSuffix(line, " -j REJECT")
+		}
+	}
+	return false
+}
+
 func (c *linuxConfigurator) RestoreIPv6() error {
-	if c.ipv6Prev == "" {
+	if !c.ipv6Blocked {
 		return nil
 	}
-	if err := os.WriteFile(ipv6Sysctl, []byte(c.ipv6Prev+"\n"), 0o644); err != nil {
-		return fmt.Errorf("restore IPv6 setting: %w", err)
+	if err := run("ip6tables", "-w", "-D", "OUTPUT", "-m", "comment", "--comment", c.ipv6RuleID, "-j", "REJECT"); err != nil {
+		return fmt.Errorf("remove outbound IPv6 block: %w", err)
 	}
-	c.ipv6Prev = ""
+	c.ipv6Blocked = false
 	return nil
 }

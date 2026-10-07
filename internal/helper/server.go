@@ -82,6 +82,9 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 
+	if req.Method == MethodDown {
+		log.Printf("[helper] down requested by uid %d", uid)
+	}
 	result, err := s.dispatch(req)
 	resp := response{}
 	if err != nil {
@@ -122,18 +125,23 @@ func (s *Server) dispatch(req request) (any, error) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), upTimeout)
 		defer cancel()
+		var err error
 		switch req.Method {
 		case MethodUpOuter:
-			return nil, b.UpOuter(ctx, p.Config)
+			err = b.UpOuter(ctx, p.Config)
 		case MethodUpInner:
-			return nil, b.UpInner(ctx, p.Config)
+			err = b.UpInner(ctx, p.Config)
 		default:
-			return nil, b.Up(ctx, p.Config)
+			err = b.Up(ctx, p.Config)
 		}
+		log.Printf("[helper] %s completed (success=%t)", req.Method, err == nil)
+		return nil, err
 	case MethodDown:
 		ctx, cancel := context.WithTimeout(context.Background(), upTimeout)
 		defer cancel()
-		return nil, b.Down(ctx)
+		err := b.Down(ctx)
+		log.Printf("[helper] down completed (success=%t)", err == nil)
+		return nil, err
 	case MethodPrepareHopKeys:
 		entry, exit, err := b.PrepareHopKeys()
 		if err != nil {

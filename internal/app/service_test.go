@@ -36,8 +36,142 @@ type testHub struct {
 }
 
 type nodeEntry struct {
-	Info   types.NodeInfo `json:"info"`
-	Online bool           `json:"online"`
+	Info        types.NodeInfo `json:"info"`
+	Online      bool           `json:"online"`
+	Attestation *struct {
+		OperatorID string `json:"operator_id"`
+	} `json:"attestation,omitempty"`
+}
+
+func TestPreparedPairIsRecheckedWithoutSwitchingBeforePayment(t *testing.T) {
+	ctx := context.Background()
+	hub := newTestHub(t)
+	hub.addNode(t, "entry", types.RoleEntry)
+	hub.addNode(t, "exit-one", types.RoleExit)
+	hub.addNode(t, "exit-two", types.RoleExit)
+	svc := newService(t, nil)
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := svc.PreparePair(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := svc.SelectPair(ctx)
+	if err != nil || selected.Entry.ID != prepared.Entry.ID || selected.Exit.ID != prepared.Exit.ID {
+		t.Fatalf("connect pair %+v, err %v; displayed %+v", selected, err, prepared)
+	}
+	hub.mu.Lock()
+	for i := range hub.nodes {
+		if hub.nodes[i].Info.ID == prepared.Exit.ID {
+			hub.nodes[i].Online = false
+		}
+	}
+	hub.mu.Unlock()
+	if _, err := svc.Connect(ctx, 100); !errors.Is(err, app.ErrPinnedNodeOffline) {
+		t.Fatalf("unavailable displayed exit must fail before spending: %v", err)
+	}
+	if svc.State() != app.StateDisconnected {
+		t.Fatalf("state after refused connection: %s", svc.State())
+	}
+	replacement, err := svc.PreparePair(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.Exit.ID == prepared.Exit.ID {
+		t.Fatal("prepared an offline exit")
+	}
+}
+
+func TestPreparePairUsesNodeKeysWhenHubOmitsIDs(t *testing.T) {
+	ctx := context.Background()
+	hub := newTestHub(t)
+	hub.addNode(t, "entry", types.RoleEntry)
+	hub.addNode(t, "exit", types.RoleExit)
+	hub.mu.Lock()
+	for i := range hub.nodes {
+		hub.nodes[i].Info.ID = ""
+	}
+	hub.mu.Unlock()
+	svc := newService(t, nil)
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatal(err)
+	}
+	pair, err := svc.PreparePair(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pair.Entry.ID != pair.Entry.NostrPubkey || pair.Exit.ID != pair.Exit.NostrPubkey {
+		t.Fatalf("node keys must provide stable IDs: %+v", pair)
+	}
+	if _, err := svc.SelectPair(ctx); err != nil {
+		t.Fatalf("prepared pair must survive live-list recheck: %v", err)
+	}
+}
+
+func TestOnlySameOperatorPairIsSelectedAutomaticallyAndDisclosed(t *testing.T) {
+	ctx := context.Background()
+	hub := newTestHub(t)
+	hub.addNode(t, "entry", types.RoleEntry)
+	hub.addNode(t, "exit", types.RoleExit)
+	hub.mu.Lock()
+	for i := range hub.nodes {
+		hub.nodes[i].Attestation = &struct {
+			OperatorID string `json:"operator_id"`
+		}{OperatorID: "demo"}
+	}
+	hub.mu.Unlock()
+	svc := newService(t, nil)
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatal(err)
+	}
+	pair, err := svc.PreparePair(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pair.Entry.ID == pair.Exit.ID || pair.Entry.OperatorID != pair.Exit.OperatorID {
+		t.Fatalf("automatic pair must use two distinct nodes and disclose shared operator: %+v", pair)
+	}
+	selected, err := svc.SelectPair(ctx)
+	if err != nil || selected.Entry.ID != pair.Entry.ID || selected.Exit.ID != pair.Exit.ID {
+		t.Fatalf("connect must use the displayed automatic pair: selected=%+v err=%v", selected, err)
+	}
+}
+
+func TestSameOperatorSessionConnectsAutomatically(t *testing.T) {
+	ctx := context.Background()
+	hub := newTestHub(t)
+	hub.addNode(t, "entry", types.RoleEntry)
+	hub.addNode(t, "exit", types.RoleExit)
+	hub.mu.Lock()
+	for i := range hub.nodes {
+		hub.nodes[i].Attestation = &struct {
+			OperatorID string `json:"operator_id"`
+		}{OperatorID: "demo"}
+	}
+	hub.mu.Unlock()
+	svc := newService(t, newFakeTunnel())
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatal(err)
+	}
+	fundService(t, hub, svc, 128)
+	if _, err := svc.PreparePair(ctx); err != nil {
+		t.Fatal(err)
+	}
+	session, err := svc.Connect(ctx, 32)
+	if err != nil || session.Config.Entry.NodeID != "entry" || session.Config.Exit.NodeID != "exit" {
+		t.Fatalf("expected automatic two-node session: %+v, %v", session, err)
+	}
+	if err := svc.Disconnect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.Connect(ctx, 32)
+	if err != nil || second.Config.Entry.NodeID != "entry" || second.Config.Exit.NodeID != "exit" {
+		t.Fatalf("automatic reconnection must use the sole pair: %+v, %v", second, err)
+	}
+	if balance, err := svc.Balance(); err != nil || balance != 0 {
+		t.Fatalf("each explicitly started connection costs one pair: %d, %v", balance, err)
+	}
 }
 
 func newTestHub(t *testing.T) *testHub {

@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte'
+  import { onDestroy, untrack } from 'svelte'
   import { Events } from '@wailsio/runtime'
-  import { api, type HubStatus, type Session, type StatusView } from '../lib/api'
+  import { api, type HubStatus, type NodeInfo, type Session, type StatusView } from '../lib/api'
   import { isLight, prefs } from '../lib/prefs.svelte'
   import { cue } from '../lib/sound'
-  import { connectProtected, ipv6Exposed as checkExposed } from '../lib/protect'
+  import { connectProtected } from '../lib/protect'
   import { TOKEN_SATS, gbFromTokens, tokensFromSats } from '../lib/units'
   import mark from '../assets/mark.svg'
   import wordDark from '../assets/wordmark-dark.png'
@@ -42,7 +42,7 @@
   const NODE_SILENT_SECS = 180
   const HUB_CHECK_MS = 60_000
 
-  type AlertKind = 'low' | 'out' | 'node' | 'hub'
+  type AlertKind = 'low' | 'out' | 'node'
   let alert = $state<AlertKind | null>(null)
   let lowDismissed = $state(false)
   let silentHop = $state<'entry' | 'exit'>('exit')
@@ -53,19 +53,42 @@
   // After a failed top-up, wait before trying again rather than every sample.
   let renewRetryAt = 0
   let hubPreview = $state<{ margin_pct: number; node_count: number } | null>(null)
-  let hubReachedAt = $state(Date.now())
+  let hubReachedAt = $state<number | null>(null)
+  let hubCheckError = $state('')
+  let checkingHub = $state(false)
+  let failedHubChecks = 0
 
-  async function checkHub() {
+  async function checkHub(manual = false) {
+    if (checkingHub) return
+    const hubURL = status.hub_url
+    checkingHub = true
     try {
-      hubPreview = await api.previewHub(status.hub_url)
+      const preview = await api.previewHub(hubURL)
+      if (hubURL !== status.hub_url) return
+      hubPreview = preview
       hubReachedAt = Date.now()
-      if (alert === 'hub') alert = null
-    } catch {
-      if (!alert) alert = 'hub'
+      failedHubChecks = 0
+      hubCheckError = ''
+    } catch (err) {
+      if (hubURL !== status.hub_url) return
+      failedHubChecks++
+      if (manual || failedHubChecks >= 2) hubCheckError = (err as Error).message
+    } finally {
+      checkingHub = false
+      if (hubURL !== status.hub_url) void checkHub()
     }
   }
-  checkHub()
-  const hubTimer = setInterval(checkHub, HUB_CHECK_MS)
+  $effect(() => {
+    const hubURL = status.hub_url
+    untrack(() => {
+      hubPreview = null
+      hubReachedAt = null
+      failedHubChecks = 0
+      hubCheckError = ''
+      if (hubURL) void checkHub()
+    })
+  })
+  const hubTimer = setInterval(() => { void checkHub() }, HUB_CHECK_MS)
   const hubMeta = $derived(hubPreview ? `Margin ${hubPreview.margin_pct}% · ${hubPreview.node_count} approved nodes. ` : '')
 
   // svelte-ignore state_referenced_locally
@@ -78,6 +101,28 @@
   let last = $state<SessionSummary | null>(null)
   let now = $state(Date.now())
   let pinnedRoute = $state(false)
+  let nextPair = $state<NodeInfo[]>([])
+  let pairError = $state('')
+  let pairLoading = $state(false)
+  let pairRequest = 0
+  async function refreshPair() {
+    const request = ++pairRequest
+    pairLoading = true
+    pairError = ''
+    nextPair = []
+    try {
+      const pair = await api.preparePair()
+      if (pair.length !== 2) throw new Error('The hub did not return a usable entry and exit pair.')
+      if (request === pairRequest) nextPair = pair
+    } catch (err) {
+      if (request === pairRequest) pairError = (err as Error).message
+    } finally {
+      if (request === pairRequest) pairLoading = false
+    }
+  }
+  $effect(() => {
+    if (!connected && status.hub_url) untrack(() => void refreshPair())
+  })
   let settingUp = $state(false)
 
   // One administrator prompt installs the background helper that owns the
@@ -96,25 +141,6 @@
   }
   let usage = $state({ rx: 0, tx: 0 })
   let rate = $state({ down: 0, up: 0 })
-  let ipv6Exposed = $state(false)
-  let ipv6Off = $state(false)
-  const ipv6Safe = $derived(!ipv6Exposed || ipv6Off)
-
-  async function checkIPv6() {
-    ipv6Exposed = await checkExposed()
-  }
-  checkIPv6()
-
-  async function fixIPv6() {
-    error = ''
-    try {
-      await api.disableIPv6()
-      ipv6Off = true
-    } catch (err) {
-      error = (err as Error).message
-    }
-  }
-
   // Live usage comes from the tunnel's own byte counters, sampled each second.
   let lastSample = { rx: 0, tx: 0, at: 0 }
   async function sampleUsage() {
@@ -217,8 +243,8 @@
   function nodeLabel(nodeId: string | undefined) {
     return nodeId ? 'Node ' + nodeId.slice(0, 4) : 'Not set'
   }
-  const entryName = $derived(connected ? nodeLabel(session?.config?.entry?.node_id) : 'Picked when you connect')
-  const exitName = $derived(connected ? nodeLabel(session?.config?.exit?.node_id) : '')
+  const entryName = $derived(connected ? nodeLabel(session?.config?.entry?.node_id) : nextPair[0] ? nodeLabel(nextPair[0].id) : pairLoading ? 'Finding nodes…' : 'No pair selected')
+  const exitName = $derived(connected ? nodeLabel(session?.config?.exit?.node_id) : nextPair[1] ? nodeLabel(nextPair[1].id) : '')
 
   function clockText(ms: number) {
     const s = Math.max(0, Math.floor(ms / 1000))
@@ -228,6 +254,10 @@
   const elapsed = $derived(session?.started_at ? now - new Date(session.started_at).getTime() : 0)
 
   async function connect() {
+    if (nextPair.length !== 2 || pairLoading || pairError) {
+      error = pairError || 'Choose an available entry and exit before connecting.'
+      return
+    }
     clearTimers()
     error = ''
     stage = 0
@@ -237,13 +267,11 @@
     try {
       const res = await connectProtected(PER_HOP_TOKENS * TOKEN_SATS)
       session = res.session
+      nextPair = []
       lastSample = { rx: 0, tx: 0, at: 0 }
       usage = { rx: 0, tx: 0 }
       rate = { down: 0, up: 0 }
       allowanceBase = 0
-      ipv6Exposed = res.ipv6Exposed
-      ipv6Off = res.ipv6Off
-      if (res.ipv6Error) error = res.ipv6Error
       clearTimers()
       stage = -1
       cue('up')
@@ -253,6 +281,8 @@
       clearTimers()
       stage = -1
       error = (err as Error).message
+      nextPair = []
+      pairError = 'Recheck or choose another pair before trying to connect again.'
     } finally {
       onChanged()
     }
@@ -306,7 +336,6 @@
         route: nodeLabel(ended.config?.entry?.node_id) + ' → ' + nodeLabel(ended.config?.exit?.node_id),
       }
     }
-    ipv6Off = false
     session = null
     later(() => (closing = false), 950)
     onChanged()
@@ -320,6 +349,7 @@
       nodeWarned = false
       session = null
       onChanged()
+      await refreshPair()
       await connect()
     } catch (err) {
       error = `Could not reconnect: ${(err as Error).message}`
@@ -348,23 +378,21 @@
           : connected
             ? nodeWarned
               ? 'Node not responding'
-              : ipv6Safe
-                ? 'Tunnel up'
-                : 'IPv6 exposed'
+              : 'Tunnel up'
             : 'Not connected',
   )
   const statusSmall = $derived(closing ? 'Disconnecting' : connecting ? 'Connecting' : connected ? 'Connected' : 'Disconnected')
   const statusColor = $derived(
-    connecting ? 'var(--accent)' : connected && !closing ? (ipv6Safe && !nodeWarned ? 'var(--cyan)' : 'var(--amber)') : 'var(--muted)',
+    connecting ? 'var(--accent)' : connected && !closing ? (nodeWarned ? 'var(--amber)' : 'var(--cyan)') : 'var(--muted)',
   )
   const statusHint = $derived.by(() => {
     if (error) return error
+    if (pairError && !connected) return `Could not choose nodes: ${pairError}`
     if (!status.tunnel_ready && !connected) return status.tunnel_error || 'Run ARFL with administrator rights to enable the tunnel.'
     if (closing) return 'Closing the tunnel. Your traffic will not be protected after this.'
     if (connecting) return 'Your device is paying each node and building the two tunnels.'
     if (connected && nodeWarned) return 'A node stopped responding. The connection may not be usable; reconnect starts a new paid session.'
-    if (connected && !ipv6Safe) return 'The tunnel is up, but IPv6 traffic still goes out directly.'
-    if (connected) return 'Two tunnel hops are configured. Traffic can leave directly if the tunnel drops.'
+    if (connected) return 'Two tunnel hops and an outbound IPv6 block are configured. Traffic can leave directly if the tunnel drops.'
     if (noBalance) return `You have no bandwidth at ${hubName}. Tokens only work at the hub that sold them.`
     return 'Your traffic leaves this device directly until you connect.'
   })
@@ -397,10 +425,10 @@
     if (tokens > LOW_TOKENS) lowDismissed = false
     else if (tokens > 0 && !lowDismissed && !alert) alert = 'low'
   })
-  const lastReached = $derived(Math.max(0, Math.round((now - hubReachedAt) / 60000)))
+  const lastReached = $derived(hubReachedAt === null ? null : Math.max(0, Math.round((now - hubReachedAt) / 60000)))
 
-  const protShort = $derived(!connected ? 'Checked when connected' : nodeWarned ? 'Node not responding' : ipv6Safe ? 'Checks passed' : '1 issue: IPv6')
-  const protColor = $derived(!connected ? 'var(--muted)' : nodeWarned || !ipv6Safe ? 'var(--amber)' : 'var(--cyan)')
+  const protShort = $derived(!connected ? 'Checked when connected' : nodeWarned ? 'Node not responding' : 'Basic setup configured')
+  const protColor = $derived(!connected ? 'var(--muted)' : nodeWarned ? 'var(--amber)' : 'var(--cyan)')
 
   const titles = $derived<Record<Overlay, string>>({
     topup: `Top up at ${hubName}`,
@@ -438,6 +466,17 @@
       </div>
       <div class="word-status">{statusWord}</div>
       <div class="hint" class:err={!!error}>{statusHint}</div>
+      {#if hubCheckError}
+        <div class="hub-check" role="status">
+          Could not confirm hub reachability from this device: {hubCheckError}
+          {connected ? 'The tunnel is still reported up; new payments may fail.' : 'You are not connected. Your remaining tokens stay on this device.'}
+          {lastReached === null ? 'No successful hub check this session.' : `Last successful check: ${lastReached === 0 ? 'just now' : `${lastReached} min ago`}.`}
+          <button class="bare details" disabled={checkingHub} onclick={() => { void checkHub(true) }}>{checkingHub ? 'Checking…' : 'Retry check'}</button>
+        </div>
+      {/if}
+      {#if pairError && !connected}
+        <button class="bare details" onclick={() => (overlay = 'nodes')}>Choose another pair</button>
+      {/if}
       {#if status.helper_setup && !connected}
         <button class="setup" disabled={settingUp} onclick={setUpTunnel}>{settingUp ? 'Waiting for approval…' : 'Set up the tunnel'}</button>
       {/if}
@@ -473,7 +512,7 @@
         class="conn"
         class:on={connected && !closing}
         class:busy={connecting || closing}
-        disabled={!status.tunnel_ready && !connected && !noBalance}
+        disabled={(!status.tunnel_ready && !connected && !noBalance) || (!connected && !noBalance && (pairLoading || nextPair.length !== 2))}
         onclick={mainAction}>{connLabel}</button
       >
 
@@ -521,7 +560,7 @@
       {#if overlay === 'topup'}
         <TopUp {hubName} {tokens} onPurchased={onChanged} onClose={() => (overlay = null)} />
       {:else if overlay === 'nodes'}
-        <Nodes {hubName} {session} {connected} />
+        <Nodes {hubName} {session} {connected} pair={nextPair} {pairError} {pairLoading} onRefresh={refreshPair} onPairChanged={async () => { await refreshPair(); await refreshPin() }} />
       {:else if overlay === 'settings'}
         <SettingsPanel {hubName} {hubMeta} onChangeHub={() => (overlay = 'hubs')} />
       {:else if overlay === 'hubs'}
@@ -540,12 +579,10 @@
           used={fmtMB(usage.rx + usage.tx)}
           down={fmtRate(rate.down)}
           up={fmtRate(rate.up)}
-          ipv6Exposed={!ipv6Safe}
-          onFixIPv6={fixIPv6}
           onPrivacy={() => (overlay = 'privacy')}
         />
       {:else if overlay === 'privacy'}
-        <Privacy {connected} {ipv6Safe} />
+        <Privacy {connected} />
       {:else if overlay === 'summary' && last}
         <Summary
           {last}
@@ -603,22 +640,6 @@
       onPrimary={reconnectAfterNodeFailure}
       onSecondary={() => { alert = null; overlay = 'nodes' }}
     />
-  {:else if alert === 'hub'}
-    <Alert
-      kicker="Hub unreachable"
-      tone="red"
-      title={`Can't reach ${hubName}`}
-      body={`Nodes check every token with the hub, so new connections cannot start until it is back. Your tokens stay on this device but only work at ${hubName}.`}
-      primary="Retry"
-      secondary="Switch hub"
-      onPrimary={checkHub}
-      onSecondary={() => { alert = null; overlay = 'hubs' }}
-    >
-      <div class="aline">
-        <div><div class="ak">Balance at {hubName}</div><div class="av mono">{balanceGB} GB</div></div>
-        <div class="ak">Last reached {lastReached === 0 ? 'just now' : `${lastReached} min ago`}</div>
-      </div>
-    </Alert>
   {/if}
 </div>
 
@@ -745,6 +766,19 @@
     color: var(--red);
   }
 
+  .hub-check {
+    max-width: 440px;
+    margin-top: 10px;
+    color: var(--amber);
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+
+  .hub-check button {
+    display: block;
+    margin-top: 4px;
+  }
+
   .setup {
     margin-top: 12px;
     min-height: 40px;
@@ -857,22 +891,9 @@
     border-bottom: 1px solid var(--line);
   }
 
-  .aline {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 0;
-    border-top: 1px solid var(--line);
-    border-bottom: 1px solid var(--line);
-  }
-
   .ak {
     font-size: 12px;
     color: var(--muted);
-  }
-
-  .aline > .ak {
-    font-size: 13px;
   }
 
   .av {

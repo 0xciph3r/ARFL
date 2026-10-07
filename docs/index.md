@@ -120,7 +120,8 @@ Lip Gloss-styled diagnostics. Use `--non-interactive` for automation pipelines.
 ## Economics
 
 - Users pay per-GB via Lightning (~500 sats/GB)
-- Node operators earn passive income on bandwidth they already own
+- Node operators can offer bandwidth they already own; automated payouts
+  are not yet reliable (see the [operator quick start](https://github.com/0xciph3r/ARFL#operator-quick-start-ubuntu))
 - Hub takes a configurable margin (default 20%)
 - Designed for residential/unmetered connections — not cloud servers
 
@@ -136,4 +137,4 @@ Lip Gloss-styled diagnostics. Use `--non-interactive` for automation pipelines.
 
 ## License
 
-[MIT](https://github.com/Radi-Labs/ARFL/blob/main/LICENSE) — Radi Labs
+No license is currently declared in this repository.

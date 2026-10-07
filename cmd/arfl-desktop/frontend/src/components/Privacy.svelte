@@ -1,14 +1,14 @@
 <script lang="ts">
-  let { connected, ipv6Safe }: { connected: boolean; ipv6Safe: boolean } = $props()
+  let { connected }: { connected: boolean } = $props()
 
   const now = $derived([
     { label: 'Blind tokens prevent a direct purchase-to-redemption match', status: 'Token only', tone: 'ok' },
     { label: 'IPv4 traffic is tunnelled', status: connected ? 'OK' : 'Not connected', tone: connected ? 'ok' : 'off' },
     { label: 'DNS set to the tunnel resolver', status: connected ? 'Configured' : 'Not connected', tone: connected ? 'ok' : 'off' },
     {
-      label: 'IPv6',
-      status: connected ? (ipv6Safe ? 'OK' : 'Leaking') : 'Not connected',
-      tone: connected ? (ipv6Safe ? 'ok' : 'bad') : 'off',
+      label: 'Outbound IPv6 block',
+      status: connected ? 'Configured at connect' : 'Not connected',
+      tone: connected ? 'ok' : 'off',
     },
   ])
 
@@ -64,11 +64,11 @@
       help: 'Stop sensitive traffic if the app reports a disconnected or interrupted session.',
     },
     {
-      title: 'IPv6 leaks',
-      body: 'The tunnel carries IPv4 only. IPv6 must be off while you are connected.',
-      status: ipv6Safe ? 'Fixed' : 'Leaking',
-      tone: ipv6Safe ? 'ok' : 'bad',
-      help: ipv6Safe ? 'IPv6 is turned off while you are connected.' : 'Turn on "Turn off IPv6 when connecting" in Settings.',
+      title: 'IPv6 outside the tunnel',
+      body: 'The tunnel carries IPv4 only. An outbound IPv6 block is installed during connection setup, but is not continuously checked.',
+      status: 'Block required',
+      tone: 'warn',
+      help: 'A failed block aborts connection. This is not a general kill switch for IPv4 traffic.',
     },
   ])
 </script>

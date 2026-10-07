@@ -118,6 +118,20 @@ func main() {
 		log.Fatalf("provide either --session <file> or --discover <hub-url>")
 	}
 
+	tun, err := tunnel.New()
+	if err != nil {
+		log.Fatalf("create tunnel manager: %v", err)
+	}
+	defer tun.Close()
+	// Token presentation is irreversible. Test the actual IPv6 firewall path
+	// before contacting either paid node, not merely before Up.
+	if err := tun.Preflight(); err != nil {
+		if cleanup := tun.Close(); cleanup != nil {
+			log.Printf("[client] cleanup failed: %v", cleanup)
+		}
+		log.Fatalf("tunnel preflight: %v", err)
+	}
+
 	// --- Phase 6: Present tokens to nodes before creating tunnels ---
 	// If we have tokens and both nodes have connect URLs, present tokens
 	// to get authorized WireGuard access. This is the full privacy flow:
@@ -178,20 +192,11 @@ func main() {
 			session.EntryConnectURL, session.ExitConnectURL)
 	}
 
-	tun, err := tunnel.New()
-	if err != nil {
-		log.Fatalf("create tunnel manager: %v", err)
-	}
-	defer tun.Close()
-
 	// cmd/arfl-client uses a persisted client key. Keep both hops on that key
 	// so legacy static-session flows continue to work while this command still
 	// uses the old connector stack.
 	if err := tun.SetHopKeys(kp, kp); err != nil {
 		log.Fatalf("set tunnel keys: %v", err)
-	}
-	if err := tun.Preflight(); err != nil {
-		log.Fatalf("tunnel preflight: %v", err)
 	}
 	if err := tun.ValidateEndpoints(session.EntryEndpoint, session.ExitEndpoint); err != nil {
 		log.Fatalf("validate tunnel endpoints: %v", err)
@@ -215,14 +220,19 @@ func main() {
 		},
 	}
 	if err := tun.Up(context.Background(), cfg); err != nil {
+		// log.Fatal exits without running defers. Retry any incomplete network
+		// rollback before exiting rather than leaving an IPv6 block installed.
+		if cleanup := tun.Close(); cleanup != nil {
+			log.Printf("[client] cleanup failed: %v", cleanup)
+		}
 		log.Fatalf("bring tunnel up: %v", err)
 	}
 
 	log.Println("[client] ✓ connected")
 	log.Println("[client]   outer tunnel: you <-> entry node (encrypted)")
 	log.Println("[client]   inner tunnel: you <-> exit node (double encrypted)")
-	log.Println("[client]   all traffic routed through two-hop tunnel")
-	log.Println("[client]   DNS routed through tunnel resolver")
+	log.Println("[client]   IPv4 routed through two-hop tunnel; outbound IPv6 blocked")
+	log.Println("[client]   IPv4 DNS routed through tunnel resolver")
 
 	// Now that tunnels are up, update the token store.
 	// Deferred from the connect phase so tokens aren't lost if WG setup fails.

@@ -1,10 +1,16 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import { api, type NodeInfo, type Pinned, type Session } from '../lib/api'
 
-  let { hubName, session, connected }: {
+  let { hubName, session, connected, pair, pairError, pairLoading, onRefresh, onPairChanged }: {
     hubName: string
     session: Session | null
     connected: boolean
+    pair: NodeInfo[]
+    pairError: string
+    pairLoading: boolean
+    onRefresh: () => Promise<void>
+    onPairChanged: () => Promise<void>
   } = $props()
 
   type Slot = 'entry' | 'exit'
@@ -12,6 +18,8 @@
   let nodes = $state<NodeInfo[]>([])
   let pinned = $state<Pinned | null>(null)
   let error = $state('')
+  let loadError = $state('')
+  let loading = $state(false)
   let adv = $state(false)
   let slot = $state<Slot>('entry')
   let query = $state('')
@@ -19,18 +27,21 @@
   let draft = $state<{ entry: string; exit: string }>({ entry: '', exit: '' })
 
   async function load() {
-    error = ''
+    if (loading) return
+    loading = true
+    loadError = ''
     try {
       ;[nodes, pinned] = await Promise.all([api.listNodes(), api.pinnedPair()])
       if (pinned) draft = { entry: pinned.entry_id, exit: pinned.exit_id }
     } catch (err) {
-      error = (err as Error).message
+      nodes = []
+      loadError = (err as Error).message
+    } finally {
+      loading = false
     }
   }
 
-  $effect(() => {
-    load()
-  })
+  onMount(() => { void load() })
 
   const nodeLabel = (n: NodeInfo | undefined) => (n ? 'Node ' + n.nostr_pubkey.slice(0, 4) : '')
   const shortKey = (k: string) => (k.length > 14 ? k.slice(0, 8) + '…' + k.slice(-4) : k)
@@ -40,22 +51,18 @@
   const canEntry = (n: NodeInfo) => n.role === 'entry' || n.role === 'both'
   const canExit = (n: NodeInfo) => n.role === 'exit' || n.role === 'both'
 
-  // What the top section describes: the live route, else the user's pin.
-  const shownEntry = $derived(connected ? byId(session?.config?.entry?.node_id) : byId(pinned?.entry_id))
-  const shownExit = $derived(connected ? byId(session?.config?.exit?.node_id) : byId(pinned?.exit_id))
+  const shownEntry = $derived(connected ? byId(session?.config?.entry?.node_id) : pair[0])
+  const shownExit = $derived(connected ? byId(session?.config?.exit?.node_id) : pair[1])
   const caption = $derived(
     pinned
-      ? `You picked these. The hub's operator IDs are checked when available, but separate ownership is not guaranteed.${connected ? ' A change applies the next time you connect.' : ''}`
+      ? `You picked these. Operator IDs come from the hub; separate ownership is not guaranteed.${connected ? ' A change applies the next time you connect.' : ''}`
       : connected
         ? 'Picked at random on this device from this hub’s approved nodes. Separate operators are not guaranteed.'
-        : 'A pair is picked at random on this device each time you connect, from the nodes this hub has approved.',
+        : 'This is the pair your device will try when you connect. It is rechecked before payment; if either node is unavailable, choose a new pair.',
   )
 
   const otherNode = $derived(byId(slot === 'entry' ? draft.exit : draft.entry))
-  const sameHubOperator = (a: NodeInfo, b: NodeInfo | undefined) =>
-    !!b && (a.operator_id && b.operator_id
-      ? a.operator_id === b.operator_id
-      : a.nostr_pubkey === b.nostr_pubkey)
+  const sameNode = (a: NodeInfo, b: NodeInfo | undefined) => !!b && (a.id === b.id || a.nostr_pubkey === b.nostr_pubkey)
 
   const list = $derived.by(() => {
     const q = query.trim().toLowerCase()
@@ -72,6 +79,7 @@
     try {
       await api.pinPair(draft.entry, draft.exit)
       pinned = await api.pinnedPair()
+      await onPairChanged()
     } catch (err) {
       error = (err as Error).message
     }
@@ -83,6 +91,7 @@
       await api.unpinPair()
       pinned = null
       draft = { entry: '', exit: '' }
+      await onPairChanged()
     } catch (err) {
       error = (err as Error).message
     }
@@ -94,17 +103,29 @@
     <div class="lede">Your device picks the pair from the nodes {hubName} has approved. The hub does not choose for you.</div>
     <div class="pair">
       <div class="hop">
-        <div><div class="k">Entry</div><div class="v">{shownEntry ? nodeLabel(shownEntry) : 'Picked when you connect'}</div></div>
+        <div><div class="k">Entry</div><div class="v">{shownEntry ? nodeLabel(shownEntry) : pairLoading ? 'Finding nodes…' : 'Unavailable'}</div></div>
         <div class="mono meta">{meta(shownEntry)}</div>
       </div>
       <div class="hop">
-        <div><div class="k">Exit</div><div class="v">{shownExit ? nodeLabel(shownExit) : 'Picked when you connect'}</div></div>
+        <div><div class="k">Exit</div><div class="v">{shownExit ? nodeLabel(shownExit) : pairLoading ? 'Finding nodes…' : 'Unavailable'}</div></div>
         <div class="mono meta">{meta(shownExit)}</div>
       </div>
     </div>
     <div class="caption">{caption}</div>
+    {#if !connected}
+      <button class="bare link" disabled={pairLoading} onclick={onRefresh}>{pinned ? 'Recheck your pair' : 'Pick another pair'}</button>
+      {#if pairError}<div class="err" role="alert">{pairError}</div>{/if}
+    {/if}
     {#if pinned}
       <button class="bare link" onclick={useAuto}>Use the automatic pair</button>
+    {/if}
+    {#if loadError}
+      <div class="err" role="alert">
+        <span>{loadError}</span>
+        <button class="bare link" disabled={loading} onclick={load}>Try again</button>
+      </div>
+    {:else if loading}
+      <div class="caption">Loading nodes…</div>
     {/if}
     {#if error}<div class="err" role="alert">{error}</div>{/if}
   </div>
@@ -127,18 +148,18 @@
       <input type="text" placeholder="Search this hub's nodes" aria-label="Search nodes" bind:value={query} />
       <div class="caption">Picking a node here replaces the automatic pair.</div>
     </div>
-    {#if list.length === 0}
+    {#if !loading && !loadError && list.length === 0}
       <div class="empty">No {slot} nodes match.</div>
     {/if}
-    {#each list as n (n.id)}
+    {#each loading || loadError ? [] : list as n (n.id)}
       {@const sel = (slot === 'entry' ? draft.entry : draft.exit) === n.id}
-      {@const clash = !sel && sameHubOperator(n, otherNode)}
+      {@const clash = !sel && sameNode(n, otherNode)}
       <button class="bare node" class:sel class:clash disabled={clash} onclick={() => pick(n)}>
         <span class="radio" class:on={sel}></span>
         <div class="grow">
           <div class="name">{nodeLabel(n)}{#if sel}<span class="tag">Selected</span>{/if}</div>
           <div class="mono key">{shortKey(n.nostr_pubkey)}</div>
-          {#if clash}<div class="reason">Hub lists the same operator or node as your {slot === 'entry' ? 'exit' : 'entry'}</div>{/if}
+          {#if clash}<div class="reason">This is already your {slot === 'entry' ? 'exit' : 'entry'} node</div>{/if}
         </div>
         <div class="right">
           <div class="mono">{n.upload_mbps} Mbps</div>

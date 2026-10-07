@@ -49,25 +49,18 @@ func (t *Tunnel) Usage() (Usage, bool, error) {
 	return u, true, nil
 }
 
-// DisableIPv6 turns IPv6 off for the rest of the session. Teardown restores
-// it, so the change never outlives the tunnel.
+// DisableIPv6 is retained for older callers, but never reports that the OS's
+// IPv6 setting changed. UpOuter installs the outbound block automatically.
 func (t *Tunnel) DisableIPv6() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.active == nil {
-		return fmt.Errorf("connect first: IPv6 is only turned off while the tunnel is up")
+		return fmt.Errorf("IPv6 cannot be disabled manually: the tunnel automatically blocks outbound IPv6 during connection")
 	}
-	if t.active.ipv6Changed {
-		return nil
-	}
-	if err := t.net.DisableIPv6(); err != nil {
-		return err
-	}
-	t.active.ipv6Changed = true
-	return nil
+	return fmt.Errorf("IPv6 is not turned off: outbound IPv6 is already blocked while the tunnel is connected")
 }
 
-// IPv6Exposed reports whether a physical adapter has a global IPv6 address.
+// IPv6Exposed reports whether a physical adapter has a routable IPv6 address.
 // The tunnel carries IPv4 only, so such an address lets traffic bypass it.
 func IPv6Exposed() (bool, error) {
 	ifaces, err := net.Interfaces()
@@ -80,14 +73,14 @@ func IPv6Exposed() (bool, error) {
 		}
 		addrs, err := ifc.Addrs()
 		if err != nil {
-			continue
+			return false, fmt.Errorf("inspect IPv6 addresses on %s: %w", ifc.Name, err)
 		}
 		for _, a := range addrs {
 			ipnet, ok := a.(*net.IPNet)
 			if !ok || ipnet.IP.To4() != nil {
 				continue
 			}
-			if ipnet.IP.IsGlobalUnicast() && !ipnet.IP.IsPrivate() {
+			if ipnet.IP.IsGlobalUnicast() {
 				return true, nil
 			}
 		}

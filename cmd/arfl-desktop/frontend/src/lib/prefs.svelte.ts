@@ -6,11 +6,10 @@ type Prefs = {
   theme: ThemeChoice
   sounds: boolean
   reduceMotion: boolean
-  ipv6Auto: boolean
 }
 
 const KEY = 'arfl.prefs'
-const DEFAULTS: Prefs = { theme: 'dark', sounds: false, reduceMotion: false, ipv6Auto: true }
+const DEFAULTS: Prefs = { theme: 'dark', sounds: false, reduceMotion: false }
 
 function load(): Prefs {
   try {

@@ -3,6 +3,8 @@
 package tunnel
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -18,8 +20,7 @@ type windowsConfigurator struct {
 	// dnsBackup maps interface alias to the resolvers configured before the
 	// tunnel took over, so teardown restores each adapter exactly.
 	dnsBackup map[string][]string
-	// ipv6Off lists adapters whose IPv6 binding the tunnel turned off.
-	ipv6Off []string
+	ipv6Rule  string
 }
 
 func newNetConfigurator() (netConfigurator, error) {
@@ -204,44 +205,50 @@ func powershell(script string) (string, error) {
 }
 
 func (c *windowsConfigurator) DisableIPv6() error {
-	aliases, err := activeAdapters()
-	if err != nil {
-		return err
+	if c.ipv6Rule != "" {
+		return nil
 	}
-	for _, alias := range aliases {
-		state, err := powershell(fmt.Sprintf(
-			`(Get-NetAdapterBinding -Name '%s' -ComponentID ms_tcpip6 -ErrorAction Stop).Enabled`, alias))
-		if err != nil || !strings.EqualFold(strings.TrimSpace(state), "True") {
-			continue
-		}
-		if _, err := powershell(fmt.Sprintf(
-			`Disable-NetAdapterBinding -Name '%s' -ComponentID ms_tcpip6 -ErrorAction Stop`, alias)); err != nil {
-			// The tunnel only records the change on success, so undo the
-			// adapters already switched off or they would stay that way.
-			if rerr := c.RestoreIPv6(); rerr != nil {
-				return fmt.Errorf("turn off IPv6 on %q: %w (rolling back: %v)", alias, err, rerr)
-			}
-			return fmt.Errorf("turn off IPv6 on %q: %w", alias, err)
-		}
-		c.ipv6Off = append(c.ipv6Off, alias)
+	// A block rule has no effect when the firewall is disabled, and local
+	// rules can be ignored by domain policy. Reject either configuration.
+	_, err := powershell(`$profiles = @(Get-NetFirewallProfile -ErrorAction Stop);
+		if ($profiles.Count -ne 3 -or @($profiles | Where-Object {
+			-not $_.Enabled -or $_.AllowLocalFirewallRules -eq $false
+		}).Count -ne 0) { throw 'Windows firewall must accept local rules on every profile' }`)
+	if err != nil {
+		return fmt.Errorf("cannot secure IPv6: %w", err)
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return fmt.Errorf("identify IPv6 rule: %w", err)
+	}
+	name := "ARFL-IPv6-" + hex.EncodeToString(nonce[:])
+	if _, err := powershell(fmt.Sprintf(
+		`New-NetFirewallRule -Name '%s' -DisplayName 'ARFL outbound IPv6 block' -Direction Outbound -Action Block -RemoteAddress '::/0' -Profile Any -PolicyStore PersistentStore -ErrorAction Stop | Out-Null`,
+		name)); err != nil {
+		return fmt.Errorf("block outbound IPv6: %w", err)
+	}
+	c.ipv6Rule = name
+	// The ActiveStore check catches policies that silently exclude local
+	// rules, or a firewall service that accepted but did not apply the rule.
+	if _, err := powershell(fmt.Sprintf(
+		`$rule = Get-NetFirewallRule -Name '%s' -PolicyStore ActiveStore -ErrorAction Stop;
+		if ($rule.Enabled -ne 'True' -or $rule.Action -ne 'Block' -or
+		    (Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop).RemoteAddress -notcontains '::/0') {
+		    throw 'IPv6 block is not active'
+		}`, name)); err != nil {
+		return fmt.Errorf("verify outbound IPv6 block: %w", err)
 	}
 	return nil
 }
 
 func (c *windowsConfigurator) RestoreIPv6() error {
-	var problems []string
-	var failed []string
-	for _, alias := range c.ipv6Off {
-		if _, err := powershell(fmt.Sprintf(
-			`Enable-NetAdapterBinding -Name '%s' -ComponentID ms_tcpip6 -ErrorAction Stop`, alias)); err != nil {
-			problems = append(problems, fmt.Sprintf("%s: %v", alias, err))
-			failed = append(failed, alias)
-		}
+	if c.ipv6Rule == "" {
+		return nil
 	}
-	// Adapters that could not be restored stay listed so a later call retries.
-	c.ipv6Off = failed
-	if len(problems) > 0 {
-		return fmt.Errorf("restore IPv6: %s", strings.Join(problems, "; "))
+	if _, err := powershell(fmt.Sprintf(
+		`Remove-NetFirewallRule -Name '%s' -PolicyStore PersistentStore -ErrorAction Stop`, c.ipv6Rule)); err != nil {
+		return fmt.Errorf("remove IPv6 block: %w", err)
 	}
+	c.ipv6Rule = ""
 	return nil
 }

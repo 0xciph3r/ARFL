@@ -36,3 +36,6 @@ keys/
 # Testnet generated data
 deploy/data/
 /arfl-hub-linux
+
+**/dist/**
+arfl-desktop/frontend/dist

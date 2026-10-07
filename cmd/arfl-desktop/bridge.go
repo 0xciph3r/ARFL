@@ -402,6 +402,20 @@ func (b *Bridge) ListNodes() ([]types.NodeInfo, error) {
 	return nodes, nil
 }
 
+// PreparePair returns the actual next entry and exit shown before connecting.
+// Connect rechecks both against the hub rather than silently choosing others.
+func (b *Bridge) PreparePair() ([]types.NodeInfo, error) {
+	svc, ctx, err := b.ready()
+	if err != nil {
+		return nil, err
+	}
+	pair, err := svc.PreparePair(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return []types.NodeInfo{pair.Entry, pair.Exit}, nil
+}
+
 // Connect establishes the two-hop tunnel, paying perHopSats to each node.
 //
 // The call is bounded: node handshakes and route changes can hang on a

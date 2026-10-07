@@ -393,6 +393,7 @@ arfl-hub attest --config /opt/arfl/data/hub.json \
   --node-wg-key <node_wireguard_pubkey_base64> \
   --operator "my-org" \
   --role entry \
+  --lease 90d \
   --out /tmp/entry-attestation.json
 ```
 
@@ -424,8 +425,11 @@ json.dump(cfg, open(\"/opt/arfl/data/node.json\", \"w\"), indent=2)
 "'
 ```
 
-Repeat for both entry and exit nodes. Attestations expire after 30 days —
-regenerate with the same command when needed.
+Repeat for both entry and exit nodes. Attestations last six hours; nodes
+automatically refresh them near expiry while their hub-issued leases remain
+active. Without `--lease`, there is no active lease for automatic refresh.
+Include `--lease 90d` (or another agreed duration) when first attesting and
+renew the lease with the hub operator before it expires.
 
 ## 10. Start the Nodes
 
@@ -610,4 +614,5 @@ server public key). Create a `.conf` file and import it into WireGuard.
 ### Node can't announce
 - Check Nostr relay connectivity
 - Verify `nostr_privkey` is valid 64-char hex
-- Ensure attestation hasn't expired (TTL is 30 days — regenerate if needed)
+- Check node logs for attestation refresh failures (TTL is six hours); confirm
+  the hub-issued lease is still active and renew it if necessary

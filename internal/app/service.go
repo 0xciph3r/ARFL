@@ -497,6 +497,18 @@ func (s *Service) SetPinnedPair(pin *PinnedPair) error {
 	return nil
 }
 
+// SetTunnel swaps the tunnel, for example once the privileged helper has
+// been installed. It is refused during a session.
+func (s *Service) SetTunnel(t Tunnel) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != StateDisconnected {
+		return fmt.Errorf("disconnect before changing how the tunnel runs")
+	}
+	s.tunnel = t
+	return nil
+}
+
 // Snapshot returns every held proof keyed by hub URL, for backups.
 func (s *Service) Snapshot() map[string]cashu.Proofs {
 	return s.store.Snapshot()

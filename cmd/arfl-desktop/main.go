@@ -9,6 +9,7 @@ package main
 import (
 	"embed"
 	"log"
+	"os"
 	"runtime"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -30,6 +31,14 @@ func trayIcon(name string) []byte {
 }
 
 func main() {
+	// The same binary is the privileged helper; see tunnelhost.go.
+	if len(os.Args) > 1 && os.Args[1] == "helper" {
+		if err := runHelperCommand(os.Args[2:]); err != nil {
+			log.Fatalf("arfl-desktop helper: %v", err)
+		}
+		return
+	}
+
 	bridge := NewBridge()
 
 	app := application.New(application.Options{

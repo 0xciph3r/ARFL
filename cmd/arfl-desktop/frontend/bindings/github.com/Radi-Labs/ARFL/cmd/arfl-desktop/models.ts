@@ -71,6 +71,11 @@ export interface StatusView {
     "tunnel_error"?: string;
 
     /**
+     * HelperSetup is true when "Set up the tunnel" would enable Connect.
+     */
+    "helper_setup": boolean;
+
+    /**
      * Error carries a non-fatal problem (for example an unreadable balance)
      * without failing the whole call, so the UI can still render.
      */

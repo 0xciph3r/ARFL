@@ -30,10 +30,12 @@ type Bridge struct {
 
 	// tun is held separately from the service so its wgctrl handle can be
 	// released on shutdown; app.Service only owns the session, not the handle.
-	tun *tunnel.Tunnel
+	tun tunnelHandle
 	// tunErr records why privileged networking was unavailable, so the UI can
 	// explain the disabled Connect button instead of failing silently.
 	tunErr string
+	// needsSetup is true when installing the helper would enable Connect.
+	needsSetup bool
 
 	// Window and tray handles, set once at startup.
 	app        *application.App
@@ -95,6 +97,8 @@ type StatusView struct {
 	TunnelReady bool `json:"tunnel_ready"`
 	// TunnelError explains an unavailable tunnel, typically missing root.
 	TunnelError string `json:"tunnel_error,omitempty"`
+	// HelperSetup is true when "Set up the tunnel" would enable Connect.
+	HelperSetup bool `json:"helper_setup"`
 	// Error carries a non-fatal problem (for example an unreadable balance)
 	// without failing the whole call, so the UI can still render.
 	Error string `json:"error,omitempty"`
@@ -127,24 +131,10 @@ func (b *Bridge) Unlock(passphrase string) (*StatusView, error) {
 func (b *Bridge) openLocked(secret string) (*StatusView, error) {
 
 	// Privileged networking is optional. Without it the wallet still mints,
-	// holds balance and browses nodes, so a user without root gets a working
-	// app with Connect disabled rather than one that refuses to open.
-	//
-	// tunnel.New succeeds unprivileged, so Preflight is what actually decides:
-	// without it the UI would offer Connect, the service would pay both nodes,
-	// and bring-up would then fail on the first route command with the sats
-	// already burned.
-	tun, tunErr := tunnel.New()
-	if tunErr == nil {
-		tunErr = tun.Preflight()
-		if tunErr != nil {
-			tun.Close()
-			tun = nil
-		}
-	}
-	if tunErr != nil {
-		b.tunErr = tunErr.Error()
-	}
+	// holds balance and browses nodes, so the app opens with Connect disabled
+	// and offers to set up the helper instead of refusing to start.
+	tun, reason, needsSetup := chooseTunnel()
+	b.tunErr, b.needsSetup = reason, needsSetup
 
 	preferred, allowed, relays, trustedHubPubkeys, delivery, discoverySource, err := loadTransportPolicyFromClientConfig()
 	if err != nil {
@@ -162,10 +152,8 @@ func (b *Bridge) openLocked(secret string) (*StatusView, error) {
 		TrustedHubPubkeys:   trustedHubPubkeys,
 		TokenDelivery:       delivery,
 		DiscoverySource:     discoverySource,
-		// A nil *tunnel.Tunnel in an interface is not nil, so pass the
-		// interface explicitly as nil when setup failed.
-		Tunnel:       tunnelOrNil(tun),
-		PollInterval: 2 * time.Second,
+		Tunnel:              tunnelOrNil(tun),
+		PollInterval:        2 * time.Second,
 	})
 	if err != nil {
 		if tun != nil {
@@ -218,10 +206,10 @@ func (b *Bridge) ResetVault() error {
 	return nil
 }
 
-// tunnelOrNil avoids the typed-nil trap: assigning a nil *tunnel.Tunnel to an
-// app.Tunnel interface yields a non-nil interface, and the service would then
-// call methods on it instead of reporting that no tunnel is configured.
-func tunnelOrNil(t *tunnel.Tunnel) app.Tunnel {
+// tunnelOrNil avoids the typed-nil trap: a nil handle stored in app.Tunnel
+// would be a non-nil interface, and the service would call methods on it
+// instead of reporting that no tunnel is configured.
+func tunnelOrNil(t tunnelHandle) app.Tunnel {
 	if t == nil {
 		return nil
 	}
@@ -493,6 +481,7 @@ func (b *Bridge) status(svc *app.Service) *StatusView {
 		State:       string(svc.State()),
 		TunnelReady: b.tun != nil,
 		TunnelError: b.tunErr,
+		HelperSetup: b.needsSetup,
 	}
 	if view.HubURL == "" {
 		return view
@@ -552,12 +541,12 @@ func (b *Bridge) Usage() (*UsageView, error) {
 	if tun == nil {
 		return &UsageView{}, nil
 	}
-	u, ok, err := tun.Usage()
+	u, err := tun.usage()
 	if err != nil {
 		return nil, err
 	}
 	return &UsageView{
-		Connected:     ok,
+		Connected:     u.Active,
 		RxBytes:       u.RxBytes,
 		TxBytes:       u.TxBytes,
 		EntryIdleSecs: idleSecs(u.EntryHandshake),

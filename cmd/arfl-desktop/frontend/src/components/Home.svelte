@@ -73,6 +73,22 @@
   let last = $state<SessionSummary | null>(null)
   let now = $state(Date.now())
   let pinnedRoute = $state(false)
+  let settingUp = $state(false)
+
+  // One administrator prompt installs the background helper that owns the
+  // tunnel, so ARFL itself never runs as root.
+  async function setUpTunnel() {
+    settingUp = true
+    error = ''
+    try {
+      await api.installHelper()
+      onChanged()
+    } catch (err) {
+      error = (err as Error).message
+    } finally {
+      settingUp = false
+    }
+  }
   let usage = $state({ rx: 0, tx: 0 })
   let rate = $state({ down: 0, up: 0 })
   let ipv6Exposed = $state(false)
@@ -311,7 +327,7 @@
   )
   const statusHint = $derived.by(() => {
     if (error) return error
-    if (!status.tunnel_ready) return status.tunnel_error || 'Run ARFL with administrator rights to enable the tunnel.'
+    if (!status.tunnel_ready && !connected) return status.tunnel_error || 'Run ARFL with administrator rights to enable the tunnel.'
     if (closing) return 'Closing the tunnel. Your traffic will not be protected after this.'
     if (connecting) return 'Your device is paying each node and building the two tunnels.'
     if (connected && !ipv6Safe) return 'The tunnel is up, but IPv6 traffic still goes out directly.'
@@ -389,6 +405,9 @@
       </div>
       <div class="word-status">{statusWord}</div>
       <div class="hint" class:err={!!error}>{statusHint}</div>
+      {#if status.helper_setup && !connected}
+        <button class="setup" disabled={settingUp} onclick={setUpTunnel}>{settingUp ? 'Waiting for approval…' : 'Set up the tunnel'}</button>
+      {/if}
 
       <div class="under">
         {#if connecting}
@@ -691,6 +710,17 @@
 
   .hint.err {
     color: var(--red);
+  }
+
+  .setup {
+    margin-top: 12px;
+    min-height: 40px;
+    padding: 0 18px;
+    border-radius: 10px;
+    background: transparent;
+    border: 1.5px solid var(--accent);
+    color: var(--accentT);
+    font-size: 14px;
   }
 
   .under {

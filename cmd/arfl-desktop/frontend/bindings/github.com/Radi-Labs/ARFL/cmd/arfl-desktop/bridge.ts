@@ -115,6 +115,14 @@ export function IPv6Exposed(): $CancellablePromise<boolean> {
 }
 
 /**
+ * InstallHelper shows the system's administrator prompt, installs the helper
+ * and switches the open wallet over to it.
+ */
+export function InstallHelper(): $CancellablePromise<void> {
+    return $Call.ByID(2675060746);
+}
+
+/**
  * KeyTransfer returns the device key in the form the "Move to a new device"
  * QR carries. Tokens are deliberately not included; they travel only in the
  * encrypted backup file.

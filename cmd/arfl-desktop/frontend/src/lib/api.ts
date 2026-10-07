@@ -88,4 +88,5 @@ export const api = {
   chooseBackupFile: () => call(() => Bridge.ChooseBackupFile()),
   restoreBackup: (path: string, passphrase: string) => list(() => Bridge.RestoreBackup(path, passphrase)),
   showMain: (overlay = '') => call(() => Bridge.ShowMain(overlay)),
+  installHelper: () => call(() => Bridge.InstallHelper()),
 }

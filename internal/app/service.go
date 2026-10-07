@@ -218,6 +218,17 @@ type Service struct {
 	// pinned replaces the random pair with one the user chose. It is cleared
 	// on every hub switch, since node IDs only mean something at one hub.
 	pinned *PinnedPair
+
+	// route is what Extend needs to pay the live session's nodes again.
+	route *liveRoute
+}
+
+// liveRoute is the connected pair and the client keys used with it.
+type liveRoute struct {
+	pair          client.NodePair
+	exitConnectIP string
+	entryKey      string
+	exitKey       string
 }
 
 // PinnedPair names the entry and exit nodes a user chose by ID.
@@ -471,13 +482,23 @@ func restrictToPinned(nodes []types.NodeInfo, pin PinnedPair) ([]types.NodeInfo,
 	if entry == nil || exit == nil {
 		return nil, ErrPinnedNodeOffline
 	}
-	if entry.NostrPubkey == exit.NostrPubkey {
+	if sameOperator(*entry, *exit) {
 		return nil, ErrPinnedSameOperator
 	}
 	e, x := *entry, *exit
 	e.Role = types.RoleEntry
 	x.Role = types.RoleExit
 	return []types.NodeInfo{e, x}, nil
+}
+
+// sameOperator compares the operator the hub assigned in each node's
+// attestation, since one operator can run many nodes with different keys.
+// Without attestation data it falls back to the node keys.
+func sameOperator(a, b types.NodeInfo) bool {
+	if a.OperatorID != "" && b.OperatorID != "" {
+		return a.OperatorID == b.OperatorID
+	}
+	return a.NostrPubkey == b.NostrPubkey
 }
 
 // SetPinnedPair makes every later connect use these two nodes. Pass nil to go
@@ -754,6 +775,10 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 
 	connectSucceeded = true
 
+	s.mu.Lock()
+	s.route = &liveRoute{pair: *pair, exitConnectIP: exitConnectIP, entryKey: entryClientKey, exitKey: exitClientKey}
+	s.mu.Unlock()
+
 	return &Session{
 		State:     StateConnected,
 		Config:    cfg,
@@ -782,12 +807,105 @@ func (s *Service) Disconnect(ctx context.Context) error {
 	s.mu.Lock()
 	s.state = StateDisconnected
 	s.session = nil
+	s.route = nil
 	s.mu.Unlock()
 
 	if err != nil {
 		return fmt.Errorf("tear tunnel down: %w", err)
 	}
 	return nil
+}
+
+// ErrExtendMovedTunnel means a node answered a top-up with a different tunnel
+// address, so the session must be rebuilt rather than extended.
+var ErrExtendMovedTunnel = errors.New("a node moved the session to a new tunnel address")
+
+// Extend pays both nodes of the live session for another allowance while the
+// tunnel stays up. Tearing the tunnel down to buy more would send traffic out
+// unprotected in the meantime.
+//
+// Nodes treat a payment from a peer they already serve as a top-up: the peer
+// keeps its tunnel address and its quota is replaced with the new allowance.
+// The exit is paid through the outer tunnel, as during connect.
+func (s *Service) Extend(ctx context.Context, perHopSats uint64) (*Session, error) {
+	if perHopSats == 0 {
+		return nil, ErrAmountTooSmall
+	}
+	w, err := s.currentWallet()
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	route, session := s.route, s.session
+	if s.state != StateConnected || route == nil || session == nil {
+		s.mu.Unlock()
+		return nil, ErrNotConnected
+	}
+	s.mu.Unlock()
+
+	entryProofs, err := w.Reserve(ctx, perHopSats)
+	if err != nil {
+		return nil, fmt.Errorf("reserve entry payment: %w", err)
+	}
+	exitProofs, err := w.Reserve(ctx, perHopSats)
+	if err != nil {
+		if rerr := w.Release(entryProofs); rerr != nil {
+			return nil, fmt.Errorf("reserve exit payment: %w (entry proofs could not be returned to the store: %v)", err, rerr)
+		}
+		return nil, fmt.Errorf("reserve exit payment: %w", err)
+	}
+
+	var tokenSender *client.TokenSender
+	if s.delivery == client.TokenDeliveryNIP44 {
+		pool := nostr.NewRelayPool(s.nostrRelays)
+		if err := pool.Connect(ctx); err != nil {
+			if rerr := w.Release(append(append(cashu.Proofs{}, entryProofs...), exitProofs...)); rerr != nil {
+				return nil, fmt.Errorf("connect to relays for token delivery: %w (reserved proofs could not be returned to the store: %v)", err, rerr)
+			}
+			return nil, fmt.Errorf("connect to relays for token delivery: %w", err)
+		}
+		defer pool.Close()
+		tokenSender = client.NewTokenSender(pool)
+	}
+
+	pair := route.pair
+	entryRes, err := s.connectNode(ctx, tokenSender, pair.Entry.ConnectURL, pair.Entry.NostrPubkey, "", entryProofs, route.entryKey, "entry")
+	if err != nil {
+		if rerr := s.refundUnspentProofs(w, entryProofs, exitProofs, shouldTreatProofsAsSpent(err), false); rerr != nil {
+			return nil, fmt.Errorf("%w (unspent proofs could not be returned to the store: %v)", err, rerr)
+		}
+		return nil, err
+	}
+	exitRes, err := s.connectNode(ctx, tokenSender, pair.Exit.ConnectURL, pair.Exit.NostrPubkey, route.exitConnectIP, exitProofs, route.exitKey, "exit")
+	if err != nil {
+		if rerr := s.refundUnspentProofs(w, entryProofs, exitProofs, true, shouldTreatProofsAsSpent(err)); rerr != nil {
+			return nil, fmt.Errorf("%w (unspent proofs could not be returned to the store: %v)", err, rerr)
+		}
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.session == nil {
+		return nil, ErrNotConnected
+	}
+	if entryRes.TunnelIP != s.session.Config.Entry.TunnelIP || exitRes.TunnelIP != s.session.Config.Exit.TunnelIP {
+		return nil, ErrExtendMovedTunnel
+	}
+	s.session.Config.Entry.BytesAllowed = entryRes.BytesAllowed
+	s.session.Config.Exit.BytesAllowed = exitRes.BytesAllowed
+	s.session.SpentSats += perHopSats * 2
+	cp := *s.session
+	return &cp, nil
+}
+
+// SetTrustedHubPubkeys replaces the hub keys trusted to sign node
+// attestations, for example when the trusted hub list is refreshed.
+func (s *Service) SetTrustedHubPubkeys(keys []string) {
+	clean := sanitizeHubPubkeys(keys)
+	s.mu.Lock()
+	s.trustedHubs = clean
+	s.mu.Unlock()
 }
 
 // Close releases resources. Proofs are already durable on disk.
@@ -945,6 +1063,10 @@ func indexedToNodeInfos(in []*discovery.IndexedNode) []types.NodeInfo {
 		}
 		info := node.Info
 		info.NostrPubkey = node.Event.Pubkey
+		info.OperatorID = ""
+		if node.Attestation != nil {
+			info.OperatorID = node.Attestation.OperatorID
+		}
 		out = append(out, info)
 	}
 	return out

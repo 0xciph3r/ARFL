@@ -93,6 +93,14 @@ export function ExportBackup(passphrase: string): $CancellablePromise<string> {
 }
 
 /**
+ * Extend buys another allowance from the live session's nodes without
+ * taking the tunnel down.
+ */
+export function Extend(perHopSats: number): $CancellablePromise<app$0.Session | null> {
+    return $Call.ByID(4199176103, perHopSats);
+}
+
+/**
  * Fingerprint returns the device key's fingerprint, or "" before one exists.
  */
 export function Fingerprint(): $CancellablePromise<string> {

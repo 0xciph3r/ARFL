@@ -358,6 +358,11 @@ func decrypt(key, nonce, ciphertext []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// AEAD.Open panics on a wrong-sized nonce, so a damaged or crafted file
+	// must be refused here rather than crash the app.
+	if len(nonce) != gcm.NonceSize() {
+		return nil, errors.New("invalid nonce")
+	}
 	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 

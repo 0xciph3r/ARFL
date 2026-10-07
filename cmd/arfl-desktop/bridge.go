@@ -56,7 +56,7 @@ func (b *Bridge) ServiceStartup(ctx context.Context, _ application.ServiceOption
 	b.mu.Lock()
 	b.ctx = ctx
 	b.mu.Unlock()
-	go trusted.keepFresh(ctx)
+	go trusted.keepFresh(ctx, b.registryUpdated)
 	return nil
 }
 
@@ -150,7 +150,7 @@ func (b *Bridge) openLocked(secret string) (*StatusView, error) {
 		PreferredTransports: preferred,
 		AllowedTransports:   allowed,
 		NostrRelays:         relays,
-		TrustedHubPubkeys:   trustedHubPubkeys,
+		TrustedHubPubkeys:   withRegistryKeys(trustedHubPubkeys),
 		TokenDelivery:       delivery,
 		DiscoverySource:     discoverySource,
 		Tunnel:              tunnelOrNil(tun),
@@ -457,6 +457,18 @@ func (b *Bridge) PinnedPair() *app.PinnedPair {
 		return nil
 	}
 	return svc.PinnedPair()
+}
+
+// Extend buys another allowance from the live session's nodes without
+// taking the tunnel down.
+func (b *Bridge) Extend(perHopSats uint64) (*app.Session, error) {
+	svc, ctx, err := b.ready()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	return svc.Extend(ctx, perHopSats)
 }
 
 // Session returns the active session, or nil when disconnected.

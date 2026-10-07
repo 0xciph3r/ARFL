@@ -65,3 +65,19 @@ func TestSetPinnedPairValidatesAndClears(t *testing.T) {
 		t.Fatal("pin not cleared")
 	}
 }
+
+// One operator running two nodes under different keys must not be accepted
+// as two separate hops.
+func TestRestrictToPinnedComparesAttestedOperators(t *testing.T) {
+	nodes := []types.NodeInfo{
+		{ID: "a", NostrPubkey: "k1", OperatorID: "same-op", Role: types.RoleEntry},
+		{ID: "b", NostrPubkey: "k2", OperatorID: "same-op", Role: types.RoleExit},
+		{ID: "c", NostrPubkey: "k3", OperatorID: "other-op", Role: types.RoleExit},
+	}
+	if _, err := restrictToPinned(nodes, PinnedPair{EntryID: "a", ExitID: "b"}); !errors.Is(err, ErrPinnedSameOperator) {
+		t.Fatalf("got %v, want ErrPinnedSameOperator", err)
+	}
+	if _, err := restrictToPinned(nodes, PinnedPair{EntryID: "a", ExitID: "c"}); err != nil {
+		t.Fatalf("different operators refused: %v", err)
+	}
+}

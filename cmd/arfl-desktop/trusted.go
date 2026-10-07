@@ -46,11 +46,13 @@ func (t *trustedHubs) set(l registry.List) {
 
 // keepFresh loads the cached list, then fetches the published one now and
 // every day until ctx ends. A failed fetch keeps the last good list.
-func (t *trustedHubs) keepFresh(ctx context.Context) {
+// updated is called after each change so the open wallet picks it up.
+func (t *trustedHubs) keepFresh(ctx context.Context, updated func()) {
 	cache := registryCache()
 	if cache.Path != "" {
 		if l, at := cache.Load(); !at.IsZero() {
 			t.set(l)
+			updated()
 		}
 	}
 	client := &http.Client{Timeout: 20 * time.Second}
@@ -59,6 +61,7 @@ func (t *trustedHubs) keepFresh(ctx context.Context) {
 			fmt.Printf("arfl-desktop: refresh trusted hubs: %v\n", err)
 		} else {
 			t.set(l)
+			updated()
 			if cache.Path != "" {
 				if err := cache.Save(l); err != nil {
 					fmt.Printf("arfl-desktop: cache trusted hubs: %v\n", err)
@@ -71,4 +74,32 @@ func (t *trustedHubs) keepFresh(ctx context.Context) {
 		case <-time.After(registryRefresh):
 		}
 	}
+}
+
+// withRegistryKeys adds every trusted hub's key to the configured ones, so a
+// hub marked Trusted by ARFL can also sign the node attestations the app
+// verifies when it discovers nodes over Nostr.
+func withRegistryKeys(configured []string) []string {
+	out := append([]string(nil), configured...)
+	for _, h := range trusted.get().Hubs {
+		if h.NostrPubkey != "" && !containsString(out, h.NostrPubkey) {
+			out = append(out, h.NostrPubkey)
+		}
+	}
+	return out
+}
+
+// registryUpdated hands a refreshed trusted list's keys to the open wallet.
+func (b *Bridge) registryUpdated() {
+	b.mu.Lock()
+	svc := b.svc
+	b.mu.Unlock()
+	if svc == nil {
+		return
+	}
+	_, _, _, configured, _, _, err := loadTransportPolicyFromClientConfig()
+	if err != nil {
+		return
+	}
+	svc.SetTrustedHubPubkeys(withRegistryKeys(configured))
 }

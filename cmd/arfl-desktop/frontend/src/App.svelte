@@ -52,8 +52,9 @@
 
   async function finish(buy: boolean) {
     openTopup = buy
-    onboarding = false
     await refresh()
+    // A wallet without a hub has nothing to show; keep choosing one.
+    onboarding = !status?.hub_url
   }
 </script>
 
@@ -64,6 +65,8 @@
     <div class="fatal" role="alert">{error}</div>
   {:else if setup && onboarding}
     <Onboarding {setup} startStep={setup.has_key ? 2 : 0} onDone={finish} />
+  {:else if status?.unlocked && !status.hub_url && setup}
+    <Onboarding setup={{ ...setup, has_key: true }} startStep={2} onDone={finish} />
   {:else if status?.unlocked && status.hub_url}
     <Home {status} {hub} initialOverlay={openTopup ? 'topup' : null} onChanged={refresh} onHubSwitched={switchHub} />
   {/if}

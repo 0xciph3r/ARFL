@@ -2,10 +2,11 @@
   import { api, type KnownHub } from '../lib/api'
   import { gbFromTokens, tokensFromSats } from '../lib/units'
 
-  let { currentUrl, connected, onSwitched }: {
+  let { currentUrl, connected, onSwitch }: {
     currentUrl: string
     connected: boolean
-    onSwitched: (url: string) => void
+    // Connects to the hub; the parent owns the switch so it happens once.
+    onSwitch: (url: string) => Promise<void>
   } = $props()
 
   let hubs = $state<KnownHub[]>([])
@@ -36,8 +37,7 @@
     try {
       // Switching hubs ends the session: tokens only work at their own hub.
       if (connected) await api.disconnect()
-      await api.connectHub(h.url)
-      onSwitched(h.url)
+      await onSwitch(h.url)
     } catch (err) {
       error = (err as Error).message
     } finally {

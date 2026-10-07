@@ -176,6 +176,11 @@ func (c *darwinConfigurator) DisableIPv6() error {
 			continue
 		}
 		if err := run("networksetup", "-setv6off", service); err != nil {
+			// The tunnel only records the change on success, so undo the
+			// services already switched off or they would stay that way.
+			if rerr := c.RestoreIPv6(); rerr != nil {
+				return fmt.Errorf("turn off IPv6 on %q: %w (rolling back: %v)", service, err, rerr)
+			}
 			return fmt.Errorf("turn off IPv6 on %q: %w", service, err)
 		}
 		c.ipv6Off = append(c.ipv6Off, service)
@@ -185,12 +190,15 @@ func (c *darwinConfigurator) DisableIPv6() error {
 
 func (c *darwinConfigurator) RestoreIPv6() error {
 	var problems []string
+	var failed []string
 	for _, service := range c.ipv6Off {
 		if err := run("networksetup", "-setv6automatic", service); err != nil {
 			problems = append(problems, fmt.Sprintf("%s: %v", service, err))
+			failed = append(failed, service)
 		}
 	}
-	c.ipv6Off = nil
+	// Services that could not be restored stay listed so a later call retries.
+	c.ipv6Off = failed
 	if len(problems) > 0 {
 		return fmt.Errorf("restore IPv6: %s", strings.Join(problems, "; "))
 	}

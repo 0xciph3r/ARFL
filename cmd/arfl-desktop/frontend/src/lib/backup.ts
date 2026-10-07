@@ -27,3 +27,7 @@ export function backupAge(at: number): string {
   if (hours < 48) return `${hours} h ago`
   return new Date(at).toLocaleDateString()
 }
+
+// Matches wallet.MinBackupPassphrase. The file holds the key and every token,
+// and whoever copies it can guess offline, so short passphrases are refused.
+export const MIN_BACKUP_PASSPHRASE = 12

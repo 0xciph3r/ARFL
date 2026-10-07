@@ -19,6 +19,12 @@ const backupVersion = 1
 // ErrBadBackupPassphrase is returned when a backup cannot be decrypted.
 var ErrBadBackupPassphrase = errors.New("could not open the backup: wrong passphrase or damaged file")
 
+// MinBackupPassphrase is the shortest passphrase a backup may be sealed with.
+// The file holds the device key and every bearer token, and an attacker who
+// copies it can guess offline as long as they like, so a short passphrase
+// falls even behind Argon2id.
+const MinBackupPassphrase = 12
+
 // backupFile is the on-disk backup. Like the vault, only KDF inputs are clear.
 type backupFile struct {
 	Format     string `json:"format"`
@@ -37,8 +43,8 @@ type backupPayload struct {
 // The file is a bearer instrument once opened, so it is never written without
 // one.
 func SealBackup(deviceKey []byte, hubs map[string]cashu.Proofs, passphrase string) ([]byte, error) {
-	if len(passphrase) < 4 {
-		return nil, fmt.Errorf("backup passphrase must be at least 4 characters")
+	if len([]rune(passphrase)) < MinBackupPassphrase {
+		return nil, fmt.Errorf("backup passphrase must be at least %d characters", MinBackupPassphrase)
 	}
 	if len(deviceKey) == 0 {
 		return nil, fmt.Errorf("device key is required")
@@ -104,6 +110,10 @@ const maxCheckStateYs = 100
 // returns only those. A restored backup can hold proofs the old device spent
 // after the backup was taken; keeping them would show a balance that fails on
 // first use.
+//
+// Only proofs the hub explicitly reports SPENT are dropped. A PENDING, missing
+// or unrecognised state is an error, so the caller keeps every proof rather
+// than losing ones that may still be good.
 func (c *MintClient) UnspentProofs(ctx context.Context, proofs cashu.Proofs) (cashu.Proofs, error) {
 	var out cashu.Proofs
 	for start := 0; start < len(proofs); start += maxCheckStateYs {
@@ -128,13 +138,19 @@ func (c *MintClient) UnspentProofs(ctx context.Context, proofs cashu.Proofs) (ca
 		if err := c.do(ctx, "POST", "/v1/checkstate", map[string]any{"Ys": ys}, &resp); err != nil {
 			return nil, err
 		}
-		spent := make(map[string]bool, len(resp.States))
+		states := make(map[string]string, len(resp.States))
 		for _, st := range resp.States {
-			spent[st.Y] = st.State != "UNSPENT"
+			states[st.Y] = st.State
 		}
 		for i, p := range batch {
-			if s, ok := spent[ys[i]]; ok && !s {
+			switch states[ys[i]] {
+			case "UNSPENT":
 				out = append(out, p)
+			case "SPENT":
+			case "":
+				return nil, fmt.Errorf("hub did not report the state of a proof")
+			default:
+				return nil, fmt.Errorf("hub reports a proof as %s; it cannot be checked yet", states[ys[i]])
 			}
 		}
 	}

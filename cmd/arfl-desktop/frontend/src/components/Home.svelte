@@ -4,6 +4,7 @@
   import { api, type HubStatus, type Session, type StatusView } from '../lib/api'
   import { isLight, prefs } from '../lib/prefs.svelte'
   import { cue } from '../lib/sound'
+  import { connectProtected, ipv6Exposed as checkExposed } from '../lib/protect'
   import { TOKEN_SATS, gbFromTokens, tokensFromSats } from '../lib/units'
   import mark from '../assets/mark.svg'
   import wordDark from '../assets/wordmark-dark.png'
@@ -24,7 +25,7 @@
     hub: HubStatus | null
     initialOverlay?: 'topup' | null
     onChanged: () => void
-    onHubSwitched: (url: string) => void
+    onHubSwitched: (url: string) => Promise<void>
   } = $props()
 
   // Each hop is paid one whole token, so a session costs two.
@@ -47,6 +48,10 @@
   let silentHop = $state<'entry' | 'exit'>('exit')
   let nodeWarned = false
   let renewing = false
+  // Bytes already used when the current allowance was bought.
+  let allowanceBase = 0
+  // After a failed top-up, wait before trying again rather than every sample.
+  let renewRetryAt = 0
   let hubPreview = $state<{ margin_pct: number; node_count: number } | null>(null)
   let hubReachedAt = $state(Date.now())
 
@@ -96,11 +101,7 @@
   const ipv6Safe = $derived(!ipv6Exposed || ipv6Off)
 
   async function checkIPv6() {
-    try {
-      ipv6Exposed = await api.ipv6Exposed()
-    } catch {
-      ipv6Exposed = false
-    }
+    ipv6Exposed = await checkExposed()
   }
   checkIPv6()
 
@@ -140,8 +141,9 @@
 
       // Each hop was paid for a fixed allowance. Near the end, pay for the
       // next one while there are tokens; otherwise the session is over.
+      // Counters keep running across top-ups, so measure from the last one.
       const allowance = Math.min(session?.config?.entry?.bytes_allowed || Infinity, session?.config?.exit?.bytes_allowed || Infinity)
-      if (!renewing && Number.isFinite(allowance) && u.rx_bytes + u.tx_bytes >= allowance * 0.95) {
+      if (!renewing && Date.now() >= renewRetryAt && Number.isFinite(allowance) && u.rx_bytes + u.tx_bytes - allowanceBase >= allowance * 0.95) {
         renewing = true
         await renew()
         renewing = false
@@ -233,13 +235,15 @@
     // hold on the last one until the tunnel is actually up.
     for (let i = 1; i < STAGES.length; i++) later(() => (stage = i), i * STAGE_MS)
     try {
-      session = await api.connect(PER_HOP_TOKENS * TOKEN_SATS)
+      const res = await connectProtected(PER_HOP_TOKENS * TOKEN_SATS)
+      session = res.session
       lastSample = { rx: 0, tx: 0, at: 0 }
       usage = { rx: 0, tx: 0 }
       rate = { down: 0, up: 0 }
-      ipv6Off = false
-      await checkIPv6()
-      if (ipv6Exposed && prefs.ipv6Auto) await fixIPv6()
+      allowanceBase = 0
+      ipv6Exposed = res.ipv6Exposed
+      ipv6Off = res.ipv6Off
+      if (res.ipv6Error) error = res.ipv6Error
       clearTimers()
       stage = -1
       cue('up')
@@ -254,13 +258,24 @@
     }
   }
 
+  // Near the end of the paid allowance, buy the next one from the same nodes
+  // while the tunnel stays up. Disconnecting to buy more would send traffic
+  // out unprotected in between.
   async function renew() {
-    const enough = tokensFromSats(status.balance_sats) >= PER_HOP_TOKENS * 2
-    await disconnect(true)
-    if (enough) {
-      await connect()
-    } else {
-      alert = 'out'
+    if (tokensFromSats(status.balance_sats) < PER_HOP_TOKENS * 2) {
+      if (!alert) alert = 'out'
+      return
+    }
+    try {
+      session = await api.extend(PER_HOP_TOKENS * TOKEN_SATS)
+      allowanceBase = usage.rx + usage.tx
+    } catch (err) {
+      // The tunnel stays up on its current allowance; the nodes cut traffic
+      // when it is used up rather than letting it leak.
+      error = `Could not buy more bandwidth: ${(err as Error).message}`
+      renewRetryAt = Date.now() + 60_000
+    } finally {
+      onChanged()
     }
   }
 
@@ -495,9 +510,9 @@
         <Hubs
           currentUrl={status.hub_url}
           {connected}
-          onSwitched={(url) => {
+          onSwitch={async (url) => {
+            await onHubSwitched(url)
             overlay = null
-            onHubSwitched(url)
           }}
         />
       {:else if overlay === 'protection'}

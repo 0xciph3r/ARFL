@@ -29,6 +29,13 @@ export interface NodeInfo {
     "version": string;
 
     /**
+     * OperatorID is the operator the hub assigned in this node's attestation.
+     * Clients fill it from the verified attestation and ignore any value the
+     * node announces, so one operator cannot pose as two.
+     */
+    "operator_id"?: string;
+
+    /**
      * Optional node hint for transport selection
      */
     "preferred_transport"?: Transport;

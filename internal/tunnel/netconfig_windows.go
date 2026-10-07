@@ -216,6 +216,11 @@ func (c *windowsConfigurator) DisableIPv6() error {
 		}
 		if _, err := powershell(fmt.Sprintf(
 			`Disable-NetAdapterBinding -Name '%s' -ComponentID ms_tcpip6 -ErrorAction Stop`, alias)); err != nil {
+			// The tunnel only records the change on success, so undo the
+			// adapters already switched off or they would stay that way.
+			if rerr := c.RestoreIPv6(); rerr != nil {
+				return fmt.Errorf("turn off IPv6 on %q: %w (rolling back: %v)", alias, err, rerr)
+			}
 			return fmt.Errorf("turn off IPv6 on %q: %w", alias, err)
 		}
 		c.ipv6Off = append(c.ipv6Off, alias)
@@ -225,13 +230,16 @@ func (c *windowsConfigurator) DisableIPv6() error {
 
 func (c *windowsConfigurator) RestoreIPv6() error {
 	var problems []string
+	var failed []string
 	for _, alias := range c.ipv6Off {
 		if _, err := powershell(fmt.Sprintf(
 			`Enable-NetAdapterBinding -Name '%s' -ComponentID ms_tcpip6 -ErrorAction Stop`, alias)); err != nil {
 			problems = append(problems, fmt.Sprintf("%s: %v", alias, err))
+			failed = append(failed, alias)
 		}
 	}
-	c.ipv6Off = nil
+	// Adapters that could not be restored stay listed so a later call retries.
+	c.ipv6Off = failed
 	if len(problems) > 0 {
 		return fmt.Errorf("restore IPv6: %s", strings.Join(problems, "; "))
 	}

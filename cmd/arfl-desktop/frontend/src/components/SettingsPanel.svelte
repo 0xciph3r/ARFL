@@ -1,7 +1,7 @@
 <script lang="ts">
   import QRCode from 'qrcode'
   import { api } from '../lib/api'
-  import { backupAge, lastBackup, markBackedUp } from '../lib/backup'
+  import { MIN_BACKUP_PASSPHRASE, backupAge, lastBackup, markBackedUp } from '../lib/backup'
   import { applyPrefs, prefs, type ThemeChoice } from '../lib/prefs.svelte'
   import { cue } from '../lib/sound'
   import { gbFromTokens, tokensFromSats } from '../lib/units'
@@ -132,9 +132,9 @@
     {:else if bk === 1}
       <div class="stack">
         <label for="pass" class="field">Passphrase for the backup file</label>
-        <input id="pass" type="password" placeholder="At least 4 characters" bind:value={passphrase} />
+        <input id="pass" type="password" placeholder="At least {MIN_BACKUP_PASSPHRASE} characters" bind:value={passphrase} />
         <div class="status-sub">The file holds your key and every token. It is encrypted with this passphrase, and nobody can recover the passphrase for you.</div>
-        <button class="primary" class:off={passphrase.length < 4} disabled={passphrase.length < 4 || busy} onclick={saveBackup}>Save backup file</button>
+        <button class="primary" class:off={[...passphrase].length < MIN_BACKUP_PASSPHRASE} disabled={[...passphrase].length < MIN_BACKUP_PASSPHRASE || busy} onclick={saveBackup}>Save backup file</button>
         <button class="bare cancel" onclick={() => { bk = 0; passphrase = '' }}>Cancel</button>
       </div>
     {:else}

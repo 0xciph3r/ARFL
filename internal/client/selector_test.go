@@ -523,3 +523,22 @@ func TestConnectPair_BothSucceed(t *testing.T) {
 		t.Errorf("exit tunnel IP: got %s", exit.TunnelIP)
 	}
 }
+
+// The operator comes only from the hub's attestation, never from the node's
+// own announcement.
+func TestFetchNodesTakesOperatorFromAttestation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"nodes":[
+			{"info":{"id":"a","operator_id":"claimed"},"online":true,"attestation":{"operator_id":"hub-assigned"}},
+			{"info":{"id":"b","operator_id":"claimed"},"online":true}
+		],"count":2}`))
+	}))
+	defer srv.Close()
+	nodes, err := NewNodeSelector(srv.URL).FetchNodes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 2 || nodes[0].OperatorID != "hub-assigned" || nodes[1].OperatorID != "" {
+		t.Fatalf("got %+v", nodes)
+	}
+}

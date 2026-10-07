@@ -3,7 +3,7 @@
   import { api, type HubPreview, type RestoredHub, type SetupView } from '../lib/api'
   import { isLight, prefs } from '../lib/prefs.svelte'
   import { cue } from '../lib/sound'
-  import { markBackedUp } from '../lib/backup'
+  import { MIN_BACKUP_PASSPHRASE, markBackedUp } from '../lib/backup'
   import { gbFromTokens, tokensFromSats } from '../lib/units'
   import mark from '../assets/mark.svg'
   import wordDark from '../assets/wordmark-dark.png'
@@ -155,6 +155,20 @@
   }
 
   // The address is always shown: hubs choose their own names, and two can share one.
+  // Restoring brings back tokens but no hub choice. Open the hub that holds
+  // the most, or ask for one when the backup held none.
+  const openRestored = () =>
+    run(async () => {
+      const best = [...restored].sort((a, b) => b.sats - a.sats).find((r) => r.sats > 0 && !r.error)
+      if (!best) {
+        flow = 'new'
+        step = 2
+        return
+      }
+      await api.connectHub(best.hub_url)
+      onDone(false)
+    })
+
   const hubMeta = (h: HubPreview & { custom?: boolean }) =>
     `${h.trusted ? 'Trusted by ARFL' : 'Not verified'} · ${h.url.replace(/^https?:\/\//, '')} · Margin ${h.margin_pct}% · ${h.node_count} approved nodes`
 
@@ -259,10 +273,10 @@
         <div class="warn-text">Anyone holding the backup can use your tokens. Store it somewhere only you can open.</div>
         {#if exporting}
           <label for="exportpass" class="field-label warn-label">Passphrase for the backup file</label>
-          <input id="exportpass" type="password" placeholder="At least 4 characters" bind:value={exportPass} />
+          <input id="exportpass" type="password" placeholder="At least {MIN_BACKUP_PASSPHRASE} characters" bind:value={exportPass} />
           <div class="warn-text">The file is encrypted with this passphrase, and nobody can recover it for you.</div>
           <div class="actions tight">
-            <button class="amber" disabled={busy || exportPass.length < 4} onclick={saveBackup}>Save backup file</button>
+            <button class="amber" disabled={busy || [...exportPass].length < MIN_BACKUP_PASSPHRASE} onclick={saveBackup}>Save backup file</button>
             <button class="ghost" onclick={() => { exporting = false; exportPass = '' }}>Cancel</button>
           </div>
         {:else}
@@ -349,9 +363,10 @@
         <div class="warn-title">Stop using your old device</div>
         <div class="warn-text">A token can only be spent once. If both devices have it, whichever spends it first wins and the other gets nothing.</div>
       </div>
+      {#if error}<div class="err" role="alert">{error}</div>{/if}
       <div class="grow"></div>
       <div class="actions">
-        <button class="primary" onclick={() => onDone(false)}>Open ARFL</button>
+        <button class="primary" disabled={busy} onclick={openRestored}>{busy ? 'Opening…' : 'Open ARFL'}</button>
       </div>
     {/if}
   </section>

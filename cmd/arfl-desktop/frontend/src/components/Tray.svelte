@@ -4,6 +4,7 @@
   import { api, type Session, type StatusView } from '../lib/api'
   import { isLight, prefs } from '../lib/prefs.svelte'
   import { cue } from '../lib/sound'
+  import { connectProtected } from '../lib/protect'
   import { TOKEN_SATS, gbFromTokens, tokensFromSats } from '../lib/units'
   import mark from '../assets/mark.svg'
   import wordDark from '../assets/wordmark-dark.png'
@@ -49,7 +50,10 @@
       } else if (tokens < 2) {
         await api.showMain('topup')
       } else {
-        await api.connect(TOKEN_SATS)
+        // Same path as the main window, so the IPv6 preference is applied
+        // before the session counts as connected.
+        const res = await connectProtected(TOKEN_SATS)
+        if (res.ipv6Error) error = res.ipv6Error
         cue('up')
       }
     } catch (err) {

@@ -6,7 +6,7 @@
 
 ARFL is a decentralised VPN protocol that combines WireGuard, Nostr, the Bitcoin Lightning Network, and Cashu ecash into a self-sustaining privacy network. No accounts. No subscriptions. No logs. No token.
 
-Users pay per-gigabyte via Lightning. Node operators earn passive income on bandwidth they already own. The hub coordinates sessions but **mathematically cannot link buyers to their browsing activity** thanks to Cashu blind signatures (BDHKE).
+Users pay per-gigabyte via Lightning. Node operators offer bandwidth they already own; automated payouts are not yet reliable (see [operator quick start](#operator-quick-start-ubuntu)). The hub coordinates sessions but **mathematically cannot link buyers to their browsing activity** thanks to Cashu blind signatures (BDHKE).
 
 [![CI](https://github.com/0xciph3r/ARFL/actions/workflows/ci.yml/badge.svg)](https://github.com/0xciph3r/ARFL/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/0xciph3r/ARFL)](https://github.com/0xciph3r/ARFL/releases/latest)
@@ -160,6 +160,111 @@ uses Lip Gloss styling for readable pass/warn/fail diagnostics.
 you pass `--force` (which creates a timestamped backup first).
 
 For CI/automation, disable the interactive TUI with `--non-interactive` and pass flags directly.
+
+## Operator quick start (Ubuntu)
+
+These steps use separate hub, entry-node, and exit-node hosts. Run commands on the
+named host, replace example addresses with your own, and use the **same Nostr relays**
+on hub and nodes. See [the deployment guide](docs/deployment-guide.md) for LND
+credentials, firewalls, HTTPS, and systemd services. This is experimental software;
+do not advertise paid node earnings as guaranteed (see step 4).
+
+1. **Hub operator: prepare and start the hub.** Provide an LND REST endpoint with
+   a TLS certificate and macaroon; use mainnet for real payments or signet for
+   testing. On the hub host, from a checkout of this repository:
+
+   ```bash
+   sudo bash deployments/setup-hub.sh
+   # Supply the LND host when prompted, then set the correct LND credential
+   # paths in /opt/arfl/data/hub.json (see the deployment guide).
+   sudo arfl doctor hub --config /opt/arfl/data/hub.json
+   sudo arfl-hub --config /opt/arfl/data/hub.json
+   # In another terminal:
+   curl -fsS http://127.0.0.1:8080/health
+   ```
+
+   Set a recognizable `name` in `hub.json` and expose the API through HTTPS
+   for remote nodes and clients. Keep `hub.json`, the SQLite database, and
+   `/opt/arfl/data/keys/` private and backed up; regenerating the hub keys can
+   invalidate existing tokens. The setup script builds the hub and `arfl`
+   helper but does **not** install or start a systemd service.
+
+2. **Node operator: prepare one host per role.** On each node host, install
+   WireGuard and nftables, then build `arfl` and `arfl-node` with the Go version
+   in [Prerequisites](#prerequisites). `setup-node.sh` prepares the OS, but its
+   bundled Go installer may be older than the required version; install the
+   required Go version separately if needed.
+
+   ```bash
+   sudo bash deployments/setup-node.sh
+   go build -o arfl ./cmd/arfl
+   go build -o arfl-node ./cmd/arfl-node
+   sudo install -d -m 700 /opt/arfl/data /opt/arfl/data/keys
+   sudo ./arfl init node --role entry --endpoint <entry-public-ip>:51820 \
+     --out-interface <internet-interface> --hub-url https://<hub-domain> \
+     --hub-pubkey-file /opt/arfl/data/keys/key-100mb.pub.json \
+     --output /opt/arfl/data/node.json
+   ```
+
+   On the **exit** host, substitute `--role exit` and
+   `--endpoint <exit-public-ip>:51821`; the helper selects the corresponding
+   WireGuard port, interface, and tunnel address. Record each host's **Nostr**
+   and **WireGuard** public keys printed by `arfl init node`.
+   Keep `node.json` private. Open the role's WireGuard UDP port and TCP 9091
+   for the connect API, but keep the admin API (default `127.0.0.1:9090`)
+   private. Both nodes need to reach the hub and the configured Nostr relays.
+
+3. **Hub and node operators: approve and connect each node.** Give the hub
+   operator the two public keys and desired role, **not** `node.json`. On the
+   hub host, repeat for each node (using the matching keys and role):
+
+   ```bash
+   sudo arfl-hub attest --config /opt/arfl/data/hub.json \
+     --node-pubkey <node-nostr-pubkey> --node-wg-key <node-wireguard-pubkey> \
+     --operator <operator-id> --role entry --lease 90d \
+     --out /tmp/entry-attestation.json
+   ```
+
+   Transfer the resulting attestation and the hub's
+   `/opt/arfl/data/keys/key-100mb.pub.json` to that node securely (see
+   [deployment steps 7-9](docs/deployment-guide.md#7-configure-the-entry-node)
+   for file-copy examples). On the node host, save the public key at the
+   `hub_pubkey_file` path and put the attestation **as a JSON string** in the
+   `attestation` field of `node.json` (not as a nested JSON object). Check
+   `hub_url` and `relays`, then run:
+
+   ```bash
+   sudo ./arfl doctor node --config /opt/arfl/data/node.json \
+     --hub-url https://<hub-domain>
+   sudo ./arfl-node --config /opt/arfl/data/node.json
+   # Check the hub from another terminal:
+   curl -fsS https://<hub-domain>/nodes
+   ```
+
+   A node announces itself to relays; the hub discovers it and verifies its
+   attestation. Sharing a hub URL alone does not register a node. Renew
+   attestations before their 30-day expiry, and keep the lease active. A
+   usable two-hop route needs two distinct nodes serving entry and exit.
+
+4. **How node payment is intended to work (not yet reliable for live payouts).**
+   Clients buy bandwidth from a hub and use it through entry and exit nodes.
+   The hub aggregates eligible two-sided usage reports from redeemed,
+   paid sessions, subtracts its margin (default 20%), and allocates the
+   remainder equally to the two nodes. It runs settlement every six hours
+   by default; entries below `min_payout_sats` (default 1,000) are not sent
+   and currently do not carry forward into later settlement periods.
+   Check `GET /node/<node-nostr-pubkey>/earnings` and the hub's settlement
+   logs for accounting and failed or in-flight payments.
+
+   **Current payout limitation:** the settlement code sends LND Keysend to
+   the usage-report node key, not a separately configured Lightning node
+   public key. Registering a Lightning address via `/node/wallet` does not
+   change that destination; `/node/withdraw` also sends to the supplied node
+   key. A Nostr or WireGuard key is not a Lightning payment destination, so
+   these endpoints are **not a working payout setup** for ordinary nodes.
+   Hub operators must reconcile usage and arrange payouts separately until
+   authenticated Lightning destinations and end-to-end payout verification
+   are implemented; never retry an in-flight payment without reconciling it.
 
 ## Configuration
 
@@ -555,14 +660,13 @@ Benchmarked on Apple M1 Pro (single core):
 
 ## Responsible Use
 
-ARFL is experimental open-source networking software intended for legitimate
+ARFL is experimental networking software intended for legitimate
 privacy, networking, and bandwidth-sharing use cases.
 
-ARFL is provided as open-source software and may be independently operated,
-modified, and deployed by third parties. Users and operators are responsible
+Users and operators are responsible
 for complying with the laws and regulations applicable to their use of the
 software and infrastructure.
 
 ## License
 
-[MIT](./LICENSE) — 0xciph3r
+No license is currently declared in this repository.

@@ -74,7 +74,7 @@
 </script>
 
 <div class="col">
-  <div class="lede">Hubs are run by independent operators. Each sets its own prices and approves its own nodes. Tokens only work at the hub that sold them.</div>
+  <div class="lede">Hubs approve their own nodes. This desktop build uses a fixed Cashu bandwidth rate; tokens only work at the hub that issued them.</div>
   <div class="label">Your hubs</div>
   <div class="list">
     {#if loading}<div class="note">Looking up hubs…</div>{/if}
@@ -85,7 +85,6 @@
         <div class="grow">
           <div class="title">
             <span class="name">{h.name}</span>
-            <span class="tag" class:warn={h.custom}>{h.custom ? 'Not verified' : 'Trusted by ARFL'}</span>
           </div>
           <div class="meta">{meta(h)}</div>
         </div>
@@ -103,7 +102,7 @@
       <input id="hubadd" type="text" class="mono" placeholder="Hub URL or npub1…" bind:value={hubInput} />
       <button class="secondary" disabled={busy} onclick={addHub}>Add</button>
     </div>
-    <div class="note">ARFL reads the hub's public info and shows its margin and prices before you pay. A hub you add yourself is marked Not verified.</div>
+    <div class="note">ARFL reads the hub's public name and margin. This build does not use the hub's published bandwidth tiers for Cashu purchases.</div>
   </div>
   {#if error}<div class="err" role="alert">{error}</div>{/if}
   <div class="grow"></div>
@@ -175,16 +174,6 @@
   .name {
     font-size: 15px;
     font-weight: 600;
-  }
-
-  .tag {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--muted);
-  }
-
-  .tag.warn {
-    color: var(--amber);
   }
 
   .meta {

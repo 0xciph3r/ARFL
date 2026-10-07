@@ -46,7 +46,7 @@
   let alert = $state<AlertKind | null>(null)
   let lowDismissed = $state(false)
   let silentHop = $state<'entry' | 'exit'>('exit')
-  let nodeWarned = false
+  let nodeWarned = $state(false)
   let renewing = false
   // Bytes already used when the current allowance was bought.
   let allowanceBase = 0
@@ -214,11 +214,11 @@
     if (connected && !session) api.session().then((s) => (session = s))
   })
 
-  function operator(nodeId: string | undefined) {
-    return nodeId ? 'Operator ' + nodeId.slice(0, 4) : 'Not set'
+  function nodeLabel(nodeId: string | undefined) {
+    return nodeId ? 'Node ' + nodeId.slice(0, 4) : 'Not set'
   }
-  const entryName = $derived(connected ? operator(session?.config?.entry?.node_id) : 'Picked when you connect')
-  const exitName = $derived(connected ? operator(session?.config?.exit?.node_id) : '')
+  const entryName = $derived(connected ? nodeLabel(session?.config?.entry?.node_id) : 'Picked when you connect')
+  const exitName = $derived(connected ? nodeLabel(session?.config?.exit?.node_id) : '')
 
   function clockText(ms: number) {
     const s = Math.max(0, Math.floor(ms / 1000))
@@ -303,13 +303,28 @@
         tokens: spent,
         forfeitMB: Math.max(0, Math.round(perHop - usedMB)),
         hub: hubName,
-        route: operator(ended.config?.entry?.node_id) + ' → ' + operator(ended.config?.exit?.node_id),
+        route: nodeLabel(ended.config?.entry?.node_id) + ' → ' + nodeLabel(ended.config?.exit?.node_id),
       }
     }
     ipv6Off = false
     session = null
     later(() => (closing = false), 950)
     onChanged()
+  }
+
+  async function reconnectAfterNodeFailure() {
+    alert = null
+    error = ''
+    try {
+      await api.disconnect()
+      nodeWarned = false
+      session = null
+      onChanged()
+      await connect()
+    } catch (err) {
+      error = `Could not reconnect: ${(err as Error).message}`
+      onChanged()
+    }
   }
 
   function mainAction() {
@@ -331,22 +346,25 @@
         : connecting
           ? 'Connecting'
           : connected
-            ? ipv6Safe
-              ? 'Protected'
-              : 'Partly protected'
+            ? nodeWarned
+              ? 'Node not responding'
+              : ipv6Safe
+                ? 'Tunnel up'
+                : 'IPv6 exposed'
             : 'Not connected',
   )
   const statusSmall = $derived(closing ? 'Disconnecting' : connecting ? 'Connecting' : connected ? 'Connected' : 'Disconnected')
   const statusColor = $derived(
-    connecting ? 'var(--accent)' : connected && !closing ? (ipv6Safe ? 'var(--cyan)' : 'var(--amber)') : 'var(--muted)',
+    connecting ? 'var(--accent)' : connected && !closing ? (ipv6Safe && !nodeWarned ? 'var(--cyan)' : 'var(--amber)') : 'var(--muted)',
   )
   const statusHint = $derived.by(() => {
     if (error) return error
     if (!status.tunnel_ready && !connected) return status.tunnel_error || 'Run ARFL with administrator rights to enable the tunnel.'
     if (closing) return 'Closing the tunnel. Your traffic will not be protected after this.'
     if (connecting) return 'Your device is paying each node and building the two tunnels.'
+    if (connected && nodeWarned) return 'A node stopped responding. The connection may not be usable; reconnect starts a new paid session.'
     if (connected && !ipv6Safe) return 'The tunnel is up, but IPv6 traffic still goes out directly.'
-    if (connected) return 'Your traffic is going through two separate nodes.'
+    if (connected) return 'Two tunnel hops are configured. Traffic can leave directly if the tunnel drops.'
     if (noBalance) return `You have no bandwidth at ${hubName}. Tokens only work at the hub that sold them.`
     return 'Your traffic leaves this device directly until you connect.'
   })
@@ -381,8 +399,8 @@
   })
   const lastReached = $derived(Math.max(0, Math.round((now - hubReachedAt) / 60000)))
 
-  const protShort = $derived(!connected ? 'Checked when connected' : ipv6Safe ? 'All checks passed' : '1 issue: IPv6')
-  const protColor = $derived(!connected ? 'var(--muted)' : ipv6Safe ? 'var(--cyan)' : 'var(--amber)')
+  const protShort = $derived(!connected ? 'Checked when connected' : nodeWarned ? 'Node not responding' : ipv6Safe ? 'Checks passed' : '1 issue: IPv6')
+  const protColor = $derived(!connected ? 'var(--muted)' : nodeWarned || !ipv6Safe ? 'var(--amber)' : 'var(--cyan)')
 
   const titles = $derived<Record<Overlay, string>>({
     topup: `Top up at ${hubName}`,
@@ -579,18 +597,18 @@
       kicker="Node offline"
       tone="amber"
       title={`Your ${silentHop} node stopped responding`}
-      body={`${silentHop === 'exit' ? exitName : entryName} has not answered for a few minutes. Reconnect to switch to another node ${hubName} has approved. Traffic may pause for a moment.`}
-      primary="Choose a node"
-      secondary="Dismiss"
-      onPrimary={() => { alert = null; overlay = 'nodes' }}
-      onSecondary={() => (alert = null)}
+      body={`${silentHop === 'exit' ? exitName : entryName} has not answered for a few minutes. The connection may not be usable. Reconnecting starts a new paid session; tokens already sent to this node may not come back.`}
+      primary="Reconnect"
+      secondary="Choose a node"
+      onPrimary={reconnectAfterNodeFailure}
+      onSecondary={() => { alert = null; overlay = 'nodes' }}
     />
   {:else if alert === 'hub'}
     <Alert
       kicker="Hub unreachable"
       tone="red"
       title={`Can't reach ${hubName}`}
-      body="Nodes check every token with the hub, so new connections can't start until it is back. Your balance is safe on this device."
+      body={`Nodes check every token with the hub, so new connections cannot start until it is back. Your tokens stay on this device but only work at ${hubName}.`}
       primary="Retry"
       secondary="Switch hub"
       onPrimary={checkHub}

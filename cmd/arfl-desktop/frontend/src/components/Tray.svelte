@@ -36,7 +36,7 @@
 
   const connected = $derived(status?.state === 'connected')
   const tokens = $derived(tokensFromSats(status?.balance_sats ?? 0))
-  const operator = (id: string | undefined) => (id ? 'Operator ' + id.slice(0, 4) : 'Not set')
+  const nodeLabel = (id: string | undefined) => (id ? 'Node ' + id.slice(0, 4) : 'Not set')
   const wordSrc = $derived(prefs.theme && isLight() ? wordLight : wordDark)
 
   async function toggle() {
@@ -80,13 +80,13 @@
     <div class="small" style="color:{connected ? 'var(--cyan)' : 'var(--muted)'}">
       <span class="dot" style="background:{connected ? 'var(--cyan)' : 'var(--muted)'}"></span>{connected ? 'Connected' : 'Disconnected'}
     </div>
-    <div class="word-status">{connected ? 'Protected' : 'Not connected'}</div>
+    <div class="word-status">{connected ? 'Tunnel up' : 'Not connected'}</div>
     {#if error}<div class="err">{error}</div>{/if}
   </div>
 
   <div class="rows">
-    <div class="row"><span class="k">Entry</span><span class="v">{connected ? operator(session?.config?.entry?.node_id) : 'Not set'}</span></div>
-    <div class="row"><span class="k">Exit</span><span class="v">{connected ? operator(session?.config?.exit?.node_id) : 'Not set'}</span></div>
+    <div class="row"><span class="k">Entry</span><span class="v">{connected ? nodeLabel(session?.config?.entry?.node_id) : 'Not set'}</span></div>
+    <div class="row"><span class="k">Exit</span><span class="v">{connected ? nodeLabel(session?.config?.exit?.node_id) : 'Not set'}</span></div>
   </div>
 
   <div class="grow"></div>

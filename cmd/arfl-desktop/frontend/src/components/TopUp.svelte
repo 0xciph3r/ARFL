@@ -13,8 +13,8 @@
     onClose: () => void
   } = $props()
 
-  // Priced at the hub's actual mint rate: the hub issues exactly the sats paid,
-  // so a tier can only cost what its tokens are backed by.
+  // Cashu mint quotes issue the sats paid; the published legacy bandwidth
+  // tiers have no conversion to Cashu bandwidth in this build.
   const TIERS = [1, 10, 50].map((gb) => ({ gb, tokens: gb * 10, price: gb * 10 * TOKEN_SATS }))
   const MINT_MS = 900
 
@@ -109,7 +109,7 @@
 {#if step === 0}
   <div class="col">
     <div class="lede">
-      Paying {hubName} over Lightning. You receive blind-signed tokens, so the hub cannot link them to this payment.
+      Paying {hubName} over Lightning. The hub sees your network address when you buy, but cannot directly link blind-signed tokens to this payment.
     </div>
     <div class="list">
       {#each TIERS as t, i}
@@ -132,7 +132,7 @@
         <div class="fill" style="width:{(tokens / cap) * 100}%"></div>
       </div>
     </div>
-    <div class="note">Prices are set by this hub. Part of a 100 MB token is lost if you disconnect before it is used up.</div>
+    <div class="note">These are fixed-rate Cashu amounts, not the hub's published tiers. The hub sees your network address when you request an invoice. Part of a 100 MB token is lost if you disconnect early.</div>
     {#if error}<div class="err" role="alert">{error}</div>{/if}
     <div class="grow"></div>
     <button class="primary" onclick={requestInvoice}>Request invoice · {fmt(picked.price)} sats</button>
@@ -173,9 +173,7 @@
         </div>
       {/each}
     </div>
-    <div class="note">
-      The hub never sees the tokens you end up with, so it cannot connect them to this payment. They only work at {hubName}.
-    </div>
+    <div class="note">Blind proofs prevent a direct purchase-to-token match, but the hub saw your network address when you paid. Tokens only work at {hubName}.</div>
     <div class="grow"></div>
     <button class="primary" disabled={mint < 3} onclick={onClose}>{mint < 3 ? 'Minting…' : 'Done'}</button>
   </div>

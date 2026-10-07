@@ -32,7 +32,7 @@
     load()
   })
 
-  const operator = (n: NodeInfo | undefined) => (n ? 'Operator ' + n.nostr_pubkey.slice(0, 4) : '')
+  const nodeLabel = (n: NodeInfo | undefined) => (n ? 'Node ' + n.nostr_pubkey.slice(0, 4) : '')
   const shortKey = (k: string) => (k.length > 14 ? k.slice(0, 8) + '…' + k.slice(-4) : k)
   const byId = (id: string | undefined) => nodes.find((n) => n.id === id)
   const meta = (n: NodeInfo | undefined) =>
@@ -45,22 +45,23 @@
   const shownExit = $derived(connected ? byId(session?.config?.exit?.node_id) : byId(pinned?.exit_id))
   const caption = $derived(
     pinned
-      ? `You picked these. Entry and exit must belong to different operators.${connected ? ' A change applies the next time you connect.' : ''}`
+      ? `You picked these. The hub's operator IDs are checked when available, but separate ownership is not guaranteed.${connected ? ' A change applies the next time you connect.' : ''}`
       : connected
-        ? 'Picked at random on this device from the nodes this hub has approved. Entry and exit use different operators.'
+        ? 'Picked at random on this device from this hub’s approved nodes. Separate operators are not guaranteed.'
         : 'A pair is picked at random on this device each time you connect, from the nodes this hub has approved.',
   )
 
-  const otherOperator = $derived.by(() => {
-    const other = byId(slot === 'entry' ? draft.exit : draft.entry)
-    return other?.nostr_pubkey
-  })
+  const otherNode = $derived(byId(slot === 'entry' ? draft.exit : draft.entry))
+  const sameHubOperator = (a: NodeInfo, b: NodeInfo | undefined) =>
+    !!b && (a.operator_id && b.operator_id
+      ? a.operator_id === b.operator_id
+      : a.nostr_pubkey === b.nostr_pubkey)
 
   const list = $derived.by(() => {
     const q = query.trim().toLowerCase()
     return nodes
       .filter((n) => (slot === 'entry' ? canEntry(n) : canExit(n)))
-      .filter((n) => !q || operator(n).toLowerCase().includes(q) || n.nostr_pubkey.toLowerCase().includes(q))
+      .filter((n) => !q || nodeLabel(n).toLowerCase().includes(q) || n.nostr_pubkey.toLowerCase().includes(q))
   })
 
   async function pick(n: NodeInfo) {
@@ -93,11 +94,11 @@
     <div class="lede">Your device picks the pair from the nodes {hubName} has approved. The hub does not choose for you.</div>
     <div class="pair">
       <div class="hop">
-        <div><div class="k">Entry</div><div class="v">{shownEntry ? operator(shownEntry) : 'Picked when you connect'}</div></div>
+        <div><div class="k">Entry</div><div class="v">{shownEntry ? nodeLabel(shownEntry) : 'Picked when you connect'}</div></div>
         <div class="mono meta">{meta(shownEntry)}</div>
       </div>
       <div class="hop">
-        <div><div class="k">Exit</div><div class="v">{shownExit ? operator(shownExit) : 'Picked when you connect'}</div></div>
+        <div><div class="k">Exit</div><div class="v">{shownExit ? nodeLabel(shownExit) : 'Picked when you connect'}</div></div>
         <div class="mono meta">{meta(shownExit)}</div>
       </div>
     </div>
@@ -116,10 +117,10 @@
   {#if adv}
     <div class="slots">
       <button class="bare slot" class:on={slot === 'entry'} onclick={() => (slot = 'entry')}>
-        <div class="k">Entry</div><div class="v">{operator(byId(draft.entry)) || 'Not chosen'}</div>
+        <div class="k">Entry</div><div class="v">{nodeLabel(byId(draft.entry)) || 'Not chosen'}</div>
       </button>
       <button class="bare slot" class:on={slot === 'exit'} onclick={() => (slot = 'exit')}>
-        <div class="k">Exit</div><div class="v">{operator(byId(draft.exit)) || 'Not chosen'}</div>
+        <div class="k">Exit</div><div class="v">{nodeLabel(byId(draft.exit)) || 'Not chosen'}</div>
       </button>
     </div>
     <div class="search">
@@ -131,13 +132,13 @@
     {/if}
     {#each list as n (n.id)}
       {@const sel = (slot === 'entry' ? draft.entry : draft.exit) === n.id}
-      {@const clash = !sel && n.nostr_pubkey === otherOperator}
+      {@const clash = !sel && sameHubOperator(n, otherNode)}
       <button class="bare node" class:sel class:clash disabled={clash} onclick={() => pick(n)}>
         <span class="radio" class:on={sel}></span>
         <div class="grow">
-          <div class="name">{operator(n)}{#if sel}<span class="tag">Selected</span>{/if}</div>
+          <div class="name">{nodeLabel(n)}{#if sel}<span class="tag">Selected</span>{/if}</div>
           <div class="mono key">{shortKey(n.nostr_pubkey)}</div>
-          {#if clash}<div class="reason">Same operator as your {slot === 'entry' ? 'exit' : 'entry'}</div>{/if}
+          {#if clash}<div class="reason">Hub lists the same operator or node as your {slot === 'entry' ? 'exit' : 'entry'}</div>{/if}
         </div>
         <div class="right">
           <div class="mono">{n.upload_mbps} Mbps</div>

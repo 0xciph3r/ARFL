@@ -25,7 +25,7 @@
     <div><div class="k">Hub</div><div class="t">{last.hub}</div></div>
     <div><div class="k">Route</div><div class="t">{last.route}</div></div>
   </div>
-  <div class="note">Tokens are redeemed whole, so the unused part of the last one is lost when a session ends. Nothing is logged about where you went.</div>
+  <div class="note">Tokens are redeemed whole, so the unused part of the last one is lost when a session ends. A hub or node operator may keep connection metadata.</div>
   <div class="grow"></div>
   <div class="actions">
     <button class="primary" onclick={onReconnect}>Reconnect</button>

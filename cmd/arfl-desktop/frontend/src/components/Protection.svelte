@@ -21,7 +21,7 @@
   {#if connected}
     <div class="checks">
       <div class="row"><span>IPv4 traffic is tunnelled</span><span class="ok">OK</span></div>
-      <div class="row"><span>DNS stays inside the tunnel</span><span class="ok">OK</span></div>
+      <div class="row"><span>DNS set to the tunnel resolver</span><span class="ok">Configured</span></div>
       <div class="row tall">
         <span>IPv6</span>
         {#if ipv6Exposed}
@@ -36,7 +36,7 @@
     </div>
   {/if}
   <div class="foot">
-    The entry sees your IP, not the sites. The exit sees the sites, not you.
+    The entry sees your IP; the exit sees destination traffic. This does not prevent node collusion or DNS leaks.
     <button class="bare link" onclick={onPrivacy}>What can be seen?</button>
   </div>
 </div>

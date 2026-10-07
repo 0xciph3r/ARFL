@@ -195,7 +195,7 @@
   </div>
 
   <div class="foot">
-    <div class="brand mono">NO LOGS. NO ACCOUNTS. NO FEE, EVER.</div>
+    <div class="brand mono">NO ACCOUNTS. NO NATIVE TOKEN.</div>
     <div class="pref-sub">ARFL desktop · open source</div>
   </div>
 </div>

@@ -1,8 +1,9 @@
 # Draft v0.5 payment and quota amendment (proposed)
 
-Status: **not ratified or implemented**. This document identifies changes to
-`ARFL_Whitepaper_v0.4.pdf` for review before protocol code is merged. Draft
-v0.4 remains the published description until the revised paper is approved.
+Status: **working direction approved; not ratified or implemented**. This
+document identifies changes to `ARFL_Whitepaper_v0.4.pdf` for review before
+protocol code is merged. Draft v0.4 remains the published description until
+the revised paper is approved.
 
 ## Why a revision is needed
 
@@ -23,12 +24,21 @@ deployment exist.
 ## Proposed purchase and redemption terms
 
 1. Each hub publishes its actual tiers, their price in sats, bandwidth in
-   bytes, credit denomination, expiry, and refund policy. The terms accepted
+   bytes, credit denomination, expiry, and refund policy. For a 100 MB credit
+   denomination, a tier price must divide evenly by its credit count: the
+   price per credit is an integer number of sats. A hub may choose any
+   positive price satisfying this accounting constraint, and an invalid
+   tier must be rejected rather than rounded or advertised incorrectly.
+   The terms accepted
    by the buyer must be bound to the Lightning quote; a later change to
    `/info` must not change the paid quote or the amount minted.
-2. Blind proofs are tagged by tier, for example through a distinct mint
-   keyset. The mint must issue only the tier's paid bandwidth; swaps must not
-   turn discounted credits into more expensive tiers. Existing sat-denominated
+2. Blind proofs remain denominated in sats and are tagged by tier, for
+   example through a distinct mint keyset. A 100 MB credit costs the
+   integer per-credit sat price for that tier. A credit may require
+   multiple power-of-two Cashu proofs to represent that price, so the mint
+   must issue the exact paid number of credits and redemption must accept
+   only whole credits. Swaps must stay within a tier and must not turn
+   discounted credits into more expensive tiers. Existing sat-denominated
    proofs remain redeemable under their original conversion, or migration
    must be explicitly funded and verified before removing that path.
 3. A node presents proofs to the hub, which atomically rejects double spends
@@ -36,11 +46,12 @@ deployment exist.
    usage reports must be authenticated. The present unauthenticated
    `node_pubkey` field on `/v1/redeem` is **not** evidence of who served
    traffic.
-4. Node earnings accrue from signed, verified bytes actually served, at the
-   rate applicable to those credits. The hub's configured margin is deducted
-   and the rest is divided equally between the two serving nodes, as
-   Section 6.4 describes. Redeeming a proof alone is not a payout, and
-   paying for unused bytes would change this policy.
+4. Node earnings accrue from signed usage reports for the entry and exit
+   serving a session, capped by both the prepaid quota and the lesser of
+   the two reported byte counts. The hub uses the rate applicable to those
+   credits, deducts its configured margin, and divides the remainder equally
+   between the two nodes, as Section 6.4 describes. Redeeming a proof alone
+   is not a payout, and paying for unused bytes would change this policy.
 5. Settlement must be bounded by funds received for the relevant tier and
    remain idempotent across retries. The hub must not rely solely on a
    self-reported client identity or allow the same used bytes to earn twice.
@@ -50,12 +61,17 @@ price class a redeemed proof belongs to. Blind signatures still prevent a
 direct match to its Lightning quote, but a rare tier, purchase timing, and
 redemption timing can reduce the anonymity set. This is weaker than claiming
 all purchases are indistinguishable and belongs in the threat model and
-privacy matrix.
+privacy matrix. Matching the two usage reports also reveals the entry/exit
+pair to the hub at settlement time. Draft v0.5 must say so plainly: Cashu
+protects direct buyer-to-redemption linkage, **not** hub-blind topology.
+The hub also sees the buyer's network address when contacted directly for
+purchase; timing may allow correlation despite cryptographic blinding.
 
 ## Proposed remaining-bandwidth policy
 
 The paid but unused part of a redeemed credit survives an ordinary
-disconnect, a reconnect to the same node, and a node restart. The node
+disconnect, a reconnect to the same node, and a node restart until the
+published expiry. The node
 stores a durable, monotonic record of granted and consumed bytes, restores
 enforcement before accepting traffic, and never grants the same remaining
 bytes twice. A client needs a verifiable way to resume its claim even if
@@ -76,14 +92,16 @@ the failure cases, and the privacy/threat model together.
 
 ## Design decisions required before implementation
 
-- Define the proof representation that preserves Cashu's sat-denominated
-  accounting while granting each tier's exact 100 MB credits, including
-  prices not evenly divisible by the number of credits. Define keyset
-  rotation and the fate of outstanding credits when a tier is removed.
-- Define authenticated, privacy-preserving attribution of measured usage
-  to a tier and two serving nodes without a buyer identifier. Specify the
-  reporting cadence, counter resets, disputed reports, and reconciliation
-  of unspent liability against cash held by the hub.
+- Specify how a client receives and spends whole 100 MB credits represented
+  by multiple power-of-two sat proofs, respecting mint/output limits.
+  Define keyset rotation and the fate of outstanding credits when a tier
+  is removed. Hub tier prices not divisible by their credit count are
+  invalid, not rounded.
+- Define authenticated attribution of measured usage to a tier and the two
+  serving nodes without a buyer identifier. The hub **may see the pair**;
+  specify the reporting cadence, counter resets, disputed reports, the
+  colluding-node threat, and reconciliation of unspent liability against
+  cash held by the hub.
 - Define the portable resume receipt or equivalent proof of remaining
   credit; its replay, theft, key rotation, and node-loss behavior need tests.
 - Specify allowable expiry/refund policies, who funds refunds if a node

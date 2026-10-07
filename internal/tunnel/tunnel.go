@@ -143,6 +143,41 @@ func (t *Tunnel) PublicKey() (string, error) {
 	return t.entryKeys.PublicKey, nil
 }
 
+// SetHopKeys configures explicit WireGuard keypairs for the next session.
+//
+// This exists for legacy callers that persist client keys on disk. Passing a
+// nil exit key reuses the entry key for both hops.
+func (t *Tunnel) SetHopKeys(entry, exit *wg.KeyPair) error {
+	if entry == nil {
+		return fmt.Errorf("entry keypair is required")
+	}
+	if entry.PrivateKey == "" || entry.PublicKey == "" {
+		return fmt.Errorf("entry keypair is incomplete")
+	}
+	if exit == nil {
+		exit = entry
+	}
+	if exit.PrivateKey == "" || exit.PublicKey == "" {
+		return fmt.Errorf("exit keypair is incomplete")
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.active != nil {
+		return fmt.Errorf("cannot replace keypairs while tunnel is active")
+	}
+
+	t.entryKeys = &wg.KeyPair{
+		PrivateKey: entry.PrivateKey,
+		PublicKey:  entry.PublicKey,
+	}
+	t.exitKeys = &wg.KeyPair{
+		PrivateKey: exit.PrivateKey,
+		PublicKey:  exit.PublicKey,
+	}
+	return nil
+}
+
 // PrepareHopKeys generates a fresh keypair for each hop and returns their
 // public keys.
 //

@@ -140,3 +140,26 @@ func (c *MintClient) UnspentProofs(ctx context.Context, proofs cashu.Proofs) (ca
 	}
 	return out, nil
 }
+
+// MoveHub re-files every proof held under from as belonging to to, for when a
+// hub's address changes but its mint does not. It is a no-op when from holds
+// nothing.
+func (s *EncryptedProofStore) MoveHub(from, to string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	moving := s.data.Hubs[from]
+	if len(moving) == 0 || from == to {
+		return nil
+	}
+	existing := make(map[string]struct{}, len(s.data.Hubs[to]))
+	for _, p := range s.data.Hubs[to] {
+		existing[p.Secret] = struct{}{}
+	}
+	for _, p := range moving {
+		if _, dup := existing[p.Secret]; !dup {
+			s.data.Hubs[to] = append(s.data.Hubs[to], p)
+		}
+	}
+	delete(s.data.Hubs, from)
+	return s.persist()
+}

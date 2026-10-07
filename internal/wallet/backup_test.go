@@ -44,3 +44,19 @@ func TestBackupRejectsWrongPassphraseAndShortOnes(t *testing.T) {
 		t.Fatal("expected a non-backup file to be refused")
 	}
 }
+
+func TestMoveHubRefilesProofsWithoutDuplicates(t *testing.T) {
+	s, err := OpenProofStore(t.TempDir()+"/v.json", "pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Add("http://old", cashu.Proofs{{Amount: 64, Secret: "a"}, {Amount: 32, Secret: "b"}})
+	_ = s.Add("https://new", cashu.Proofs{{Amount: 32, Secret: "b"}})
+	if err := s.MoveHub("http://old", "https://new"); err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Snapshot()
+	if len(snap["http://old"]) != 0 || snap["https://new"].Amount() != 96 {
+		t.Fatalf("got %+v", snap)
+	}
+}

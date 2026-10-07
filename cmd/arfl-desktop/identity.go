@@ -26,8 +26,9 @@ const (
 	keyringService = "ARFL"
 	keyringUser    = "device-key"
 	deviceKeyLen   = 32
-	// The hub ARFL recommends when the client config names none.
-	defaultHubURL = "http://209.250.238.223:8080"
+	// The hub ARFL recommends when the client config names none. It is
+	// reached over TLS through its domain, never its bare address.
+	defaultHubURL = "https://hub.arfl.us"
 )
 
 // SetupView tells the UI which first-launch path to show.

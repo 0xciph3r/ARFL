@@ -164,6 +164,7 @@ func (b *Bridge) openLocked(secret string) (*StatusView, error) {
 
 	b.svc = svc
 	b.tun = tun
+	migrateHubAliases(svc)
 	return b.status(svc), nil
 }
 
@@ -342,7 +343,11 @@ func (b *Bridge) ConnectHub(hubURL string) (*app.HubStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	return svc.ConnectHub(ctx, hubURL)
+	status, err := svc.ConnectHub(ctx, currentHubURL(hubURL))
+	if err == nil {
+		saveLastHub(status.URL)
+	}
+	return status, err
 }
 
 // Balance returns unspent sats for the connected hub.

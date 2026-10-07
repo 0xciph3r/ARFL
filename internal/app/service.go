@@ -514,6 +514,11 @@ func (s *Service) Snapshot() map[string]cashu.Proofs {
 	return s.store.Snapshot()
 }
 
+// MoveHub re-files proofs held under an old hub address to its new one.
+func (s *Service) MoveHub(from, to string) error {
+	return s.store.MoveHub(from, to)
+}
+
 // ImportProofs adds restored proofs for a hub to the local vault.
 func (s *Service) ImportProofs(hubURL string, proofs cashu.Proofs) error {
 	return s.store.Add(hubURL, proofs)

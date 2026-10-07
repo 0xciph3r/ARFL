@@ -15,16 +15,42 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version-file: go.mod
+
+      # The desktop app needs GTK and WebKit on Linux; it is built and tested
+      # on macOS in the desktop job instead.
+      - name: List packages
+        run: |
+          echo "PKGS=$(go list -f '{{if .GoFiles}}{{.ImportPath}}{{end}}' ./... | grep -v /cmd/arfl-desktop | tr '\n' ' ')" >> "$GITHUB_ENV"
+          echo "TEST_PKGS=$(go list ./... | grep -v /cmd/arfl-desktop | tr '\n' ' ')" >> "$GITHUB_ENV"
 
       - name: Build all binaries
-        run: go build ./...
+        run: go build $PKGS
 
       - name: Build for Linux AMD64 (production target)
-        run: GOOS=linux GOARCH=amd64 go build ./...
+        run: GOOS=linux GOARCH=amd64 go build $PKGS
 
       - name: Run unit tests
-        run: go test ./... -v -race -count=1
+        run: go test $TEST_PKGS -v -race -count=1
+
+  desktop:
+    name: Desktop app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./cmd/arfl-desktop/...
+
+      - name: Test
+        run: go test ./cmd/arfl-desktop/... -count=1
+
+      - name: Vet
+        run: go vet ./cmd/arfl-desktop/...
 
   lint:
     name: Lint
@@ -34,7 +60,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version-file: go.mod
 
       - name: Check formatting
         run: |
@@ -46,4 +72,4 @@ jobs:
           fi
 
       - name: Vet
-        run: go vet ./...
+        run: go vet $(go list ./... | grep -v /cmd/arfl-desktop)

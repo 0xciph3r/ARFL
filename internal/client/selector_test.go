@@ -39,6 +39,27 @@ func TestPairNodes_HappyPath(t *testing.T) {
 	}
 }
 
+func TestPairIndependentNodesForDeliveryPrefersSeparateOperators(t *testing.T) {
+	nodes := []types.NodeInfo{
+		{ID: "entry", NostrPubkey: "entry", OperatorID: "demo", Role: types.RoleEntry, Endpoint: "203.0.113.10:51820", ConnectURL: "http://entry:9091"},
+		{ID: "demo-exit", NostrPubkey: "demo-exit", OperatorID: "demo", Role: types.RoleExit, Endpoint: "203.0.113.11:51820", ConnectURL: "http://demo:9091"},
+		{ID: "other-exit", NostrPubkey: "other-exit", OperatorID: "other", Role: types.RoleExit, Endpoint: "203.0.113.12:51820", ConnectURL: "http://other:9091"},
+	}
+	allowed := map[types.Transport]struct{}{types.TransportWireGuard: {}}
+	pair, err := PairIndependentNodesForDelivery(nodes, []types.Transport{types.TransportWireGuard}, allowed, TokenDeliveryHTTP)
+	if err != nil || pair.Exit.ID != "other-exit" {
+		t.Fatalf("independently operated exit must win: %+v, %v", pair, err)
+	}
+	nodes = nodes[:2]
+	pair, err = PairIndependentNodesForDelivery(nodes, []types.Transport{types.TransportWireGuard}, allowed, TokenDeliveryHTTP)
+	if err != nil || pair.Entry.ID == pair.Exit.ID || pair.Exit.ID != "demo-exit" {
+		t.Fatalf("sole same-operator pair must be selected automatically: %+v, %v", pair, err)
+	}
+	if _, err := PairIndependentNodesForDelivery(nodes[:1], []types.Transport{types.TransportWireGuard}, allowed, TokenDeliveryHTTP); err != ErrNoExitNodes {
+		t.Fatalf("single entry without exit: %v", err)
+	}
+}
+
 func TestPairNodes_BothRole(t *testing.T) {
 	nodes := []types.NodeInfo{
 		{NostrPubkey: "both1", Role: types.RoleBoth, Endpoint: "203.0.113.20:51820", ConnectURL: "http://b1:9091"},

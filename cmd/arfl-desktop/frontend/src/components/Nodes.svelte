@@ -55,17 +55,14 @@
   const shownExit = $derived(connected ? byId(session?.config?.exit?.node_id) : pair[1])
   const caption = $derived(
     pinned
-      ? `You picked these. The hub's operator IDs are checked when available, but separate ownership is not guaranteed.${connected ? ' A change applies the next time you connect.' : ''}`
+      ? `You picked these. Operator IDs come from the hub; separate ownership is not guaranteed.${connected ? ' A change applies the next time you connect.' : ''}`
       : connected
         ? 'Picked at random on this device from this hub’s approved nodes. Separate operators are not guaranteed.'
         : 'This is the pair your device will try when you connect. It is rechecked before payment; if either node is unavailable, choose a new pair.',
   )
 
   const otherNode = $derived(byId(slot === 'entry' ? draft.exit : draft.entry))
-  const sameHubOperator = (a: NodeInfo, b: NodeInfo | undefined) =>
-    !!b && (a.operator_id && b.operator_id
-      ? a.operator_id === b.operator_id
-      : a.nostr_pubkey === b.nostr_pubkey)
+  const sameNode = (a: NodeInfo, b: NodeInfo | undefined) => !!b && (a.id === b.id || a.nostr_pubkey === b.nostr_pubkey)
 
   const list = $derived.by(() => {
     const q = query.trim().toLowerCase()
@@ -156,13 +153,13 @@
     {/if}
     {#each loading || loadError ? [] : list as n (n.id)}
       {@const sel = (slot === 'entry' ? draft.entry : draft.exit) === n.id}
-      {@const clash = !sel && sameHubOperator(n, otherNode)}
+      {@const clash = !sel && sameNode(n, otherNode)}
       <button class="bare node" class:sel class:clash disabled={clash} onclick={() => pick(n)}>
         <span class="radio" class:on={sel}></span>
         <div class="grow">
           <div class="name">{nodeLabel(n)}{#if sel}<span class="tag">Selected</span>{/if}</div>
           <div class="mono key">{shortKey(n.nostr_pubkey)}</div>
-          {#if clash}<div class="reason">Hub lists the same operator or node as your {slot === 'entry' ? 'exit' : 'entry'}</div>{/if}
+          {#if clash}<div class="reason">This is already your {slot === 'entry' ? 'exit' : 'entry'} node</div>{/if}
         </div>
         <div class="right">
           <div class="mono">{n.upload_mbps} Mbps</div>

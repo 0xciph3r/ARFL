@@ -35,7 +35,7 @@ var (
 	ErrAmountTooSmall       = errors.New("amount must be greater than zero")
 	ErrTransportUnsupported = errors.New("selected transport is not supported by this runtime")
 	ErrPinnedNodeOffline    = errors.New("a node you picked is not online at this hub")
-	ErrPinnedSameOperator   = errors.New("entry and exit must belong to different operators")
+	ErrPinnedSameNode       = errors.New("entry and exit must be different nodes")
 )
 
 // State is the connection state machine exposed to the UI.
@@ -450,9 +450,14 @@ func (s *Service) ListNodes(ctx context.Context) ([]types.NodeInfo, error) {
 // A manual pin takes precedence; a new automatic choice replaces the old one.
 func (s *Service) PreparePair(ctx context.Context) (*client.NodePair, error) {
 	s.mu.Lock()
+	if s.state != StateDisconnected {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("disconnect before choosing the next pair")
+	}
 	hub := s.hubInfo
 	s.pairGeneration++
 	generation := s.pairGeneration
+	s.planned = nil
 	s.mu.Unlock()
 	nodes, err := s.fetchNodes(ctx)
 	if err != nil {
@@ -524,7 +529,7 @@ func (s *Service) pairFromNodes(nodes []types.NodeInfo) (*client.NodePair, error
 	if len(s.allowed) == 0 {
 		return nil, fmt.Errorf("%w (transport policy: allowed transports contain no supported transport)", client.ErrNoCompatiblePair)
 	}
-	return client.PairNodesWithPolicyForDelivery(nodes, s.preferred, s.allowed, s.delivery)
+	return client.PairIndependentNodesForDelivery(nodes, s.preferred, s.allowed, s.delivery)
 }
 
 // restrictToPinned narrows the node list to the user's chosen entry and exit,
@@ -544,23 +549,13 @@ func restrictToPinned(nodes []types.NodeInfo, pin PinnedPair) ([]types.NodeInfo,
 	if entry == nil || exit == nil {
 		return nil, ErrPinnedNodeOffline
 	}
-	if sameOperator(*entry, *exit) {
-		return nil, ErrPinnedSameOperator
+	if entry.NostrPubkey == exit.NostrPubkey || entry.ID == exit.ID {
+		return nil, ErrPinnedSameNode
 	}
 	e, x := *entry, *exit
 	e.Role = types.RoleEntry
 	x.Role = types.RoleExit
 	return []types.NodeInfo{e, x}, nil
-}
-
-// sameOperator compares the operator the hub assigned in each node's
-// attestation, since one operator can run many nodes with different keys.
-// Without attestation data it falls back to the node keys.
-func sameOperator(a, b types.NodeInfo) bool {
-	if a.OperatorID != "" && b.OperatorID != "" {
-		return a.OperatorID == b.OperatorID
-	}
-	return a.NostrPubkey == b.NostrPubkey
 }
 
 // SetPinnedPair makes every later connect use these two nodes. Pass nil to go
@@ -570,7 +565,7 @@ func (s *Service) SetPinnedPair(pin *PinnedPair) error {
 		return fmt.Errorf("both an entry and an exit node are required")
 	}
 	if pin != nil && pin.EntryID == pin.ExitID {
-		return ErrPinnedSameOperator
+		return ErrPinnedSameNode
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -663,6 +658,9 @@ func (s *Service) Connect(ctx context.Context, perHopSats uint64) (*Session, err
 	}
 
 	session, err := s.connect(ctx, w, perHopSats)
+	s.mu.Lock()
+	s.planned = nil
+	s.mu.Unlock()
 	if err != nil {
 		s.setState(StateDisconnected)
 		return nil, err

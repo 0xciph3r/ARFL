@@ -149,7 +149,7 @@ func (s *NodeSelector) SelectPair(ctx context.Context) (*NodePair, error) {
 	if err != nil {
 		return nil, err
 	}
-	return PairNodesWithPolicy(nodes, s.preferred, s.allowed)
+	return PairIndependentNodesForDelivery(nodes, s.preferred, s.allowed, TokenDeliveryHTTP)
 }
 
 // PairNodes selects a random entry/exit pair from a list of nodes.
@@ -189,25 +189,29 @@ func PairNodesWithPolicyForDelivery(
 	return pairNodesWithPolicy(nodes, preferred, allowed, requireConnectURL)
 }
 
+// PairIndependentNodesForDelivery prefers separate operators, but when none
+// are compatible it selects two distinct nodes of one operator.
+func PairIndependentNodesForDelivery(
+	nodes []types.NodeInfo,
+	preferred []types.Transport,
+	allowed map[types.Transport]struct{},
+	delivery TokenDeliveryMode,
+) (*NodePair, error) {
+	requireConnectURL := delivery != TokenDeliveryNIP44
+	pair, err := pairNodesWithOperatorPolicy(nodes, preferred, allowed, requireConnectURL, false)
+	if err != ErrNoCompatiblePair {
+		return pair, err
+	}
+	return pairNodesWithOperatorPolicy(nodes, preferred, allowed, requireConnectURL, true)
+}
+
 func pairNodesWithPolicy(
 	nodes []types.NodeInfo,
 	preferred []types.Transport,
 	allowed map[types.Transport]struct{},
 	requireConnectURL bool,
 ) (*NodePair, error) {
-	var entryNodes, exitNodes []types.NodeInfo
-
-	for _, n := range nodes {
-		switch n.Role {
-		case types.RoleEntry:
-			entryNodes = append(entryNodes, n)
-		case types.RoleExit:
-			exitNodes = append(exitNodes, n)
-		case types.RoleBoth:
-			entryNodes = append(entryNodes, n)
-			exitNodes = append(exitNodes, n)
-		}
-	}
+	entryNodes, exitNodes := nodesByRole(nodes)
 
 	if len(entryNodes) == 0 {
 		return nil, ErrNoEntryNodes
@@ -237,6 +241,66 @@ func pairNodesWithPolicy(
 		}, nil
 	}
 	return nil, ErrNoCompatiblePair
+}
+
+func pairNodesWithOperatorPolicy(nodes []types.NodeInfo, preferred []types.Transport, allowed map[types.Transport]struct{}, requireConnectURL, allowSameOperator bool) (*NodePair, error) {
+	entryNodes, exitNodes := nodesByRole(nodes)
+	if len(entryNodes) == 0 {
+		return nil, ErrNoEntryNodes
+	}
+	if len(exitNodes) == 0 {
+		return nil, ErrNoExitNodes
+	}
+	for _, transport := range preferred {
+		if _, ok := allowed[transport]; !ok {
+			continue
+		}
+		candidates := collectOperatorCandidates(entryNodes, exitNodes, transport, requireConnectURL, allowSameOperator)
+		if len(candidates) == 0 {
+			continue
+		}
+		selected, err := randomPickCandidate(candidates)
+		if err != nil {
+			return nil, fmt.Errorf("selecting node pair: %w", err)
+		}
+		return &NodePair{Entry: selected.entry, Exit: selected.exit, Transport: selected.transport}, nil
+	}
+	return nil, ErrNoCompatiblePair
+}
+
+func nodesByRole(nodes []types.NodeInfo) (entryNodes, exitNodes []types.NodeInfo) {
+	for _, n := range nodes {
+		switch n.Role {
+		case types.RoleEntry:
+			entryNodes = append(entryNodes, n)
+		case types.RoleExit:
+			exitNodes = append(exitNodes, n)
+		case types.RoleBoth:
+			entryNodes = append(entryNodes, n)
+			exitNodes = append(exitNodes, n)
+		}
+	}
+	return entryNodes, exitNodes
+}
+
+func collectOperatorCandidates(entries, exits []types.NodeInfo, transport types.Transport, requireConnectURL, allowSameOperator bool) []pairCandidate {
+	var candidates []pairCandidate
+	for _, entry := range entries {
+		e, ok := projectNodeForTransportWithConnectURL(entry, transport, requireConnectURL)
+		if !ok {
+			continue
+		}
+		for _, exit := range exits {
+			if entry.NostrPubkey == exit.NostrPubkey || (!allowSameOperator && entry.OperatorID != "" && entry.OperatorID == exit.OperatorID) {
+				continue
+			}
+			x, ok := projectNodeForTransportWithConnectURL(exit, transport, requireConnectURL)
+			if ok {
+				candidates = append(candidates, pairCandidate{entry: e, exit: x, transport: transport})
+			}
+		}
+	}
+	return candidates
 }
 
 // randomPick selects a random element from a slice using crypto/rand.

@@ -236,8 +236,12 @@ func main() {
 	discoveryAPI.SetHubKeyPair(hubKP, db)
 	discoveryAPI.SetEarningsStore(db)
 	discoveryAPI.SetLightningClient(lnc)
+	hubName := strings.TrimSpace(cfg.Name)
+	if hubName == "" {
+		hubName = "ARFL Hub"
+	}
 	discoveryAPI.SetHubInfo(&discovery.HubInfo{
-		Name:         "ARFL Hub",
+		Name:         hubName,
 		Version:      "0.1.0",
 		HubMarginPct: cfg.HubMarginPct,
 		Tiers:        credentials.DefaultTiers,

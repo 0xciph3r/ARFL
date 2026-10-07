@@ -55,6 +55,12 @@ type netConfigurator interface {
 	SetDNS(resolver string) error
 	// RestoreDNS puts the previous resolver back.
 	RestoreDNS() error
+	// DisableIPv6 turns IPv6 off on the physical adapters, recording what it
+	// changed. The tunnel carries IPv4 only, so IPv6 would otherwise leave the
+	// machine directly.
+	DisableIPv6() error
+	// RestoreIPv6 puts back exactly what DisableIPv6 changed.
+	RestoreIPv6() error
 }
 
 // WireGuard is the subset of wg.Manager the tunnel needs. Narrowing it keeps
@@ -70,6 +76,7 @@ type WireGuard interface {
 	// than through the manager, so they must be given the real name or they
 	// reference an interface that does not exist.
 	InterfaceName(logical string) string
+	GetPeerStats(iface string) ([]wg.PeerStats, error)
 	Close() error
 }
 
@@ -92,6 +99,7 @@ type Tunnel struct {
 type activeState struct {
 	routes       []route
 	dnsChanged   bool
+	ipv6Changed  bool
 	interfaces   []string
 	outerReady   bool
 	innerReady   bool
@@ -231,7 +239,12 @@ func (t *Tunnel) ResetHopKeys() {
 // during bring-up costs the user real sats. This is checked first so an
 // unprivileged process is refused before any payment.
 func (t *Tunnel) Preflight() error {
-	return checkPrivileges()
+	if err := checkPrivileges(); err != nil {
+		return err
+	}
+	// Missing WireGuard support is only otherwise found while bringing the
+	// outer hop up, after the entry node has already been paid.
+	return wg.CheckDataPlane()
 }
 
 // ValidateEndpoints reports whether the two node endpoints could be used to
@@ -583,6 +596,11 @@ func (t *Tunnel) teardown(state *activeState) error {
 	if state.dnsChanged {
 		if err := t.net.RestoreDNS(); err != nil {
 			problems = append(problems, fmt.Errorf("restore DNS: %w", err))
+		}
+	}
+	if state.ipv6Changed {
+		if err := t.net.RestoreIPv6(); err != nil {
+			problems = append(problems, fmt.Errorf("restore IPv6: %w", err))
 		}
 	}
 

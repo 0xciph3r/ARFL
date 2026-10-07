@@ -29,21 +29,25 @@ type TransportCapability struct {
 
 // NodeInfo represents a node's published metadata (from Nostr or config).
 type NodeInfo struct {
-	ID                 string                `json:"id"`
-	NostrPubkey        string                `json:"nostr_pubkey"`
-	WGPubkey           string                `json:"wg_pubkey"`
-	Endpoint           string                `json:"endpoint"`
-	ConnectURL         string                `json:"connect_url,omitempty"` // HTTP base URL for token-gated /connect
-	Transports         []TransportCapability `json:"transports,omitempty"`  // Multi-transport capabilities advertised by this node
-	LNURL              string                `json:"lnurl"`
-	DepositSats        int64                 `json:"deposit_sats"`
-	UploadMbps         int                   `json:"upload_mbps"`
-	DownloadMbps       int                   `json:"download_mbps"`
-	Load               int                   `json:"load"`
-	Capacity           int                   `json:"capacity"`
-	Role               NodeRole              `json:"role"`
-	Version            string                `json:"version"`
-	PreferredTransport Transport             `json:"preferred_transport,omitempty"` // Optional node hint for transport selection
+	ID           string                `json:"id"`
+	NostrPubkey  string                `json:"nostr_pubkey"`
+	WGPubkey     string                `json:"wg_pubkey"`
+	Endpoint     string                `json:"endpoint"`
+	ConnectURL   string                `json:"connect_url,omitempty"` // HTTP base URL for token-gated /connect
+	Transports   []TransportCapability `json:"transports,omitempty"`  // Multi-transport capabilities advertised by this node
+	LNURL        string                `json:"lnurl"`
+	DepositSats  int64                 `json:"deposit_sats"`
+	UploadMbps   int                   `json:"upload_mbps"`
+	DownloadMbps int                   `json:"download_mbps"`
+	Load         int                   `json:"load"`
+	Capacity     int                   `json:"capacity"`
+	Role         NodeRole              `json:"role"`
+	Version      string                `json:"version"`
+	// OperatorID is the operator the hub assigned in this node's attestation.
+	// Clients fill it from the verified attestation and ignore any value the
+	// node announces, so one operator cannot pose as two.
+	OperatorID         string    `json:"operator_id,omitempty"`
+	PreferredTransport Transport `json:"preferred_transport,omitempty"` // Optional node hint for transport selection
 }
 
 // SessionConfig holds the parameters for a two-hop session.

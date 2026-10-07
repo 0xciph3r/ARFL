@@ -40,6 +40,11 @@ type discoveryNode struct {
 	Info     types.NodeInfo `json:"info"`
 	Online   bool           `json:"online"`
 	LastSeen time.Time      `json:"last_seen"`
+	// Attestation is the hub's signed approval of the node, carrying the
+	// operator identity the hub assigned.
+	Attestation *struct {
+		OperatorID string `json:"operator_id"`
+	} `json:"attestation"`
 }
 
 // discoveryResponse matches the DiscoveryResponse JSON from GET /nodes.
@@ -126,7 +131,12 @@ func (s *NodeSelector) FetchNodes(ctx context.Context) ([]types.NodeInfo, error)
 	var online []types.NodeInfo
 	for _, n := range dr.Nodes {
 		if n.Online {
-			online = append(online, n.Info)
+			info := n.Info
+			info.OperatorID = ""
+			if n.Attestation != nil {
+				info.OperatorID = n.Attestation.OperatorID
+			}
+			online = append(online, info)
 		}
 	}
 	return online, nil

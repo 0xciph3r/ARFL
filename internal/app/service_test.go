@@ -1542,3 +1542,53 @@ func TestInvalidAllowlistDoesNotWidenPolicy(t *testing.T) {
 		t.Errorf("balance=%d entryConnects=%d, want 128 and 0", balance, entry.connectCount())
 	}
 }
+
+// Topping up pays both nodes of the live session without touching the
+// tunnel, so traffic never leaves it while more bandwidth is bought.
+func TestExtendPaysBothNodesWithoutTearingTheTunnelDown(t *testing.T) {
+	hub := newTestHub(t)
+	entry := hub.addNode(t, "entry-1", types.RoleEntry)
+	exit := hub.addNode(t, "exit-1", types.RoleExit)
+
+	tunnel := newFakeTunnel()
+	svc := newService(t, tunnel)
+	ctx := context.Background()
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	fundService(t, hub, svc, 256)
+	if _, err := svc.Connect(ctx, 32); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	session, err := svc.Extend(ctx, 32)
+	if err != nil {
+		t.Fatalf("extend: %v", err)
+	}
+	if session.SpentSats != 128 {
+		t.Errorf("spent = %d, want 128 after one top-up", session.SpentSats)
+	}
+	if entry.connectCount() != 2 || exit.connectCount() != 2 {
+		t.Errorf("connect calls: entry=%d exit=%d, want 2 each", entry.connectCount(), exit.connectCount())
+	}
+	if len(tunnel.ups()) != 1 || tunnel.downs() != 0 {
+		t.Errorf("tunnel ups=%d downs=%d, want 1 and 0", len(tunnel.ups()), tunnel.downs())
+	}
+	if svc.State() != app.StateConnected {
+		t.Errorf("state = %q, want connected", svc.State())
+	}
+	if balance, _ := svc.Balance(); balance != 128 {
+		t.Errorf("balance = %d, want 128", balance)
+	}
+}
+
+func TestExtendRequiresALiveSession(t *testing.T) {
+	hub := newTestHub(t)
+	svc := newService(t, newFakeTunnel())
+	if _, err := svc.ConnectHub(context.Background(), hub.server.URL); err != nil {
+		t.Fatalf("connect hub: %v", err)
+	}
+	if _, err := svc.Extend(context.Background(), 32); !errors.Is(err, app.ErrNotConnected) {
+		t.Fatalf("got %v, want ErrNotConnected", err)
+	}
+}

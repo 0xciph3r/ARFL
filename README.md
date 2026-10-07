@@ -208,6 +208,10 @@ Sensitive config can be set via environment variables (recommended for productio
 
 On first run, the Hub generates an RSA denomination key in `keys/key-100mb.json` and exports the public key to `keys/key-100mb.pub.json`. **Distribute the `.pub.json` file to all nodes.**
 
+### Listing your hub in the apps
+
+Hubs on [`hubs/registry.json`](hubs/registry.json) appear in every ARFL app as **Trusted by ARFL**. Set a `"name"` in your `hub.json`, serve the hub over HTTPS on a domain, then open a pull request adding it to the registry. Merging the pull request publishes it; apps pick it up within a day. See [`hubs/README.md`](hubs/README.md).
+
 ### Node (`node.json`)
 
 ```bash

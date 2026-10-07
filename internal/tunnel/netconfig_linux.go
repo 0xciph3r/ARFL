@@ -12,7 +12,10 @@ import (
 const resolvBackup = "/etc/resolv.conf.arfl.bak"
 
 // linuxConfigurator drives iproute2 and /etc/resolv.conf. It requires root.
-type linuxConfigurator struct{}
+type linuxConfigurator struct {
+	// ipv6Prev is disable_ipv6 before the tunnel changed it; "" means untouched.
+	ipv6Prev string
+}
 
 func newNetConfigurator() (netConfigurator, error) {
 	return &linuxConfigurator{}, nil
@@ -101,4 +104,29 @@ func (c *linuxConfigurator) RestoreDNS() error {
 		return fmt.Errorf("restore resolv.conf: %w", err)
 	}
 	return os.Remove(resolvBackup)
+}
+
+const ipv6Sysctl = "/proc/sys/net/ipv6/conf/all/disable_ipv6"
+
+func (c *linuxConfigurator) DisableIPv6() error {
+	prev, err := os.ReadFile(ipv6Sysctl)
+	if err != nil {
+		return fmt.Errorf("read IPv6 setting: %w", err)
+	}
+	if err := os.WriteFile(ipv6Sysctl, []byte("1\n"), 0o644); err != nil {
+		return fmt.Errorf("turn off IPv6: %w", err)
+	}
+	c.ipv6Prev = strings.TrimSpace(string(prev))
+	return nil
+}
+
+func (c *linuxConfigurator) RestoreIPv6() error {
+	if c.ipv6Prev == "" {
+		return nil
+	}
+	if err := os.WriteFile(ipv6Sysctl, []byte(c.ipv6Prev+"\n"), 0o644); err != nil {
+		return fmt.Errorf("restore IPv6 setting: %w", err)
+	}
+	c.ipv6Prev = ""
+	return nil
 }

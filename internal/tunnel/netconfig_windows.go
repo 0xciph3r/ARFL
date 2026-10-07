@@ -18,6 +18,8 @@ type windowsConfigurator struct {
 	// dnsBackup maps interface alias to the resolvers configured before the
 	// tunnel took over, so teardown restores each adapter exactly.
 	dnsBackup map[string][]string
+	// ipv6Off lists adapters whose IPv6 binding the tunnel turned off.
+	ipv6Off []string
 }
 
 func newNetConfigurator() (netConfigurator, error) {
@@ -199,4 +201,47 @@ func currentDNS(alias string) ([]string, error) {
 
 func powershell(script string) (string, error) {
 	return output("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+}
+
+func (c *windowsConfigurator) DisableIPv6() error {
+	aliases, err := activeAdapters()
+	if err != nil {
+		return err
+	}
+	for _, alias := range aliases {
+		state, err := powershell(fmt.Sprintf(
+			`(Get-NetAdapterBinding -Name '%s' -ComponentID ms_tcpip6 -ErrorAction Stop).Enabled`, alias))
+		if err != nil || !strings.EqualFold(strings.TrimSpace(state), "True") {
+			continue
+		}
+		if _, err := powershell(fmt.Sprintf(
+			`Disable-NetAdapterBinding -Name '%s' -ComponentID ms_tcpip6 -ErrorAction Stop`, alias)); err != nil {
+			// The tunnel only records the change on success, so undo the
+			// adapters already switched off or they would stay that way.
+			if rerr := c.RestoreIPv6(); rerr != nil {
+				return fmt.Errorf("turn off IPv6 on %q: %w (rolling back: %v)", alias, err, rerr)
+			}
+			return fmt.Errorf("turn off IPv6 on %q: %w", alias, err)
+		}
+		c.ipv6Off = append(c.ipv6Off, alias)
+	}
+	return nil
+}
+
+func (c *windowsConfigurator) RestoreIPv6() error {
+	var problems []string
+	var failed []string
+	for _, alias := range c.ipv6Off {
+		if _, err := powershell(fmt.Sprintf(
+			`Enable-NetAdapterBinding -Name '%s' -ComponentID ms_tcpip6 -ErrorAction Stop`, alias)); err != nil {
+			problems = append(problems, fmt.Sprintf("%s: %v", alias, err))
+			failed = append(failed, alias)
+		}
+	}
+	// Adapters that could not be restored stay listed so a later call retries.
+	c.ipv6Off = failed
+	if len(problems) > 0 {
+		return fmt.Errorf("restore IPv6: %s", strings.Join(problems, "; "))
+	}
+	return nil
 }

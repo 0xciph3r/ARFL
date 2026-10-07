@@ -20,6 +20,7 @@ type fakeWG struct {
 	closeErr error
 	// osNames simulates a platform that renames interfaces, as macOS does.
 	osNames map[string]string
+	stats   map[string][]wg.PeerStats
 }
 
 func newFakeWG() *fakeWG {
@@ -56,6 +57,10 @@ func (f *fakeWG) AddPeer(iface string, peer wg.PeerConfig) error {
 
 func (f *fakeWG) Close() error { return f.closeErr }
 
+func (f *fakeWG) GetPeerStats(iface string) ([]wg.PeerStats, error) {
+	return f.stats[iface], nil
+}
+
 // fakeNet records routing and DNS changes.
 type fakeNet struct {
 	gateway    string
@@ -67,6 +72,9 @@ type fakeNet struct {
 	dnsRestore int
 	setDNSErr  error
 	failRoute  string
+
+	ipv6Off     int
+	ipv6Restore int
 }
 
 func newFakeNet() *fakeNet {
@@ -103,6 +111,16 @@ func (f *fakeNet) SetDNS(resolver string) error {
 
 func (f *fakeNet) RestoreDNS() error {
 	f.dnsRestore++
+	return nil
+}
+
+func (f *fakeNet) DisableIPv6() error {
+	f.ipv6Off++
+	return nil
+}
+
+func (f *fakeNet) RestoreIPv6() error {
+	f.ipv6Restore++
 	return nil
 }
 

@@ -47,10 +47,14 @@ func (m *WgctrlManager) createOSInterface(cfg InterfaceConfig) (string, error) {
 		return "", fmt.Errorf("remove stale name file %s: %w", nameFile, err)
 	}
 
-	cmd := exec.Command("wireguard-go", "utun")
+	bin, err := WireGuardGoPath()
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.Command(bin, "utun")
 	cmd.Env = append(os.Environ(), "WG_TUN_NAME_FILE="+nameFile)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("start wireguard-go (is it installed?): %w: %s",
+		return "", fmt.Errorf("start wireguard-go: %w: %s",
 			err, strings.TrimSpace(string(out)))
 	}
 
@@ -114,4 +118,23 @@ func (m *WgctrlManager) setAddress(name, address string, mtu int) error {
 func (m *WgctrlManager) bringUp(name string) error {
 	// wireguard-go brings the utun device up as part of creating it.
 	return nil
+}
+
+// wireguardGoDirs are where package managers install wireguard-go. The helper
+// runs under launchd, whose PATH holds only the system folders, so these must
+// be searched explicitly.
+var wireguardGoDirs = []string{"/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"}
+
+// WireGuardGoPath finds the wireguard-go binary, or explains how to get it.
+func WireGuardGoPath() (string, error) {
+	if p, err := exec.LookPath("wireguard-go"); err == nil {
+		return p, nil
+	}
+	for _, dir := range wireguardGoDirs {
+		p := filepath.Join(dir, "wireguard-go")
+		if info, err := os.Stat(p); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("wireguard-go is not installed: install it with \"brew install wireguard-go\"")
 }

@@ -269,6 +269,9 @@ func New(cfg Config) (*Service, error) {
 	if discoverySrc != DiscoverySourceHub && discoverySrc != DiscoverySourceNostr {
 		return nil, fmt.Errorf("unsupported discovery source %q", cfg.DiscoverySource)
 	}
+	if delivery == client.TokenDeliveryNIP44 && discoverySrc != DiscoverySourceNostr {
+		return nil, fmt.Errorf("token delivery mode %q requires discovery_source=%q to verify node identities", delivery, DiscoverySourceNostr)
+	}
 	trustedHubs := sanitizeHubPubkeys(cfg.TrustedHubPubkeys)
 	if discoverySrc == DiscoverySourceNostr {
 		if len(nostrRelays) == 0 {
@@ -614,11 +617,11 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 	if s.delivery == client.TokenDeliveryHTTP && !stagedOK {
 		return nil, fmt.Errorf("token delivery mode %q requires staged tunnel support to avoid exit-side IP exposure", s.delivery)
 	}
-	exitProvisionEndpoint := pair.Exit.Endpoint
+	var exitConnectIP, exitConnectEndpoint string
 	if s.delivery == client.TokenDeliveryHTTP {
-		exitProvisionEndpoint, err = provisionRouteEndpoint(pair.Exit.Endpoint, pair.Exit.ConnectURL)
+		exitConnectIP, exitConnectEndpoint, err = resolveConnectIPv4(ctx, pair.Exit.ConnectURL)
 		if err != nil {
-			return nil, fmt.Errorf("selected pair has invalid exit connect URL for staged provisioning: %w", err)
+			return nil, fmt.Errorf("resolve exit connect URL before payment: %w", err)
 		}
 	}
 
@@ -675,7 +678,7 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 		tokenSender = client.NewTokenSender(relayPool)
 	}
 
-	entryRes, err := s.connectNode(ctx, tokenSender, pair.Entry.ConnectURL, pair.Entry.NostrPubkey, entryProofs, entryClientKey, "entry")
+	entryRes, err := s.connectNode(ctx, tokenSender, pair.Entry.ConnectURL, pair.Entry.NostrPubkey, "", entryProofs, entryClientKey, "entry")
 	if err != nil {
 		entrySpent := shouldTreatProofsAsSpent(err)
 		if rerr := s.refundUnspentProofs(w, entryProofs, exitProofs, entrySpent, false); rerr != nil {
@@ -709,8 +712,7 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 	outerUp := false
 	if stageExitProvision {
 		outerCfg := cfg
-		outerCfg.Exit.Endpoint = exitProvisionEndpoint
-		outerCfg.OuterPinnedEndpoints = []string{pair.Exit.Endpoint}
+		outerCfg.OuterPinnedEndpoints = []string{exitConnectEndpoint}
 		if err := staged.UpOuter(ctx, outerCfg); err != nil {
 			if rerr := s.refundUnspentProofs(w, entryProofs, exitProofs, true, false); rerr != nil {
 				return nil, fmt.Errorf("bring outer tunnel up: %w (exit proofs could not be returned to the store: %v)", err, rerr)
@@ -720,7 +722,7 @@ func (s *Service) connect(ctx context.Context, w *wallet.Wallet, perHopSats uint
 		outerUp = true
 	}
 
-	exitRes, err := s.connectNode(ctx, tokenSender, pair.Exit.ConnectURL, pair.Exit.NostrPubkey, exitProofs, exitClientKey, "exit")
+	exitRes, err := s.connectNode(ctx, tokenSender, pair.Exit.ConnectURL, pair.Exit.NostrPubkey, exitConnectIP, exitProofs, exitClientKey, "exit")
 	if err != nil {
 		if outerUp {
 			if derr := s.tunnel.Down(ctx); derr != nil {
@@ -938,7 +940,12 @@ func indexedToNodeInfos(in []*discovery.IndexedNode) []types.NodeInfo {
 		if node == nil {
 			continue
 		}
-		out = append(out, node.Info)
+		if node.Event == nil {
+			continue
+		}
+		info := node.Info
+		info.NostrPubkey = node.Event.Pubkey
+		out = append(out, info)
 	}
 	return out
 }
@@ -969,6 +976,7 @@ func (s *Service) connectNode(
 	tokenSender *client.TokenSender,
 	connectURL string,
 	nodePubkey string,
+	pinnedIP string,
 	proofs cashu.Proofs,
 	clientWGPubkey string,
 	role string,
@@ -978,7 +986,13 @@ func (s *Service) connectNode(
 		if connectURL == "" {
 			return nil, fmt.Errorf("%s node missing connect URL for HTTP token delivery", role)
 		}
-		res, err := s.connector.ConnectWithProofs(ctx, connectURL, proofs, clientWGPubkey)
+		var res *client.ConnectResult
+		var err error
+		if pinnedIP != "" {
+			res, err = s.connector.ConnectWithProofsPinned(ctx, connectURL, pinnedIP, proofs, clientWGPubkey)
+		} else {
+			res, err = s.connector.ConnectWithProofs(ctx, connectURL, proofs, clientWGPubkey)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("%s node connect: %w", role, err)
 		}
@@ -1029,20 +1043,33 @@ func shouldTreatProofsAsSpent(err error) bool {
 	return errors.As(err, &uncertain)
 }
 
-func provisionRouteEndpoint(exitEndpoint, exitConnectURL string) (string, error) {
-	u, err := url.Parse(strings.TrimSpace(exitConnectURL))
+func resolveConnectIPv4(ctx context.Context, connectURL string) (string, string, error) {
+	u, err := url.Parse(connectURL)
 	if err != nil {
-		return "", fmt.Errorf("parse connect URL %q: %w", exitConnectURL, err)
+		return "", "", fmt.Errorf("parse connect URL: %w", err)
 	}
-	host := strings.TrimSpace(u.Hostname())
-	if host == "" {
-		return "", fmt.Errorf("connect URL %q has no host", exitConnectURL)
+	if (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", "", fmt.Errorf("invalid connect URL %q", connectURL)
 	}
-	_, port, err := net.SplitHostPort(exitEndpoint)
+	if u.Port() == "" && strings.HasSuffix(u.Host, ":") {
+		return "", "", fmt.Errorf("connect URL %q has an empty port", connectURL)
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", u.Hostname())
 	if err != nil {
-		return "", fmt.Errorf("parse exit endpoint %q: %w", exitEndpoint, err)
+		return "", "", fmt.Errorf("resolve connect host %q: %w", u.Hostname(), err)
 	}
-	return net.JoinHostPort(host, port), nil
+	if len(ips) == 0 {
+		return "", "", fmt.Errorf("connect host %q has no IPv4 address", u.Hostname())
+	}
+	port := u.Port()
+	if port == "" {
+		if u.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return ips[0].String(), net.JoinHostPort(ips[0].String(), port), nil
 }
 
 func sanitizeRelays(in []string) []string {

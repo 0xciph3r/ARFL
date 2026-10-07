@@ -362,6 +362,49 @@ func TestUpInnerCompletesStagedBringUp(t *testing.T) {
 	}
 }
 
+func TestUpInnerUsesExitIPAlreadyRoutedThroughOuter(t *testing.T) {
+	origLookup := lookupHost
+	exitIP := "198.51.100.20"
+	lookupHost = func(host string) ([]string, error) {
+		if host != "exit.example" {
+			return nil, errors.New("unexpected host lookup: " + host)
+		}
+		return []string{exitIP}, nil
+	}
+	defer func() { lookupHost = origLookup }()
+
+	fwg := newFakeWG()
+	tun := newReadyTunnel(t, fwg, newFakeNet())
+	cfg := validConfig()
+	cfg.Exit.Endpoint = "exit.example:51821"
+	if err := tun.UpOuter(context.Background(), cfg); err != nil {
+		t.Fatalf("up outer: %v", err)
+	}
+	exitIP = "198.51.100.90"
+	if err := tun.UpInner(context.Background(), cfg); err != nil {
+		t.Fatalf("up inner after DNS changed: %v", err)
+	}
+	if got := fwg.peers[InnerInterface][0].Endpoint; got != "198.51.100.20:51821" {
+		t.Fatalf("inner endpoint=%q, want initially pinned exit IP", got)
+	}
+}
+
+func TestUpInnerRejectsUnpinnedExitEndpoint(t *testing.T) {
+	fwg, fnet := newFakeWG(), newFakeNet()
+	tun := newReadyTunnel(t, fwg, fnet)
+	cfg := validConfig()
+	if err := tun.UpOuter(context.Background(), cfg); err != nil {
+		t.Fatalf("up outer: %v", err)
+	}
+	cfg.Exit.Endpoint = "198.51.100.90:51821"
+	if err := tun.UpInner(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "differs") {
+		t.Fatalf("unrouted endpoint must be rejected: %v", err)
+	}
+	if tun.active != nil || len(fwg.deleted) != len(fwg.created) || len(fnet.deleted) != len(fnet.added) {
+		t.Fatal("rejected inner endpoint left outer tunnel active")
+	}
+}
+
 func TestUpInnerFailureRollsBackOuterState(t *testing.T) {
 	fwg, fnet := newFakeWG(), newFakeNet()
 	fwg.failOn = "peer:" + InnerInterface

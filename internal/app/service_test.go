@@ -569,6 +569,19 @@ func TestNewRejectsNIP44DeliveryWithoutRelays(t *testing.T) {
 	}
 }
 
+func TestNewRejectsNIP44DeliveryWithHubDiscovery(t *testing.T) {
+	_, err := app.New(app.Config{
+		StorePath:       t.TempDir() + "/tokens.json",
+		Passphrase:      "correct horse battery staple",
+		TokenDelivery:   client.TokenDeliveryNIP44,
+		NostrRelays:     []string{"wss://relay.example"},
+		DiscoverySource: app.DiscoverySourceHub,
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires discovery_source=\"nostr\"") {
+		t.Fatalf("unverified hub identities must be rejected: %v", err)
+	}
+}
+
 func TestNewRejectsUnknownTokenDeliveryMode(t *testing.T) {
 	_, err := app.New(app.Config{
 		StorePath:         t.TempDir() + "/tokens.json",
@@ -840,12 +853,11 @@ func TestConnectStagesOuterBeforeExitProvisioning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse exit test URL: %v", err)
 	}
-	wantProvisionEndpoint := exitURL.Hostname() + ":51820"
-	if outerUps[0].Exit.Endpoint != wantProvisionEndpoint {
-		t.Fatalf("outer provisioning endpoint = %q, want %q", outerUps[0].Exit.Endpoint, wantProvisionEndpoint)
+	if outerUps[0].Exit.Endpoint != "exit-1.example:51820" {
+		t.Fatalf("outer exit endpoint = %q, want exit-1.example:51820", outerUps[0].Exit.Endpoint)
 	}
-	if len(outerUps[0].OuterPinnedEndpoints) != 1 || outerUps[0].OuterPinnedEndpoints[0] != "exit-1.example:51820" {
-		t.Fatalf("outer pinned endpoints = %v, want [exit-1.example:51820]", outerUps[0].OuterPinnedEndpoints)
+	if len(outerUps[0].OuterPinnedEndpoints) != 1 || outerUps[0].OuterPinnedEndpoints[0] != exitURL.Host {
+		t.Fatalf("outer pinned endpoints = %v, want [%s]", outerUps[0].OuterPinnedEndpoints, exitURL.Host)
 	}
 	if len(tunnel.ups()) != 0 {
 		t.Fatalf("full Up should not be used when staged methods exist; got %d calls", len(tunnel.ups()))

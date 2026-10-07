@@ -97,12 +97,14 @@ type Tunnel struct {
 
 // activeState is the set of changes made to the system for one session.
 type activeState struct {
-	routes      []route
-	dnsChanged  bool
-	ipv6Changed bool
-	interfaces  []string
-	outerReady  bool
-	innerReady  bool
+	routes       []route
+	dnsChanged   bool
+	ipv6Changed  bool
+	interfaces   []string
+	outerReady   bool
+	innerReady   bool
+	exitEndpoint string
+	exitIP       string
 }
 
 type route struct {
@@ -149,6 +151,41 @@ func (t *Tunnel) PublicKey() (string, error) {
 		t.entryKeys = kp
 	}
 	return t.entryKeys.PublicKey, nil
+}
+
+// SetHopKeys configures explicit WireGuard keypairs for the next session.
+//
+// This exists for legacy callers that persist client keys on disk. Passing a
+// nil exit key reuses the entry key for both hops.
+func (t *Tunnel) SetHopKeys(entry, exit *wg.KeyPair) error {
+	if entry == nil {
+		return fmt.Errorf("entry keypair is required")
+	}
+	if entry.PrivateKey == "" || entry.PublicKey == "" {
+		return fmt.Errorf("entry keypair is incomplete")
+	}
+	if exit == nil {
+		exit = entry
+	}
+	if exit.PrivateKey == "" || exit.PublicKey == "" {
+		return fmt.Errorf("exit keypair is incomplete")
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.active != nil {
+		return fmt.Errorf("cannot replace keypairs while tunnel is active")
+	}
+
+	t.entryKeys = &wg.KeyPair{
+		PrivateKey: entry.PrivateKey,
+		PublicKey:  entry.PublicKey,
+	}
+	t.exitKeys = &wg.KeyPair{
+		PrivateKey: exit.PrivateKey,
+		PublicKey:  exit.PublicKey,
+	}
+	return nil
 }
 
 // PrepareHopKeys generates a fresh keypair for each hop and returns their
@@ -280,7 +317,7 @@ func (t *Tunnel) upOuterLocked(cfg app.TunnelConfig) error {
 		return fmt.Errorf("determine default route: %w", err)
 	}
 
-	state := &activeState{}
+	state := &activeState{exitEndpoint: cfg.Exit.Endpoint, exitIP: outerRouteIPs[0]}
 	if err := t.bringUpOuter(cfg, entryRouteIPs, outerRouteIPs, gateway, iface, state); err != nil {
 		// Roll back so a failed attempt does not strand the machine with a
 		// half-configured routing table and no internet.
@@ -299,23 +336,26 @@ func (t *Tunnel) upInnerLocked(cfg app.TunnelConfig) error {
 	if t.active.innerReady {
 		return fmt.Errorf("inner tunnel is already up")
 	}
+	if cfg.Exit.Endpoint != t.active.exitEndpoint {
+		if err := t.teardown(t.active); err != nil {
+			t.active = nil
+			return fmt.Errorf("inner exit endpoint differs from the endpoint routed through the outer tunnel (cleanup failed: %w)", err)
+		}
+		t.active = nil
+		return fmt.Errorf("inner exit endpoint differs from the endpoint routed through the outer tunnel")
+	}
 	if err := validate(cfg); err != nil {
 		t.teardown(t.active)
 		t.active = nil
 		return err
 	}
-	_, exitIP, err := resolveEndpoints(cfg.Entry.Endpoint, cfg.Exit.Endpoint)
+	pinnedEndpoint, err := endpointWithHost(cfg.Exit.Endpoint, t.active.exitIP)
 	if err != nil {
 		t.teardown(t.active)
 		t.active = nil
 		return err
 	}
-	cfg.Exit.Endpoint, err = endpointWithHost(cfg.Exit.Endpoint, exitIP)
-	if err != nil {
-		t.teardown(t.active)
-		t.active = nil
-		return err
-	}
+	cfg.Exit.Endpoint = pinnedEndpoint
 
 	if err := t.bringUpInner(cfg, t.active); err != nil {
 		t.teardown(t.active)

@@ -17,6 +17,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/Radi-Labs/ARFL/internal/nostr"
 	"github.com/elnosh/gonuts/cashu"
@@ -37,7 +38,18 @@ type TokenReceiver struct {
 	pool      relayClient
 	onConnect ConnectCallback
 	cacheMu   sync.Mutex
-	replies   map[string]nostr.TokenReplyPayload
+	replies   map[string]cachedTokenReply
+}
+
+const (
+	maxRequestIDLength = 128
+	maxCachedReplies   = 1024
+	replyCacheTTL      = 10 * time.Minute
+)
+
+type cachedTokenReply struct {
+	reply     nostr.TokenReplyPayload
+	createdAt time.Time
 }
 
 type relayClient interface {
@@ -57,7 +69,7 @@ func NewTokenReceiver(
 		redeemer:  redeemer,
 		pool:      pool,
 		onConnect: onConnect,
-		replies:   make(map[string]nostr.TokenReplyPayload),
+		replies:   make(map[string]cachedTokenReply),
 	}
 }
 
@@ -115,6 +127,10 @@ func (tr *TokenReceiver) handleEvent(ctx context.Context, event *nostr.Event) {
 	}
 	if payload.RequestID == "" {
 		log.Printf("[token-receiver] payload missing request_id (sender=%s)", truncate(event.Pubkey))
+		return
+	}
+	if len(payload.RequestID) > maxRequestIDLength {
+		log.Printf("[token-receiver] oversized request_id (sender=%s)", truncate(event.Pubkey))
 		return
 	}
 	requestKey := replyCacheKey(event.Pubkey, payload.RequestID)
@@ -190,11 +206,12 @@ func replyCacheKey(senderPubkey, requestID string) string {
 func (tr *TokenReceiver) cachedReply(key string) (*nostr.TokenReplyPayload, bool) {
 	tr.cacheMu.Lock()
 	defer tr.cacheMu.Unlock()
-	reply, ok := tr.replies[key]
+	tr.expireReplies(time.Now())
+	cached, ok := tr.replies[key]
 	if !ok {
 		return nil, false
 	}
-	copy := reply
+	copy := cached.reply
 	return &copy, true
 }
 
@@ -203,9 +220,29 @@ func (tr *TokenReceiver) sendReplyAndCache(ctx context.Context, recipientPubkey 
 		return
 	}
 	tr.cacheMu.Lock()
-	tr.replies[key] = *reply
+	now := time.Now()
+	tr.expireReplies(now)
+	if _, exists := tr.replies[key]; !exists && len(tr.replies) >= maxCachedReplies {
+		var oldestKey string
+		var oldestAt time.Time
+		for k, cached := range tr.replies {
+			if oldestKey == "" || cached.createdAt.Before(oldestAt) {
+				oldestKey, oldestAt = k, cached.createdAt
+			}
+		}
+		delete(tr.replies, oldestKey)
+	}
+	tr.replies[key] = cachedTokenReply{reply: *reply, createdAt: now}
 	tr.cacheMu.Unlock()
 	tr.sendReply(ctx, recipientPubkey, reply)
+}
+
+func (tr *TokenReceiver) expireReplies(now time.Time) {
+	for key, cached := range tr.replies {
+		if !now.Before(cached.createdAt.Add(replyCacheTTL)) {
+			delete(tr.replies, key)
+		}
+	}
 }
 
 func (tr *TokenReceiver) sendReply(ctx context.Context, recipientPubkey string, reply *nostr.TokenReplyPayload) {

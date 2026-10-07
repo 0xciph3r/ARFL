@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -70,6 +71,36 @@ func TestCashuConnectorTargetsTheCashuGate(t *testing.T) {
 	}
 	if resp.TunnelIP != "10.100.0.5/32" {
 		t.Errorf("tunnel IP = %q, want 10.100.0.5/32", resp.TunnelIP)
+	}
+}
+
+func TestCashuConnectorPinnedDestinationAndRedirect(t *testing.T) {
+	var hits int
+	var gotHost string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		gotHost = r.Host
+		http.Redirect(w, r, "http://127.0.0.1:1/cashu-connect", http.StatusTemporaryRedirect)
+	}))
+	defer server.Close()
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("NO_PROXY", "")
+	connectURL := "http://unresolvable.invalid:" + u.Port()
+	proofs := cashu.Proofs{{Amount: 32, Id: "ks", Secret: "s", C: "02ab"}}
+	_, err = NewCashuConnector().ConnectWithProofsPinned(context.Background(), connectURL, "127.0.0.1", proofs, "wgkey")
+	if err == nil || !strings.Contains(err.Error(), "307") {
+		t.Fatalf("redirect must be rejected without following it: %v", err)
+	}
+	if hits != 1 || gotHost != "unresolvable.invalid:"+u.Port() {
+		t.Fatalf("pinned hits=%d, Host=%q", hits, gotHost)
+	}
+	_, err = NewCashuConnector().ConnectWithProofsPinned(context.Background(), connectURL, "::1", proofs, "wgkey")
+	if err == nil || !strings.Contains(err.Error(), "IPv4") {
+		t.Fatalf("IPv6 pin should fail: %v", err)
 	}
 }
 

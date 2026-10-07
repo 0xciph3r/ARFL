@@ -13,6 +13,7 @@
   let nodes = $state<NodeInfo[]>([])
   let pinned = $state<Pinned | null>(null)
   let error = $state('')
+  let loadError = $state('')
   let loading = $state(false)
   let adv = $state(false)
   let slot = $state<Slot>('entry')
@@ -23,12 +24,13 @@
   async function load() {
     if (loading) return
     loading = true
-    error = ''
+    loadError = ''
     try {
       ;[nodes, pinned] = await Promise.all([api.listNodes(), api.pinnedPair()])
       if (pinned) draft = { entry: pinned.entry_id, exit: pinned.exit_id }
     } catch (err) {
-      error = (err as Error).message
+      nodes = []
+      loadError = (err as Error).message
     } finally {
       loading = false
     }
@@ -110,12 +112,15 @@
     {#if pinned}
       <button class="bare link" onclick={useAuto}>Use the automatic pair</button>
     {/if}
-    {#if error}
+    {#if loadError}
       <div class="err" role="alert">
-        <span>{error}</span>
+        <span>{loadError}</span>
         <button class="bare link" disabled={loading} onclick={load}>Try again</button>
       </div>
+    {:else if loading}
+      <div class="caption">Loading nodes…</div>
     {/if}
+    {#if error}<div class="err" role="alert">{error}</div>{/if}
   </div>
 
   <button class="bare toggle" onclick={() => (adv = !adv)}>
@@ -136,12 +141,10 @@
       <input type="text" placeholder="Search this hub's nodes" aria-label="Search nodes" bind:value={query} />
       <div class="caption">Picking a node here replaces the automatic pair.</div>
     </div>
-    {#if loading}
-      <div class="empty">Loading nodes…</div>
-    {:else if !error && list.length === 0}
+    {#if !loading && !loadError && list.length === 0}
       <div class="empty">No {slot} nodes match.</div>
     {/if}
-    {#each list as n (n.id)}
+    {#each loading || loadError ? [] : list as n (n.id)}
       {@const sel = (slot === 'entry' ? draft.entry : draft.exit) === n.id}
       {@const clash = !sel && sameHubOperator(n, otherNode)}
       <button class="bare node" class:sel class:clash disabled={clash} onclick={() => pick(n)}>

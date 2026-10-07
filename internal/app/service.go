@@ -218,6 +218,10 @@ type Service struct {
 	// pinned replaces the random pair with one the user chose. It is cleared
 	// on every hub switch, since node IDs only mean something at one hub.
 	pinned *PinnedPair
+	// planned is the automatic pair shown by the desktop before Connect.
+	// It is revalidated against the live index before any proofs are spent.
+	planned        *PinnedPair
+	pairGeneration uint64
 
 	// route is what Extend needs to pay the live session's nodes again.
 	route *liveRoute
@@ -347,6 +351,8 @@ func (s *Service) ConnectHub(ctx context.Context, hubURL string) (*HubStatus, er
 	s.wallet = w
 	s.selector = selector
 	s.pinned = nil
+	s.planned = nil
+	s.pairGeneration++
 	s.hubInfo = info
 	s.mu.Unlock()
 
@@ -440,15 +446,59 @@ func (s *Service) ListNodes(ctx context.Context) ([]types.NodeInfo, error) {
 	return s.fetchNodes(ctx)
 }
 
+// PreparePair chooses the next route on this device and keeps it for Connect.
+// A manual pin takes precedence; a new automatic choice replaces the old one.
+func (s *Service) PreparePair(ctx context.Context) (*client.NodePair, error) {
+	s.mu.Lock()
+	hub := s.hubInfo
+	s.pairGeneration++
+	generation := s.pairGeneration
+	s.mu.Unlock()
+	nodes, err := s.fetchNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if s.state != StateDisconnected {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("disconnect before choosing the next pair")
+	}
+	if s.hubInfo != hub {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("hub changed while choosing the next pair")
+	}
+	pinned := s.pinned
+	s.mu.Unlock()
+	if pinned != nil {
+		nodes, err = restrictToPinned(nodes, *pinned)
+		if err != nil {
+			return nil, err
+		}
+	}
+	pair, err := s.pairFromNodes(nodes)
+	if err != nil {
+		return nil, err
+	}
+	if pair.Transport != "" && pair.Transport != types.TransportWireGuard {
+		return nil, fmt.Errorf("%w: selected=%s", ErrTransportUnsupported, pair.Transport)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != StateDisconnected {
+		return nil, fmt.Errorf("connection started while choosing the next pair")
+	}
+	if s.hubInfo != hub || s.pinned != pinned || s.pairGeneration != generation {
+		return nil, fmt.Errorf("hub or chosen nodes changed while choosing the next pair")
+	}
+	if s.pinned == nil {
+		s.planned = &PinnedPair{EntryID: pair.Entry.ID, ExitID: pair.Exit.ID}
+	}
+	return pair, nil
+}
+
 // SelectPair picks an entry/exit pair client-side. The hub never learns the
 // choice, which is what keeps payment unlinkable from routing.
 func (s *Service) SelectPair(ctx context.Context) (*client.NodePair, error) {
-	// An allowlist that was supplied but names no supported transport means
-	// "nothing is allowed". The selector reads an empty set as "unrestricted",
-	// so this must be refused here rather than passed down.
-	if len(s.allowed) == 0 {
-		return nil, fmt.Errorf("%w (transport policy: allowed transports contain no supported transport)", client.ErrNoCompatiblePair)
-	}
 	nodes, err := s.fetchNodes(ctx)
 	if err != nil {
 		return nil, err
@@ -456,11 +506,23 @@ func (s *Service) SelectPair(ctx context.Context) (*client.NodePair, error) {
 
 	s.mu.Lock()
 	pinned := s.pinned
+	planned := s.planned
 	s.mu.Unlock()
 	if pinned != nil {
 		if nodes, err = restrictToPinned(nodes, *pinned); err != nil {
 			return nil, err
 		}
+	} else if planned != nil {
+		if nodes, err = restrictToPinned(nodes, *planned); err != nil {
+			return nil, fmt.Errorf("the displayed pair is no longer available; choose a new pair: %w", err)
+		}
+	}
+	return s.pairFromNodes(nodes)
+}
+
+func (s *Service) pairFromNodes(nodes []types.NodeInfo) (*client.NodePair, error) {
+	if len(s.allowed) == 0 {
+		return nil, fmt.Errorf("%w (transport policy: allowed transports contain no supported transport)", client.ErrNoCompatiblePair)
 	}
 	return client.PairNodesWithPolicyForDelivery(nodes, s.preferred, s.allowed, s.delivery)
 }
@@ -512,12 +574,15 @@ func (s *Service) SetPinnedPair(pin *PinnedPair) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pairGeneration++
 	if pin == nil {
 		s.pinned = nil
+		s.planned = nil
 		return nil
 	}
 	cp := *pin
 	s.pinned = &cp
+	s.planned = nil
 	return nil
 }
 
@@ -981,16 +1046,31 @@ func (s *Service) currentSelector() (*client.NodeSelector, error) {
 }
 
 func (s *Service) fetchNodes(ctx context.Context) ([]types.NodeInfo, error) {
+	var nodes []types.NodeInfo
+	var err error
 	switch s.discoverySource() {
 	case DiscoverySourceNostr:
-		return s.fetchNodesFromRelays(ctx)
+		nodes, err = s.fetchNodesFromRelays(ctx)
 	default:
-		sel, err := s.currentSelector()
+		var sel *client.NodeSelector
+		sel, err = s.currentSelector()
 		if err != nil {
 			return nil, err
 		}
-		return sel.FetchNodes(ctx)
+		nodes, err = sel.FetchNodes(ctx)
 	}
+	if err != nil {
+		return nil, err
+	}
+	for i := range nodes {
+		if nodes[i].ID == "" {
+			if nodes[i].NostrPubkey == "" {
+				return nil, fmt.Errorf("node missing both ID and Nostr public key")
+			}
+			nodes[i].ID = nodes[i].NostrPubkey
+		}
+	}
+	return nodes, nil
 }
 
 func (s *Service) fetchNodesFromRelays(ctx context.Context) ([]types.NodeInfo, error) {

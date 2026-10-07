@@ -62,6 +62,7 @@ export const api = {
   purchase: (amountSats: number) => value(() => Bridge.Purchase(amountSats)),
   awaitPurchase: (quoteId: string) => call(() => Bridge.AwaitPurchase(quoteId)),
   listNodes: () => list(() => Bridge.ListNodes()),
+  preparePair: () => list(() => Bridge.PreparePair()),
   vaultState: () => value(() => Bridge.VaultState()),
   connect: (perHopSats: number) => value(() => Bridge.Connect(perHopSats)),
   session: () => call(() => Bridge.Session()),

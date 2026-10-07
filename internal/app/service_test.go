@@ -40,6 +40,72 @@ type nodeEntry struct {
 	Online bool           `json:"online"`
 }
 
+func TestPreparedPairIsRecheckedWithoutSwitchingBeforePayment(t *testing.T) {
+	ctx := context.Background()
+	hub := newTestHub(t)
+	hub.addNode(t, "entry", types.RoleEntry)
+	hub.addNode(t, "exit-one", types.RoleExit)
+	hub.addNode(t, "exit-two", types.RoleExit)
+	svc := newService(t, nil)
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := svc.PreparePair(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := svc.SelectPair(ctx)
+	if err != nil || selected.Entry.ID != prepared.Entry.ID || selected.Exit.ID != prepared.Exit.ID {
+		t.Fatalf("connect pair %+v, err %v; displayed %+v", selected, err, prepared)
+	}
+	hub.mu.Lock()
+	for i := range hub.nodes {
+		if hub.nodes[i].Info.ID == prepared.Exit.ID {
+			hub.nodes[i].Online = false
+		}
+	}
+	hub.mu.Unlock()
+	if _, err := svc.Connect(ctx, 100); !errors.Is(err, app.ErrPinnedNodeOffline) {
+		t.Fatalf("unavailable displayed exit must fail before spending: %v", err)
+	}
+	if svc.State() != app.StateDisconnected {
+		t.Fatalf("state after refused connection: %s", svc.State())
+	}
+	replacement, err := svc.PreparePair(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.Exit.ID == prepared.Exit.ID {
+		t.Fatal("prepared an offline exit")
+	}
+}
+
+func TestPreparePairUsesNodeKeysWhenHubOmitsIDs(t *testing.T) {
+	ctx := context.Background()
+	hub := newTestHub(t)
+	hub.addNode(t, "entry", types.RoleEntry)
+	hub.addNode(t, "exit", types.RoleExit)
+	hub.mu.Lock()
+	for i := range hub.nodes {
+		hub.nodes[i].Info.ID = ""
+	}
+	hub.mu.Unlock()
+	svc := newService(t, nil)
+	if _, err := svc.ConnectHub(ctx, hub.server.URL); err != nil {
+		t.Fatal(err)
+	}
+	pair, err := svc.PreparePair(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pair.Entry.ID != pair.Entry.NostrPubkey || pair.Exit.ID != pair.Exit.NostrPubkey {
+		t.Fatalf("node keys must provide stable IDs: %+v", pair)
+	}
+	if _, err := svc.SelectPair(ctx); err != nil {
+		t.Fatalf("prepared pair must survive live-list recheck: %v", err)
+	}
+}
+
 func newTestHub(t *testing.T) *testHub {
 	t.Helper()
 

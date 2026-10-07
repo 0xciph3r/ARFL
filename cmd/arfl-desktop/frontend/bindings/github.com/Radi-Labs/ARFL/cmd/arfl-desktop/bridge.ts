@@ -193,6 +193,14 @@ export function PinnedPair(): $CancellablePromise<app$0.PinnedPair | null> {
 }
 
 /**
+ * PreparePair returns the actual next entry and exit shown before connecting.
+ * Connect rechecks both against the hub rather than silently choosing others.
+ */
+export function PreparePair(): $CancellablePromise<types$0.NodeInfo[] | null> {
+    return $Call.ByID(1912848946);
+}
+
+/**
  * PreviewHub reads a hub's public info without connecting to it.
  */
 export function PreviewHub(hubURL: string): $CancellablePromise<$models.HubPreview | null> {

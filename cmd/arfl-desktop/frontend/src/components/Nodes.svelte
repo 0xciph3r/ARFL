@@ -2,10 +2,15 @@
   import { onMount } from 'svelte'
   import { api, type NodeInfo, type Pinned, type Session } from '../lib/api'
 
-  let { hubName, session, connected }: {
+  let { hubName, session, connected, pair, pairError, pairLoading, onRefresh, onPairChanged }: {
     hubName: string
     session: Session | null
     connected: boolean
+    pair: NodeInfo[]
+    pairError: string
+    pairLoading: boolean
+    onRefresh: () => Promise<void>
+    onPairChanged: () => Promise<void>
   } = $props()
 
   type Slot = 'entry' | 'exit'
@@ -46,15 +51,14 @@
   const canEntry = (n: NodeInfo) => n.role === 'entry' || n.role === 'both'
   const canExit = (n: NodeInfo) => n.role === 'exit' || n.role === 'both'
 
-  // What the top section describes: the live route, else the user's pin.
-  const shownEntry = $derived(connected ? byId(session?.config?.entry?.node_id) : byId(pinned?.entry_id))
-  const shownExit = $derived(connected ? byId(session?.config?.exit?.node_id) : byId(pinned?.exit_id))
+  const shownEntry = $derived(connected ? byId(session?.config?.entry?.node_id) : pair[0])
+  const shownExit = $derived(connected ? byId(session?.config?.exit?.node_id) : pair[1])
   const caption = $derived(
     pinned
       ? `You picked these. The hub's operator IDs are checked when available, but separate ownership is not guaranteed.${connected ? ' A change applies the next time you connect.' : ''}`
       : connected
         ? 'Picked at random on this device from this hub’s approved nodes. Separate operators are not guaranteed.'
-        : 'A pair is picked at random on this device each time you connect, from the nodes this hub has approved.',
+        : 'This is the pair your device will try when you connect. It is rechecked before payment; if either node is unavailable, choose a new pair.',
   )
 
   const otherNode = $derived(byId(slot === 'entry' ? draft.exit : draft.entry))
@@ -78,6 +82,7 @@
     try {
       await api.pinPair(draft.entry, draft.exit)
       pinned = await api.pinnedPair()
+      await onPairChanged()
     } catch (err) {
       error = (err as Error).message
     }
@@ -89,6 +94,7 @@
       await api.unpinPair()
       pinned = null
       draft = { entry: '', exit: '' }
+      await onPairChanged()
     } catch (err) {
       error = (err as Error).message
     }
@@ -100,15 +106,19 @@
     <div class="lede">Your device picks the pair from the nodes {hubName} has approved. The hub does not choose for you.</div>
     <div class="pair">
       <div class="hop">
-        <div><div class="k">Entry</div><div class="v">{shownEntry ? nodeLabel(shownEntry) : 'Picked when you connect'}</div></div>
+        <div><div class="k">Entry</div><div class="v">{shownEntry ? nodeLabel(shownEntry) : pairLoading ? 'Finding nodes…' : 'Unavailable'}</div></div>
         <div class="mono meta">{meta(shownEntry)}</div>
       </div>
       <div class="hop">
-        <div><div class="k">Exit</div><div class="v">{shownExit ? nodeLabel(shownExit) : 'Picked when you connect'}</div></div>
+        <div><div class="k">Exit</div><div class="v">{shownExit ? nodeLabel(shownExit) : pairLoading ? 'Finding nodes…' : 'Unavailable'}</div></div>
         <div class="mono meta">{meta(shownExit)}</div>
       </div>
     </div>
     <div class="caption">{caption}</div>
+    {#if !connected}
+      <button class="bare link" disabled={pairLoading} onclick={onRefresh}>{pinned ? 'Recheck your pair' : 'Pick another pair'}</button>
+      {#if pairError}<div class="err" role="alert">{pairError}</div>{/if}
+    {/if}
     {#if pinned}
       <button class="bare link" onclick={useAuto}>Use the automatic pair</button>
     {/if}

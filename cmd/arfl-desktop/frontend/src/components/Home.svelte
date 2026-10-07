@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte'
+  import { onDestroy, untrack } from 'svelte'
   import { Events } from '@wailsio/runtime'
-  import { api, type HubStatus, type Session, type StatusView } from '../lib/api'
+  import { api, type HubStatus, type NodeInfo, type Session, type StatusView } from '../lib/api'
   import { isLight, prefs } from '../lib/prefs.svelte'
   import { cue } from '../lib/sound'
   import { connectProtected } from '../lib/protect'
@@ -78,6 +78,28 @@
   let last = $state<SessionSummary | null>(null)
   let now = $state(Date.now())
   let pinnedRoute = $state(false)
+  let nextPair = $state<NodeInfo[]>([])
+  let pairError = $state('')
+  let pairLoading = $state(false)
+  let pairRequest = 0
+  async function refreshPair() {
+    const request = ++pairRequest
+    pairLoading = true
+    pairError = ''
+    nextPair = []
+    try {
+      const pair = await api.preparePair()
+      if (pair.length !== 2) throw new Error('The hub did not return a usable entry and exit pair.')
+      if (request === pairRequest) nextPair = pair
+    } catch (err) {
+      if (request === pairRequest) pairError = (err as Error).message
+    } finally {
+      if (request === pairRequest) pairLoading = false
+    }
+  }
+  $effect(() => {
+    if (!connected && status.hub_url) untrack(() => void refreshPair())
+  })
   let settingUp = $state(false)
 
   // One administrator prompt installs the background helper that owns the
@@ -198,8 +220,8 @@
   function nodeLabel(nodeId: string | undefined) {
     return nodeId ? 'Node ' + nodeId.slice(0, 4) : 'Not set'
   }
-  const entryName = $derived(connected ? nodeLabel(session?.config?.entry?.node_id) : 'Picked when you connect')
-  const exitName = $derived(connected ? nodeLabel(session?.config?.exit?.node_id) : '')
+  const entryName = $derived(connected ? nodeLabel(session?.config?.entry?.node_id) : nextPair[0] ? nodeLabel(nextPair[0].id) : pairLoading ? 'Finding nodes…' : 'No pair selected')
+  const exitName = $derived(connected ? nodeLabel(session?.config?.exit?.node_id) : nextPair[1] ? nodeLabel(nextPair[1].id) : '')
 
   function clockText(ms: number) {
     const s = Math.max(0, Math.floor(ms / 1000))
@@ -209,6 +231,10 @@
   const elapsed = $derived(session?.started_at ? now - new Date(session.started_at).getTime() : 0)
 
   async function connect() {
+    if (nextPair.length !== 2 || pairLoading || pairError) {
+      error = pairError || 'Choose an available entry and exit before connecting.'
+      return
+    }
     clearTimers()
     error = ''
     stage = 0
@@ -218,6 +244,7 @@
     try {
       const res = await connectProtected(PER_HOP_TOKENS * TOKEN_SATS)
       session = res.session
+      nextPair = []
       lastSample = { rx: 0, tx: 0, at: 0 }
       usage = { rx: 0, tx: 0 }
       rate = { down: 0, up: 0 }
@@ -231,6 +258,8 @@
       clearTimers()
       stage = -1
       error = (err as Error).message
+      nextPair = []
+      pairError = 'Recheck or choose another pair before trying to connect again.'
     } finally {
       onChanged()
     }
@@ -297,6 +326,7 @@
       nodeWarned = false
       session = null
       onChanged()
+      await refreshPair()
       await connect()
     } catch (err) {
       error = `Could not reconnect: ${(err as Error).message}`
@@ -334,6 +364,7 @@
   )
   const statusHint = $derived.by(() => {
     if (error) return error
+    if (pairError && !connected) return `Could not choose nodes: ${pairError}`
     if (!status.tunnel_ready && !connected) return status.tunnel_error || 'Run ARFL with administrator rights to enable the tunnel.'
     if (closing) return 'Closing the tunnel. Your traffic will not be protected after this.'
     if (connecting) return 'Your device is paying each node and building the two tunnels.'
@@ -412,6 +443,9 @@
       </div>
       <div class="word-status">{statusWord}</div>
       <div class="hint" class:err={!!error}>{statusHint}</div>
+      {#if pairError && !connected}
+        <button class="bare details" onclick={() => (overlay = 'nodes')}>Choose another pair</button>
+      {/if}
       {#if status.helper_setup && !connected}
         <button class="setup" disabled={settingUp} onclick={setUpTunnel}>{settingUp ? 'Waiting for approval…' : 'Set up the tunnel'}</button>
       {/if}
@@ -447,7 +481,7 @@
         class="conn"
         class:on={connected && !closing}
         class:busy={connecting || closing}
-        disabled={!status.tunnel_ready && !connected && !noBalance}
+        disabled={(!status.tunnel_ready && !connected && !noBalance) || (!connected && !noBalance && (pairLoading || nextPair.length !== 2))}
         onclick={mainAction}>{connLabel}</button
       >
 
@@ -495,7 +529,7 @@
       {#if overlay === 'topup'}
         <TopUp {hubName} {tokens} onPurchased={onChanged} onClose={() => (overlay = null)} />
       {:else if overlay === 'nodes'}
-        <Nodes {hubName} {session} {connected} />
+        <Nodes {hubName} {session} {connected} pair={nextPair} {pairError} {pairLoading} onRefresh={refreshPair} onPairChanged={async () => { await refreshPair(); await refreshPin() }} />
       {:else if overlay === 'settings'}
         <SettingsPanel {hubName} {hubMeta} onChangeHub={() => (overlay = 'hubs')} />
       {:else if overlay === 'hubs'}

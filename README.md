@@ -339,6 +339,8 @@ If `require_common_hop_transport` is explicitly set to `false`, `arfl-desktop` r
 Unknown `token_delivery` values are treated as configuration errors.
 Unknown `discovery_source` values are treated as configuration errors. `discovery_source: "nostr"` requires both `relays` and `hub_pubkeys`. NIP-44 delivery also requires Nostr discovery with trusted hub keys: hub `/nodes` responses do not authenticate node encryption keys. HTTP delivery still supports hub discovery.
 
+The desktop shows its locally selected entry and exit before connecting. Connect rechecks the displayed pair against the current node index and refuses to spend proofs if either node is unavailable; **Pick another pair** selects a new route. Manually chosen nodes remain pinned until the user switches back to automatic selection. Without a desktop-prepared pair, the CLI still selects locally when connecting.
+
 ### Bandwidth Tiers
 
 | Tier | Data | Price | Tokens |

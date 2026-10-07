@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "hubs": [
+    {
+      "name": "ARFL Community Hub",
+      "url": "https://hub.arfl.us",
+      "operator": "ARFL",
+      "nostr_pubkey": "3ba193c1cbd5d5e60a61a853e3f1aff0afd74445b8ab91568302b282b42d8ac3",
+      "contact": "https://github.com/0xciph3r/ARFL",
+      "added": "2026-10-07"
+    }
+  ]
+}

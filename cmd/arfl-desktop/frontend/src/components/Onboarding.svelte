@@ -66,7 +66,7 @@
       try {
         found.push(await api.previewHub(url))
       } catch {
-        found.push({ url, name: url.replace(/^https?:\/\//, ''), margin_pct: 0, node_count: 0 })
+        found.push({ url, name: url.replace(/^https?:\/\//, ''), margin_pct: 0, node_count: 0, trusted: false })
       }
     }
     hubs = [...found, ...hubs.filter((h) => !urls.includes(h.url))]
@@ -156,7 +156,7 @@
 
   // The address is always shown: hubs choose their own names, and two can share one.
   const hubMeta = (h: HubPreview & { custom?: boolean }) =>
-    `${h.custom ? 'Not verified' : 'Recommended by ARFL'} · ${h.url.replace(/^https?:\/\//, '')} · Margin ${h.margin_pct}% · ${h.node_count} approved nodes`
+    `${h.trusted ? 'Trusted by ARFL' : 'Not verified'} · ${h.url.replace(/^https?:\/\//, '')} · Margin ${h.margin_pct}% · ${h.node_count} approved nodes`
 
   const fileName = $derived(file ? file.split(/[\\/]/).pop() : 'Choose file')
   const chkLabels = ['Decrypting the file', 'Restoring your key', 'Asking each hub which tokens are unspent']

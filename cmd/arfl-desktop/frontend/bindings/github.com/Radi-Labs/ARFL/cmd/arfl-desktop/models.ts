@@ -9,6 +9,11 @@ export interface HubPreview {
     "name": string;
     "margin_pct": number;
     "node_count": number;
+
+    /**
+     * Trusted is true for hubs on the ARFL trusted list.
+     */
+    "trusted": boolean;
 }
 
 /**
@@ -19,6 +24,11 @@ export interface KnownHub {
     "name": string;
     "margin_pct": number;
     "node_count": number;
+
+    /**
+     * Trusted is true for hubs on the ARFL trusted list.
+     */
+    "trusted": boolean;
     "sats": number;
     "reachable": boolean;
     "custom": boolean;

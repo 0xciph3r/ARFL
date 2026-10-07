@@ -1,0 +1,19 @@
+name: Hub registry
+
+on:
+  pull_request:
+    paths:
+      - "hubs/registry.json"
+      - "internal/registry/**"
+      - "cmd/arfl-registry/**"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Check every listed hub is valid and live
+        run: go run ./cmd/arfl-registry check

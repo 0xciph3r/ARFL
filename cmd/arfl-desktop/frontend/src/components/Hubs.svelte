@@ -85,7 +85,7 @@
         <div class="grow">
           <div class="title">
             <span class="name">{h.name}</span>
-            <span class="tag" class:warn={h.custom}>{h.custom ? 'Not verified' : 'Recommended by ARFL'}</span>
+            <span class="tag" class:warn={h.custom}>{h.custom ? 'Not verified' : 'Trusted by ARFL'}</span>
           </div>
           <div class="meta">{meta(h)}</div>
         </div>

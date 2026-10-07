@@ -26,8 +26,7 @@ const (
 	keyringService = "ARFL"
 	keyringUser    = "device-key"
 	deviceKeyLen   = 32
-	// The hub ARFL recommends when the client config names none. It is
-	// reached over TLS through its domain, never its bare address.
+	// ARFL Community Hub, the hub the old bare-IP address now maps to.
 	defaultHubURL = "https://hub.arfl.us"
 )
 
@@ -46,6 +45,8 @@ type HubPreview struct {
 	Name      string `json:"name"`
 	MarginPct int    `json:"margin_pct"`
 	NodeCount int    `json:"node_count"`
+	// Trusted is true for hubs on the ARFL trusted list.
+	Trusted bool `json:"trusted"`
 }
 
 // RestoredHub is one hub's balance after a backup is restored.
@@ -213,14 +214,30 @@ func (b *Bridge) Fingerprint() string {
 
 // RecommendedHubs lists the hubs the chooser offers before the user adds one.
 func (b *Bridge) RecommendedHubs() []string {
+	var urls []string
 	cfgPath := strings.TrimSpace(os.Getenv("ARFL_CLIENT_CONFIG"))
 	if cfgPath == "" {
 		cfgPath = "client.json"
 	}
+	// A hub named in client.json comes first: it is the operator's own choice.
 	if cfg, err := config.LoadClientConfig(cfgPath); err == nil && strings.TrimSpace(cfg.HubURL) != "" {
-		return []string{strings.TrimSpace(cfg.HubURL)}
+		urls = append(urls, currentHubURL(strings.TrimSpace(cfg.HubURL)))
 	}
-	return []string{defaultHubURL}
+	for _, h := range trusted.get().Hubs {
+		if !containsString(urls, h.URL) {
+			urls = append(urls, h.URL)
+		}
+	}
+	return urls
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // PreviewHub reads a hub's public info without connecting to it.
@@ -239,7 +256,7 @@ func (b *Bridge) PreviewHub(hubURL string) (*HubPreview, error) {
 	if name == "" {
 		name = mc.HubURL()
 	}
-	return &HubPreview{URL: mc.HubURL(), Name: name, MarginPct: info.HubMarginPct, NodeCount: info.NodeCount}, nil
+	return &HubPreview{URL: mc.HubURL(), Name: name, MarginPct: info.HubMarginPct, NodeCount: info.NodeCount, Trusted: trusted.get().Contains(mc.HubURL())}, nil
 }
 
 // ExportBackup writes the key and every token to a file the user picks,
@@ -394,8 +411,9 @@ func (b *Bridge) KnownHubs() ([]KnownHub, error) {
 	}
 
 	out := make([]KnownHub, 0, len(urls))
-	for i, u := range urls {
-		row := KnownHub{HubPreview: HubPreview{URL: u, Name: strings.TrimPrefix(strings.TrimPrefix(u, "https://"), "http://")}, Custom: i >= len(recommended)}
+	trustedList := trusted.get()
+	for _, u := range urls {
+		row := KnownHub{HubPreview: HubPreview{URL: u, Name: strings.TrimPrefix(strings.TrimPrefix(u, "https://"), "http://")}, Custom: !trustedList.Contains(u)}
 		if p, err := b.PreviewHub(u); err == nil {
 			row.HubPreview = *p
 			row.Reachable = true

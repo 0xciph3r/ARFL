@@ -56,6 +56,7 @@ func (b *Bridge) ServiceStartup(ctx context.Context, _ application.ServiceOption
 	b.mu.Lock()
 	b.ctx = ctx
 	b.mu.Unlock()
+	go trusted.keepFresh(ctx)
 	return nil
 }
 

@@ -54,6 +54,9 @@ type NodeConfig struct {
 
 // HubConfig holds configuration for an ARFL hub daemon.
 type HubConfig struct {
+	// Name is what clients show for this hub. Defaults to "ARFL Hub"; every
+	// operator should set their own so users can tell hubs apart.
+	Name         string   `json:"name,omitempty"`
 	NostrPrivkey string   `json:"nostr_privkey"` // Hub's Nostr private key (hex)
 	ListenAddr   string   `json:"listen_addr"`   // Discovery API listen address
 	Relays       []string `json:"relays"`        // Nostr relay URLs to subscribe to

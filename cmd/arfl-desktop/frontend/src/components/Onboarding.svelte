@@ -154,8 +154,9 @@
     }
   }
 
+  // The address is always shown: hubs choose their own names, and two can share one.
   const hubMeta = (h: HubPreview & { custom?: boolean }) =>
-    `${h.custom ? 'Not verified' : 'Recommended by ARFL'} · Margin ${h.margin_pct}% · ${h.node_count} approved nodes`
+    `${h.custom ? 'Not verified' : 'Recommended by ARFL'} · ${h.url.replace(/^https?:\/\//, '')} · Margin ${h.margin_pct}% · ${h.node_count} approved nodes`
 
   const fileName = $derived(file ? file.split(/[\\/]/).pop() : 'Choose file')
   const chkLabels = ['Decrypting the file', 'Restoring your key', 'Asking each hub which tokens are unspent']

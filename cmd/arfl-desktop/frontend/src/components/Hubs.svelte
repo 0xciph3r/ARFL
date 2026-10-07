@@ -67,8 +67,10 @@
     }
   }
 
+  // The address is always shown: hubs choose their own names, and two can share one.
+  const host = (url: string) => url.replace(/^https?:\/\//, '')
   const meta = (h: KnownHub) =>
-    h.reachable ? `Margin ${h.margin_pct}% · ${h.node_count} approved nodes` : 'Not reachable right now'
+    h.reachable ? `${host(h.url)} · Margin ${h.margin_pct}% · ${h.node_count} approved nodes` : `${host(h.url)} · Not reachable right now`
 </script>
 
 <div class="col">
